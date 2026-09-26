@@ -1,0 +1,180 @@
+<!doctype html>
+<html lang="vi">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>MiniGo · Quầy</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Be+Vietnam+Pro:wght@400;500;600;700;800&display=swap">
+<style>
+  :root {
+    --paper: #F3F5F4; --card: #fff; --ink: #16212B; --muted: #5B6873; --rule: #D3DADE;
+    --alert: #C8312A; --alert-bg: #FBEDEC; --pending: #B97400;
+    --c: #0E7C66;   /* màu chi nhánh, JS đổi theo BRANCH_ID */
+    --font: "Be Vietnam Pro", system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--paper); color: var(--ink); font: 15px/1.5 var(--font); font-variant-numeric: tabular-nums; }
+  header {
+    background: var(--c); color: #fff; padding: 1rem 1.5rem;
+    display: flex; align-items: center; justify-content: space-between; gap: 1rem; flex-wrap: wrap;
+  }
+  header h1 { margin: 0; font-size: 1.7rem; font-weight: 800; letter-spacing: -0.01em; line-height: 1.15; }
+  header p { margin: 0; opacity: .85; }
+  button {
+    font: inherit; font-weight: 600; cursor: pointer; border-radius: 6px; padding: .45rem .9rem;
+    border: 1.5px solid var(--c); background: #fff; color: var(--c);
+  }
+  button:hover { background: color-mix(in srgb, var(--c) 8%, #fff); }
+  button:focus-visible { outline: 3px solid var(--ink); outline-offset: 2px; }
+  button:disabled { opacity: .5; cursor: wait; }
+  button.solid { background: var(--c); color: #fff; }
+  header button { border-color: #fff; }
+
+  #link { padding: .7rem 1.5rem; font-weight: 500; border-bottom: 1px solid var(--rule); background: var(--card); }
+  #link.down { background: var(--alert-bg); color: var(--alert); border-bottom-color: var(--alert); }
+  #link b { font-weight: 700; }
+
+  #links { display: flex; flex-wrap: wrap; gap: .5rem; padding: .5rem 1.5rem 0; font-size: .88rem; color: var(--muted); }
+  #links span { background: var(--card); border: 1px solid var(--rule); border-radius: 999px; padding: .1rem .7rem; }
+  #links span b { color: var(--ink); font-weight: 600; }
+  #links span.down { border-color: var(--alert); color: var(--alert); }
+  #links span.down b { color: var(--alert); }
+  #toast { min-height: 1.6rem; padding: .6rem 1.5rem 0; color: var(--muted); }
+  #toast.err { color: var(--alert); font-weight: 600; }
+
+  #grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(190px, 1fr)); gap: .8rem; padding: .6rem 1.5rem 2rem; }
+  /* Mỗi ô là một "thẻ giá trên kệ" */
+  .tag { background: var(--card); border-radius: 8px; padding: .75rem .9rem .8rem; border-top: 5px solid var(--c); display: flex; flex-direction: column; gap: .35rem; }
+  .tag .name { font-weight: 600; line-height: 1.3; min-height: 2.6em; }
+  .tag .qty { font-size: 2rem; font-weight: 800; line-height: 1; }
+  .tag .qty small { font-size: .9rem; font-weight: 500; color: var(--muted); margin-left: .25rem; }
+  .tag .meta { font-size: .8rem; color: var(--muted); }
+  .tag.low { border-top-color: var(--alert); }
+  .tag.low .qty { color: var(--alert); }
+  .tag .actions { display: flex; gap: .4rem; margin-top: .2rem; }
+  .tag .actions button { flex: 1; padding: .35rem .4rem; white-space: nowrap; }
+</style>
+</head>
+<body>
+<header>
+  <div>
+    <h1 id="title">Đang tải…</h1>
+    <p id="subtitle">Quầy bán hàng. Dữ liệu nằm ngay tại chi nhánh.</p>
+  </div>
+  <button id="bulk" class="solid" type="button">Bán 20 đơn ngẫu nhiên</button>
+</header>
+<div id="link" role="status">Đang kiểm tra kết nối tới trung tâm…</div>
+<div id="links" aria-label="Đường nối tới các bản sao trung tâm"></div>
+<div id="toast" aria-live="polite"></div>
+<div id="grid"></div>
+
+<script>
+const COLORS = { 1: "#0E7C66", 2: "#2F4BB3", 3: "#A15C07" };
+const esc = (s) => String(s).replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]));
+
+// Mã yêu cầu duy nhất cho mỗi lần bấm: bấm lặp hay mạng chập chờn thì server
+// vẫn chỉ trừ một lần. (crypto.randomUUID chỉ có trên localhost/https nên có dự phòng.)
+const newRequestId = () =>
+  (crypto.randomUUID ? crypto.randomUUID() : `${Date.now()}-${Math.random().toString(16).slice(2)}`);
+
+function toast(msg, isErr = false) {
+  const t = document.getElementById("toast");
+  t.textContent = msg; t.className = isErr ? "err" : "";
+}
+
+async function post(url, body) {
+  const r = await fetch(url, { method: "POST", headers: { "Content-Type": "application/json" }, body: body ? JSON.stringify(body) : undefined });
+  const data = await r.json().catch(() => ({}));
+  if (!r.ok) throw Object.assign(new Error(r.status), { status: r.status, data });
+  return data;
+}
+
+async function change(kind, product, qty) {
+  try {
+    const res = await post(`api/${kind}`, { product_id: product.product_id, qty, request_id: newRequestId() });
+    toast(`${kind === "sale" ? "Đã bán" : "Đã nhập"} ${qty} ${product.unit} ${product.name}. Còn ${res.qty_on_hand}. ` +
+          `Xử lý tại chỗ trong ${String(res.elapsed_ms).replace(".", ",")} ms.`);
+  } catch (e) {
+    const d = e.data?.detail || {};
+    if (d.error === "insufficient_stock") toast(`Không đủ hàng: ${product.name} chỉ còn ${d.qty_on_hand}.`, true);
+    else if (d.error === "version_conflict") toast("Số tồn vừa bị quầy khác sửa. Đã tải lại, thử bấm lần nữa.", true);
+    else toast(`Không bán được (mã lỗi ${e.status || e.message}). Kiểm tra container api và db của chi nhánh.`, true);
+  }
+  refresh();
+}
+
+let products = [];
+let lastRendered = "";  // chỉ vẽ lại khi số liệu đổi, để không mất nút đang bấm
+
+function renderGrid() {
+  document.getElementById("grid").innerHTML = products.map((p, i) => `
+    <div class="tag ${p.qty_on_hand < p.reorder_point ? "low" : ""}">
+      <div class="name">${esc(p.name)}</div>
+      <div class="qty">${p.qty_on_hand}<small>${esc(p.unit)}</small></div>
+      <div class="meta">Ngưỡng ${p.reorder_point}, phiên bản ${p.version}</div>
+      <div class="actions">
+        <button type="button" data-i="${i}" data-kind="sale">Bán 1</button>
+        <button type="button" data-i="${i}" data-kind="receipt">Nhập 10</button>
+      </div>
+    </div>`).join("");
+}
+
+document.getElementById("grid").addEventListener("click", (ev) => {
+  const b = ev.target.closest("button[data-kind]");
+  if (!b) return;
+  const p = products[Number(b.dataset.i)];
+  change(b.dataset.kind, p, b.dataset.kind === "sale" ? 1 : 10);
+});
+
+document.getElementById("bulk").addEventListener("click", async (ev) => {
+  const btn = ev.currentTarget; btn.disabled = true;
+  try {
+    const r = await post("api/sale/random?count=20");
+    toast(`Đã bán ${r.sold} đơn ngẫu nhiên${r.skipped_out_of_stock ? `, bỏ qua ${r.skipped_out_of_stock} đơn vì hết hàng` : ""}.`);
+  } catch (e) { toast(`Không bán được (mã lỗi ${e.status || e.message}).`, true); }
+  btn.disabled = false; refresh();
+});
+
+function renderLink(s) {
+  const el = document.getElementById("link");
+  const n = s.outbox_backlog;
+  if (s.sync_stuck) {
+    el.className = "down";
+    el.innerHTML = `Chưa gửi được lên trung tâm từ ${Math.round(s.oldest_unsent_s)} giây. ` +
+      `Quầy vẫn bán bình thường; <b>${n}</b> sự kiện đang nằm chờ trong outbox và sẽ tự gửi khi có mạng.`;
+  } else {
+    el.className = "";
+    el.innerHTML = n ? `Đang gửi <b>${n}</b> sự kiện lên trung tâm.` : "Mọi lượt bán đã gửi lên trung tâm.";
+  }
+  // Độ trễ tới từng bản sao, đo bằng heartbeat
+  document.getElementById("links").innerHTML = s.links.map((l) => l.ok
+    ? `<span>Bản sao máy ${esc(l.name)}: <b>${l.rtt_ms} ms</b></span>`
+    : `<span class="down">Bản sao máy ${esc(l.name)}: <b>mất liên lạc</b></span>`).join("");
+}
+
+async function refresh() {
+  try {
+    const [inv, st] = await Promise.all([
+      fetch("api/inventory", { cache: "no-store" }).then((r) => r.json()),
+      fetch("api/status", { cache: "no-store" }).then((r) => r.json()),
+    ]);
+    const snapshot = JSON.stringify(inv);
+    if (snapshot !== lastRendered) { products = inv; renderGrid(); lastRendered = snapshot; }
+    renderLink(st);
+  } catch (e) {
+    toast("Không đọc được dữ liệu của chính chi nhánh. Kiểm tra container api và db.", true);
+  }
+}
+
+(async () => {
+  const info = await fetch("api/info").then((r) => r.json());
+  document.documentElement.style.setProperty("--c", COLORS[info.branch_id] || "#16212B");
+  document.getElementById("title").textContent = `CN${info.branch_id} ${info.branch_name}`;
+  document.title = `MiniGo · CN${info.branch_id} ${info.branch_name}`;
+  refresh();
+  setInterval(refresh, 1500);
+})();
+</script>
+</body>
+</html>

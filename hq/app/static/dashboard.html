@@ -1,0 +1,311 @@
+<!doctype html>
+<html lang="vi">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>MiniGo · Tồn kho toàn chuỗi</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Be+Vietnam+Pro:wght@400;500;600;700&display=swap">
+<style>
+  :root {
+    --paper: #F3F5F4;
+    --card: #FFFFFF;
+    --ink: #16212B;
+    --muted: #5B6873;
+    --rule: #D3DADE;
+    --alert: #C8312A;
+    --alert-bg: #FBEDEC;
+    --pending: #B97400;
+    --cn1: #0E7C66;
+    --cn2: #2F4BB3;
+    --cn3: #A15C07;
+    --font: "Be Vietnam Pro", system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; background: var(--paper); color: var(--ink);
+    font: 15px/1.5 var(--font); font-variant-numeric: tabular-nums;
+  }
+  header {
+    display: flex; align-items: baseline; justify-content: space-between; gap: 1rem;
+    flex-wrap: wrap; padding: 1.25rem 2rem 0.5rem;
+  }
+  h1 { font-size: 1.6rem; font-weight: 700; margin: 0; letter-spacing: -0.01em; }
+  h1 small { font-weight: 400; color: var(--muted); font-size: 1rem; margin-left: .5rem; }
+  #stats { color: var(--muted); }
+  #stats b { color: var(--ink); font-weight: 600; }
+  #served { color: var(--muted); display: flex; align-items: center; gap: .5rem; flex-wrap: wrap; }
+  #served b { color: var(--ink); }
+  #served .trail { display: inline-flex; gap: 3px; }
+  #served .trail i { font-style: normal; font-size: .72rem; font-weight: 700; width: 1.25rem; text-align: center;
+                     border-radius: 3px; background: var(--rule); color: var(--ink); }
+  #served .trail i.now { background: var(--ink); color: #fff; }
+
+  #replicas { margin: 0 2rem 1rem; background: var(--card); border-radius: 10px; padding: .8rem 1.1rem; display: none; }
+  #replicas h3 { margin: 0 0 .4rem; font-size: 1.05rem; font-weight: 600; }
+  #replicas h3 span { font-weight: 400; color: var(--muted); font-size: .9rem; }
+  #replicas table th, #replicas table td { padding: .3rem .7rem; }
+  #replicas td.match { color: var(--cn1); font-weight: 700; }
+  #replicas td.behind { color: var(--pending); font-weight: 700; }
+  #replicas td.gone { color: var(--alert); font-weight: 700; }
+  #replicas code { font: inherit; font-weight: 600; letter-spacing: .03em; }
+  #conn-error {
+    display: none; margin: 0 2rem; padding: .6rem 1rem; border-radius: 6px;
+    background: var(--alert-bg); color: var(--alert); font-weight: 500;
+  }
+
+  /* ---------- Dải node: phần nổi bật nhất trang ---------- */
+  #nodes { display: grid; grid-template-columns: repeat(auto-fit, minmax(260px, 1fr)); gap: 1rem; padding: 1rem 2rem; }
+  .node {
+    background: var(--card); border-radius: 10px; padding: 1rem 1.25rem 1.1rem;
+    border-left: 10px solid var(--c); position: relative;
+    transition: background-color .4s, border-color .4s;
+  }
+  .node h2 { margin: 0; font-size: 1.35rem; font-weight: 700; line-height: 1.2; }
+  .node .state { margin: .15rem 0 .8rem; font-weight: 600; color: var(--c); font-size: 1.05rem; }
+  .node dl { display: grid; grid-template-columns: auto 1fr; gap: .15rem 1rem; margin: 0; font-size: .92rem; }
+  .node dt { color: var(--muted); }
+  .node dd { margin: 0; text-align: right; font-weight: 500; }
+  .node .backlog-hot { color: var(--pending); font-weight: 700; }
+  .node.down {
+    border-left-color: var(--alert);
+    background: repeating-linear-gradient(-45deg, var(--alert-bg) 0 12px, #fff 12px 24px);
+    outline: 2px solid var(--alert); outline-offset: -2px;
+  }
+  .node.down .state { color: var(--alert); }
+  .empty { padding: 1.25rem; color: var(--muted); background: var(--card); border-radius: 10px; }
+
+  /* ---------- Bảng tồn + dòng sự kiện ---------- */
+  main { display: grid; grid-template-columns: minmax(0, 1fr) 340px; gap: 1.25rem; padding: 0 2rem 2rem; }
+  section h3 { font-size: 1.05rem; margin: .5rem 0 .6rem; font-weight: 600; }
+  section h3 span { font-weight: 400; color: var(--muted); font-size: .9rem; }
+  .table-wrap { background: var(--card); border-radius: 10px; overflow-x: auto; }
+  table { border-collapse: collapse; width: 100%; }
+  th, td { padding: .42rem .8rem; border-bottom: 1px solid var(--rule); text-align: right; white-space: nowrap; }
+  th { font-weight: 600; font-size: .88rem; color: var(--muted); background: #FAFBFA; position: sticky; top: 0; }
+  th.b { color: var(--c); }
+  th.b small { display: block; font-weight: 400; font-size: .75rem; color: var(--alert); }
+  td.name, th.name { text-align: left; }
+  td.id { color: var(--muted); width: 3rem; }
+  td.total { font-weight: 700; }
+  td.stale { color: #9AA5AD; font-style: italic; }
+  td.low::before { content: ""; display: inline-block; width: .5rem; height: .5rem; border-radius: 50%; background: var(--alert); margin-right: .4rem; vertical-align: middle; }
+  td.low { color: var(--alert); font-weight: 600; }
+  td.flash { animation: flash 1.6s ease-out; }
+  @keyframes flash { from { background: #FFE9A8; } to { background: transparent; } }
+  tr:last-child td { border-bottom: 0; }
+
+  #events { list-style: none; margin: 0; padding: 0; background: var(--card); border-radius: 10px; max-height: 70vh; overflow-y: auto; }
+  #events li { padding: .55rem .9rem; border-bottom: 1px dashed var(--rule); display: grid; grid-template-columns: auto 1fr auto; gap: .1rem .6rem; align-items: baseline; }
+  #events li:last-child { border-bottom: 0; }
+  .chip { font-size: .78rem; font-weight: 700; color: #fff; background: var(--c); padding: .05rem .45rem; border-radius: 4px; }
+  .ev-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .ev-delta { font-weight: 700; }
+  .ev-delta.neg { color: var(--ink); } .ev-delta.pos { color: var(--cn1); }
+  .ev-meta { grid-column: 2 / 4; font-size: .8rem; color: var(--muted); }
+  .ev-meta .late { color: var(--pending); font-weight: 600; }
+
+  @media (max-width: 900px) { main { grid-template-columns: 1fr; } header, #nodes, main { padding-left: 1rem; padding-right: 1rem; } }
+  @media (prefers-reduced-motion: reduce) { td.flash { animation: none; } .node { transition: none; } }
+</style>
+</head>
+<body>
+<header>
+  <h1>MiniGo <small>Tồn kho toàn chuỗi</small></h1>
+  <div>
+    <div id="stats">Đang tải…</div>
+    <div id="served"></div>
+  </div>
+</header>
+<div id="conn-error" role="alert"></div>
+
+<div id="nodes" aria-live="polite"></div>
+
+<section id="replicas" aria-live="polite">
+  <h3>Các bản sao trung tâm <span>mỗi máy giữ một bản, tự đồng bộ qua Redpanda</span></h3>
+  <div class="table-wrap"><table id="replica-table"></table></div>
+</section>
+
+<main>
+  <section>
+    <h3>Tồn kho toàn chuỗi <span>dựng từ sự kiện các chi nhánh gửi lên</span></h3>
+    <div class="table-wrap"><table id="inv"></table></div>
+  </section>
+  <section>
+    <h3>Sự kiện vừa nhận <span>mới nhất ở trên</span></h3>
+    <ul id="events"></ul>
+  </section>
+</main>
+
+<script>
+const COLORS = { 1: "var(--cn1)", 2: "var(--cn2)", 3: "var(--cn3)" };
+const color = (id) => COLORS[id] || "var(--muted)";
+const prevQty = new Map();   // để tô sáng ô vừa đổi số
+let firstRender = true;
+
+const esc = (s) => String(s).replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]));
+
+function ago(ts) {
+  if (!ts) return "chưa có";
+  const s = Math.max(0, Math.round((Date.now() - Date.parse(ts)) / 1000));
+  if (s < 60) return `${s} giây trước`;
+  if (s < 3600) return `${Math.floor(s / 60)} phút ${s % 60} giây trước`;
+  return `${Math.floor(s / 3600)} giờ trước`;
+}
+function fmtMs(ms) {
+  if (ms == null) return "–";
+  const a = Math.abs(ms);
+  const sign = ms > 0 ? "+" : ms < 0 ? "−" : "";
+  return a < 1000 ? `${sign}${a} ms` : `${sign}${(a / 1000).toFixed(1).replace(".", ",")} giây`;
+}
+
+async function getJSON(url, signal) {
+  const r = await fetch(url, { cache: "no-store", signal });
+  if (!r.ok) throw new Error(`${url} trả về ${r.status}`);
+  return r.json();
+}
+
+function renderNodes(nodes) {
+  const el = document.getElementById("nodes");
+  if (!nodes.length) {
+    el.innerHTML = `<div class="empty">Chưa chi nhánh nào gửi heartbeat tới bản sao này. Kiểm tra dòng REPLICA_URLS trong file .env của các máy, và chắc rằng cổng 8000 của máy này đã mở.</div>`;
+    return;
+  }
+  el.innerHTML = nodes.map((n) => {
+    const down = !n.alive;
+    const state = down ? `Mất liên lạc ${ago(n.last_seen).replace(" trước", "")}` : "Đang hoạt động";
+    const backlog = down ? `${n.outbox_backlog}, lần báo cuối` : n.outbox_backlog;
+    return `<article class="node ${down ? "down" : ""}" style="--c:${color(n.branch_id)}">
+      <h2>CN${n.branch_id} ${esc(n.branch_name)}</h2>
+      <div class="state">${state}</div>
+      <dl>
+        <dt>Sự kiện chờ gửi</dt><dd class="${n.outbox_backlog > 0 ? "backlog-hot" : ""}">${backlog}</dd>
+        <dt>Độ trễ vòng (RTT)</dt><dd>${n.rtt_ms == null ? "–" : n.rtt_ms + " ms"}</dd>
+        <dt>Lệch giờ đo được</dt><dd title="Giờ chi nhánh trừ giờ trung tâm, gồm cả thời gian gói tin đi trên mạng">${fmtMs(n.clock_offset_ms)}</dd>
+        <dt>Số liệu ở trung tâm</dt><dd>${ago(n.snapshot_updated_at)}</dd>
+        <dt>Biến động mới nhất</dt><dd>#${n.last_movement ?? "–"}</dd>
+      </dl>
+    </article>`;
+  }).join("");
+}
+
+function renderInventory(items, nodes) {
+  const alive = new Map(nodes.map((n) => [n.branch_id, n.alive]));
+  const ids = new Set(nodes.map((n) => n.branch_id));
+  items.forEach((p) => Object.keys(p.by_branch).forEach((b) => ids.add(Number(b))));
+  const branches = [...ids].sort((a, b) => a - b);
+
+  const head = `<tr><th class="id">Mã</th><th class="name">Tên hàng</th>` +
+    branches.map((b) => `<th class="b" style="--c:${color(b)}">CN${b}${alive.get(b) === false ? "<small>số cũ</small>" : ""}</th>`).join("") +
+    `<th>Toàn chuỗi</th></tr>`;
+
+  const body = items.map((p) => {
+    const cells = branches.map((b) => {
+      const c = p.by_branch[b];
+      if (!c) return `<td class="stale">–</td>`;
+      const key = `${p.product_id}-${b}`;
+      const changed = !firstRender && prevQty.has(key) && prevQty.get(key) !== c.qty;
+      prevQty.set(key, c.qty);
+      const cls = [c.below_reorder ? "low" : "", alive.get(b) === false ? "stale" : "", changed ? "flash" : ""].join(" ");
+      const title = c.below_reorder ? `Dưới ngưỡng đặt lại (${p.reorder_point})` : "";
+      return `<td class="${cls}" title="${title}">${c.qty}</td>`;
+    }).join("");
+    return `<tr><td class="id">${p.product_id}</td><td class="name">${esc(p.name)}</td>${cells}<td class="total">${p.total}</td></tr>`;
+  }).join("");
+
+  document.getElementById("inv").innerHTML = `<thead>${head}</thead><tbody>${body}</tbody>`;
+  firstRender = false;
+}
+
+function renderEvents(events) {
+  const el = document.getElementById("events");
+  if (!events.length) {
+    el.innerHTML = `<li><span></span><span class="ev-name">Chưa có lượt bán hay nhập nào. Thử bán một món ở màn hình quầy của chi nhánh.</span></li>`;
+    return;
+  }
+  el.innerHTML = events.map((e) => {
+    const late = e.lag_ms > 5000;
+    const kind = e.move_type === "SALE" ? "bán" : "nhập";
+    return `<li>
+      <span class="chip" style="--c:${color(e.branch_id)}">CN${e.branch_id}</span>
+      <span class="ev-name">${esc(e.product_name)}</span>
+      <span class="ev-delta ${e.qty_delta < 0 ? "neg" : "pos"}">${e.qty_delta > 0 ? "+" : ""}${e.qty_delta}</span>
+      <span class="ev-meta">#${e.movement_id}, ${kind}, còn ${e.qty_after}.
+        <span class="${late ? "late" : ""}">${late ? "Đến muộn" : "Trễ"} ${fmtMs(e.lag_ms).replace("+", "")}</span></span>
+    </li>`;
+  }).join("");
+}
+
+function renderStats(d) {
+  document.getElementById("stats").innerHTML =
+    `Đã áp <b>${d.processed}</b> sự kiện, bỏ qua <b>${d.duplicates}</b> bản trùng`;
+}
+
+// Nhật ký "bản sao nào vừa trả lời", để thấy nginx chia tải và chuyển hướng khi lỗi
+const servedTrail = [];
+function renderServed(name) {
+  servedTrail.push(name);
+  if (servedTrail.length > 12) servedTrail.shift();
+  document.getElementById("served").innerHTML =
+    `Lần làm mới này do bản sao máy <b>${esc(name)}</b> trả lời ` +
+    `<span class="trail" title="12 lần làm mới gần nhất">${servedTrail
+      .map((n, i) => `<i class="${i === servedTrail.length - 1 ? "now" : ""}">${esc(n)}</i>`).join("")}</span>`;
+}
+
+// ----- So sánh các bản sao (chỉ có khi mở dashboard qua nginx) -----
+let replicaNames = null;   // null = chưa biết, [] = không mở qua nginx
+
+async function fetchWithTimeout(url, ms) {
+  const ctl = new AbortController();
+  const t = setTimeout(() => ctl.abort(), ms);
+  try { return await getJSON(url, ctl.signal); } finally { clearTimeout(t); }
+}
+
+async function renderReplicas() {
+  if (replicaNames === null) {
+    try { replicaNames = await getJSON("/lb/replicas.json"); } catch { replicaNames = []; }
+  }
+  const box = document.getElementById("replicas");
+  if (!replicaNames.length) { box.style.display = "none"; return; }
+  box.style.display = "block";
+
+  const results = await Promise.all(replicaNames.map((n) =>
+    fetchWithTimeout(`/replica/${n}/api/digest`, 2500).then((d) => ({ n, d })).catch(() => ({ n, d: null }))));
+
+  // Bản sao "đi trước" nhất (đã áp nhiều sự kiện nhất) làm mốc so sánh
+  const alive = results.filter((r) => r.d);
+  const lead = alive.reduce((a, r) => (!a || r.d.processed > a.d.processed ? r : a), null);
+
+  const head = `<tr><th class="name">Bản sao</th><th>Sự kiện đã áp</th><th>Tổng tồn</th>` +
+               `<th>Dấu vân tay dữ liệu</th><th class="name">So với bản sao dẫn đầu</th></tr>`;
+  const body = results.map(({ n, d }) => {
+    if (!d) return `<tr><td class="name">Máy ${esc(n)}</td><td>–</td><td>–</td><td>–</td>` +
+                   `<td class="name gone">Không liên lạc được</td></tr>`;
+    const same = lead && d.fingerprint === lead.d.fingerprint;
+    const gap = lead ? lead.d.processed - d.processed : 0;
+    const verdict = same ? `<td class="name match">Khớp từng ô</td>`
+                         : `<td class="name behind">Đang đuổi theo${gap > 0 ? `, thiếu ${gap} sự kiện` : ""}</td>`;
+    return `<tr><td class="name">Máy ${esc(n)}</td><td>${d.processed}</td><td>${d.total_qty}</td>` +
+           `<td><code>${esc(d.fingerprint)}</code></td>${verdict}</tr>`;
+  }).join("");
+  document.getElementById("replica-table").innerHTML = `<thead>${head}</thead><tbody>${body}</tbody>`;
+}
+
+async function tick() {
+  const err = document.getElementById("conn-error");
+  try {
+    const o = await getJSON("api/overview");
+    renderNodes(o.nodes); renderInventory(o.inventory, o.nodes); renderEvents(o.events);
+    renderStats(o.digest); renderServed(o.served_by);
+    err.style.display = "none";
+  } catch (e) {
+    err.textContent = `Không đọc được dữ liệu (${e.message}). Nếu đang mở qua nginx, mọi bản sao có thể đều đang mất liên lạc.`;
+    err.style.display = "block";
+  }
+  renderReplicas();
+}
+tick();
+setInterval(tick, 2000);
+</script>
+</body>
+</html>

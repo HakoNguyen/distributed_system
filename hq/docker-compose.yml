@@ -1,0 +1,112 @@
+# =====================================================================
+# TRUNG TÂM (chạy trên máy A)
+#   docker compose -p minigo-hq --env-file hq.env up -d --build
+# =====================================================================
+services:
+
+  # Hàng đợi sự kiện. Tương thích Kafka nhưng chỉ một tiến trình, nhẹ hơn nhiều.
+  redpanda:
+    profiles: [core]
+    image: docker.redpanda.com/redpandadata/redpanda:v24.2.8
+    command:
+      - redpanda
+      - start
+      - --mode=dev-container
+      - --smp=1
+      - --memory=1G
+      # Hai "cửa" nghe kết nối:
+      #   internal :9092  cho container cùng máy (sink, console)
+      #   external :19092 cho máy khác (relay ở các chi nhánh)
+      - --kafka-addr=internal://0.0.0.0:9092,external://0.0.0.0:19092
+      # Địa chỉ Redpanda "tự giới thiệu" với client ở từng cửa.
+      # Cửa ngoài PHẢI là IP thật của máy A, nếu không relay ở máy B sẽ lỗi.
+      - --advertise-kafka-addr=internal://redpanda:9092,external://${HQ_HOST:?Chưa đặt HQ_HOST trong hq.env}:19092
+      - --rpc-addr=redpanda:33145
+      - --advertise-rpc-addr=redpanda:33145
+    ports:
+      - "19092:19092"
+    volumes:
+      - redpanda_data:/var/lib/redpanda/data
+    healthcheck:
+      test: ["CMD-SHELL", "rpk cluster health | grep -E 'Healthy:.+true' || exit 1"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+
+  # Giao diện web xem topic và từng sự kiện, rất tiện khi demo: http://localhost:8080
+  console:
+    profiles: [core]
+    image: docker.redpanda.com/redpandadata/console:v2.7.2
+    environment:
+      KAFKA_BROKERS: redpanda:9092
+    ports:
+      - "8080:8080"
+    depends_on:
+      redpanda:
+        condition: service_healthy
+
+  # CSDL trung tâm: danh mục, bảng tổng hợp, trạng thái node
+  db:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: app
+      POSTGRES_PASSWORD: app
+      POSTGRES_DB: kho
+    volumes:
+      # Các file trong /docker-entrypoint-initdb.d chạy theo thứ tự tên, CHỈ ở lần khởi tạo đầu
+      - ../shared/products.sql:/docker-entrypoint-initdb.d/01-products.sql:ro
+      - ./db/schema.sql:/docker-entrypoint-initdb.d/02-schema.sql:ro
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      # -h 127.0.0.1: chỉ báo "sẵn sàng" khi Postgres đã chạy thật sự, không phải lúc đang khởi tạo
+      test: ["CMD", "pg_isready", "-h", "127.0.0.1", "-U", "app", "-d", "kho"]
+      interval: 3s
+      timeout: 3s
+      retries: 30
+
+  # Dịch vụ trung tâm: nhận heartbeat + phục vụ dashboard. http://localhost:8000
+  api:
+    build: ./app
+    environment:
+      NODE_NAME: ${NODE_NAME:?Chưa đặt NODE_NAME}
+      DATABASE_URL: postgresql://app:app@db:5432/kho
+    ports:
+      - "8000:8000"
+    depends_on:
+      db:
+        condition: service_healthy
+    restart: unless-stopped
+
+  # Tiến trình riêng: đọc Redpanda, cập nhật bảng tổng hợp.
+  # Cùng image với api, chỉ khác lệnh chạy.
+  sink:
+    build: ./app
+    command: ["python", "sink.py"]
+    environment:
+      NODE_NAME: ${NODE_NAME}
+      DATABASE_URL: postgresql://app:app@db:5432/kho
+      KAFKA_BROKERS: ${KAFKA_BROKERS:-redpanda:9092}
+    depends_on:
+      db:
+        condition: service_healthy
+    restart: unless-stopped
+
+  nginx:
+    profiles: [core]
+    image: nginx:1.27-alpine
+    environment:
+      IP_B: ${IP_B:?Chưa đặt IP_B}
+      IP_C: ${IP_C:-}
+    volumes:
+      - ./nginx/default.conf.template:/etc/nginx/templates/default.conf.template:ro
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    ports:
+      - "80:80"
+    depends_on:
+      - api
+    restart: unless-stopped
+
+volumes:
+  pgdata:
+  redpanda_data:

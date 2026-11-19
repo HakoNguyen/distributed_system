@@ -27,7 +27,7 @@ flat() {
   awk '
     /^services:/ { s = 1; next }
     /^[^ ]/      { s = 0 }
-    s && /^  [a-z_]+:$/ { svc = $1; sub(":", "", svc) }
+    s && /^  [a-z_-]+:$/ { svc = $1; sub(":", "", svc) }
     s { print svc " " $0 }'
 }
 
@@ -64,15 +64,24 @@ check() {
       grep -qi "^REPLICA_URLS=.*$X=http://replica-$x:8000" "$env" ||
         bad "$env: REPLICA_URLS thiếu $X=http://replica-$x:8000"
     done
-    [ "$n" = a ] || grep -q '^KAFKA_BROKERS=redpanda-a:19092$' "$env" ||
-      bad "$env: KAFKA_BROKERS phải là redpanda-a:19092"
+
+    # 3b. Mỗi node một broker (vòng 2): alias riêng trên default và wan, mã broker = BRANCH_ID,
+    #     không publish cổng ra host (3 broker cùng máy sẽ đụng cổng 19092, 33145)
+    c=$(echo "$cfg" | grep -ic "^redpanda .*- redpanda-$n\$" || true)
+    [ "$c" -ge 2 ] || bad "node $n: redpanda thiếu alias redpanda-$n trên default và wan"
+    id=$(sed -n 's/^BRANCH_ID=//p' "$env" | tr -d '\r')
+    echo "$cfg" | grep -q "^redpanda .*--node-id=$id\$" || bad "node $n: redpanda phải có --node-id=$id (BRANCH_ID)"
+    echo "$cfg" | grep -q '^redpanda .*published:' && bad "node $n: redpanda không được publish cổng ra host khi chạy một máy"
+    grep -q "^BROKER_HOST=redpanda-$n\$" "$env" || bad "$env: BROKER_HOST phải là redpanda-$n"
   done
 
-  # 4. Node a: redpanda và nginx ở minigo-wan; nginx đủ địa chỉ host:port của 3 node
+  # 4. Node a: nginx ở minigo-wan; nginx đủ địa chỉ host:port của 3 node
   if [ -f infra/env/local-a.env ] && [ -f infra/compose.local.yml ] && raw=$(compose a config); then
     cfg=$(echo "$raw" | flat)
-    echo "$cfg" | grep -iq '^redpanda .*- redpanda-a$' || bad "node a: redpanda thiếu alias redpanda-a"
     echo "$cfg" | grep -q '^nginx  *wan:' || bad "node a: nginx chưa nối vào minigo-wan"
+    for svc in console topic-init; do
+      echo "$cfg" | grep -q "^$svc  *wan:" || bad "node a: $svc chưa nối vào minigo-wan (cần gọi broker node khác)"
+    done
     for x in a b c; do
       X=$(echo "$x" | tr a-z A-Z)
       echo "$cfg" | grep -iq "^nginx  *REPLICA_$X: replica-$x:8000\$" || bad "nginx: REPLICA_$X phải là replica-$x:8000"
@@ -90,7 +99,36 @@ check() {
   dup=$(echo $ports | tr ' ' '\n' | sort | uniq -d)
   [ -z "$dup" ] || bad "cổng host trùng giữa các node: $dup"
 
-  [ $fail -eq 0 ] && echo "ĐẠT: cấu hình 3 node trên một máy" || exit 1
+  # 6. Cụm broker, cả chế độ một máy (local-*) lẫn máy thật (may-*)
+  cluster local
+  cluster may
+
+  [ $fail -eq 0 ] && echo "ĐẠT: cấu hình 3 node trên một máy và cụm 3 broker" || exit 1
+}
+
+# Ba file env của một chế độ ($1 = local hoặc may): KAFKA_BROKERS và BROKER_SEEDS liệt kê đủ 3 broker,
+# cùng host, giống nhau ở cả 3 file; BROKER_HOST mỗi node khác nhau và nằm trong danh sách đó.
+cluster() {
+  ref="" own=""
+  for x in a b c; do
+    env="infra/env/$1-$x.env"
+    [ -f "$env" ] || { bad "thiếu $env"; continue; }
+    val() { sed -n "s/^$1=//p" "$env" | tr -d '\r'; }
+    grep -q '^IP_A=' "$env" && bad "$env: còn IP_A (đã thay bằng BROKER_HOST)"
+    case ",$(val COMPOSE_PROFILES)," in *,broker,*) ;; *) bad "$env: COMPOSE_PROFILES thiếu broker" ;; esac
+    kb=$(val KAFKA_BROKERS); seeds=$(val BROKER_SEEDS); host=$(val BROKER_HOST)
+    kh=$(echo "$kb" | tr ',' '\n' | sed -n 's/:19092$//p')
+    sh_=$(echo "$seeds" | tr ',' '\n' | sed -n 's/:33145$//p')
+    [ "$(echo "$kb" | tr ',' '\n' | grep -c .)" -eq 3 ] && [ "$(echo "$kh" | grep -c .)" -eq 3 ] ||
+      bad "$env: KAFKA_BROKERS phải có đủ 3 địa chỉ <host>:19092"
+    [ "$(echo "$seeds" | tr ',' '\n' | grep -c .)" -eq 3 ] && [ "$kh" = "$sh_" ] ||
+      bad "$env: BROKER_SEEDS phải là 3 địa chỉ <host>:33145, cùng host và thứ tự với KAFKA_BROKERS"
+    [ -n "$host" ] && echo "$kh" | grep -qx "$host" || bad "$env: BROKER_HOST ($host) không có trong KAFKA_BROKERS"
+    [ -z "$ref" ] && ref="$kb|$seeds"
+    [ "$kb|$seeds" = "$ref" ] || bad "$env: KAFKA_BROKERS, BROKER_SEEDS phải giống nhau ở 3 file $1-*.env"
+    own="$own $host"
+  done
+  [ -z "$(echo $own | tr ' ' '\n' | sort | uniq -d)" ] || bad "$1-*.env: BROKER_HOST trùng giữa các node"
 }
 
 up() {
@@ -127,7 +165,10 @@ cut() {
   echo "Đã rút mạng node $1. Cắm lại: make heal N=$1"
 }
 
-# Nối lại đúng IP cũ: nginx ở node a nhớ IP từ lúc khởi động, IP đổi thì nó gửi nhầm container
+# Nối lại đúng IP cũ: nginx ở node a nhớ IP từ lúc khởi động, IP đổi thì nó gửi nhầm container.
+# Broker cũng cần: kết nối RPC nó mở trước lúc rút mạng gắn với IP cũ, IP đổi thì treo mãi (đo ở vòng 2).
+# shortcut: IP ghim cứng không được giữ chỗ khi container dừng; container khác khởi động lại có thể lấy mất,
+# bật lại báo "Address already in use" -> make local-reset.
 heal() {
   node "$1"; f=".cut-$1"
   [ -f "$f" ] || { echo "Node $1 không bị rút mạng (không có $f)"; exit 1; }

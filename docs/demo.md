@@ -2,6 +2,7 @@
 
 Dựng hệ thống trên 2–3 máy thật, rồi đi qua K1–K6 để chứng minh từng tính chất ở `spec.md` mục 2.
 Nên dựng đủ trên hai máy **sớm**, ít nhất hai ngày trước hôm demo, và chạy đủ K1 đến K5 ít nhất hai lần.
+Chỉ có một máy: mô phỏng 3 máy, xem mục 3, phần "Chạy trên một máy"; K1–K6 chạy như nhau.
 
 ## 1. Nối các máy bằng mạng overlay
 
@@ -46,7 +47,11 @@ Trên Linux có ufw: `sudo ufw allow 80,8000,8001,19092/tcp`. macOS thường t�
 
 ## 2. Điền file env
 
-Mỗi máy có một file mẫu trong `infra/env/`. Mở **cả hai** file `infra/env/may-a.env` và `infra/env/may-b.env`, thay các IP mẫu `100.64.0.1`, `100.64.0.2` bằng IP overlay thật. Chúng xuất hiện ở các dòng `IP_A`, `IP_B`, `KAFKA_BROKERS`, `REPLICA_URLS`.
+Mỗi máy có một file mẫu trong `infra/env/`. Mở **cả ba** file `infra/env/may-a.env`, `may-b.env`, `may-c.env`, thay các IP mẫu `100.64.0.1`, `100.64.0.2`, `100.64.0.3` bằng IP overlay thật. Chúng xuất hiện ở các dòng `IP_A`, `REPLICA_A/B/C`, `BRANCH_A/B/C`, `KAFKA_BROKERS`, `REPLICA_URLS`. Khối `IP_A`, `REPLICA_*`, `BRANCH_*` phải giống nhau ở mọi file.
+
+`REPLICA_B`, `BRANCH_B`... là địa chỉ đầy đủ `host:port` mà nginx (máy A) dùng để gọi bản sao và POS của từng máy: `100.64.0.2:8000` là bản sao máy B, `100.64.0.2:8001` là POS CN2 (cổng host).
+
+**Chỉ có 2 máy thật?** Vẫn chạy được, nhưng dòng C trên bảng bản sao ghi "Không liên lạc được", `/cn3/` báo mất liên lạc, và thỉnh thoảng một request qua nginx chậm khoảng 1 giây (mỗi worker nginx tự thử lại máy C sau 10 giây). Muốn gọn: trong `infra/nginx/default.conf.template` thêm `#` trước dòng `server ${REPLICA_C}` và bỏ `"C"` ở `/lb/replicas.json`.
 
 Rồi **trên mỗi máy**, copy file của máy đó thành `.env` ở gốc repo:
 
@@ -61,7 +66,7 @@ Sau bước này, trên mọi máy, mọi lệnh đều là `docker compose ...`
 
 **Tại sao trong file env có chỗ ghi `replica_api:8000`, có chỗ ghi IP?** Container trên cùng một máy gọi nhau bằng tên service trong mạng Docker (nhanh, không phụ thuộc mạng ngoài). Container ở máy khác thì phải đi qua IP overlay.
 
-**Lỗi từng gặp:** đặt `IP_B` bằng IP máy A (hoặc cho cả `A=` lẫn `B=` trong `REPLICA_URLS` cùng một địa chỉ). Khi đó nginx "chia tải" giữa A và chính A, dòng B trên bảng bản sao là A tự so với mình, còn bản sao B thật không nhận heartbeat nào. `IP_B` luôn là IP overlay của **máy B**.
+**Lỗi từng gặp:** đặt `REPLICA_B` trỏ về máy A (hoặc cho cả `A=` lẫn `B=` trong `REPLICA_URLS` cùng một địa chỉ). Khi đó nginx "chia tải" giữa A và chính A, dòng B trên bảng bản sao là A tự so với mình, còn bản sao B thật không nhận heartbeat nào. `REPLICA_B` luôn là IP overlay của **máy B**.
 
 ## 3. Chạy
 
@@ -74,7 +79,7 @@ docker compose ps
 
 Phải thấy **9 container** (redpanda, console, nginx, và 6 container của chi nhánh và bản sao). Nếu không thấy redpanda, console, nginx, kiểm tra lại dòng `COMPOSE_PROFILES=core` trong `.env`, hoặc chạy `docker compose --profile core up -d`.
 
-**Rồi máy B:** cùng lệnh `make up`, phải thấy 6 container.
+**Rồi máy B, máy C:** cùng lệnh `make up`, mỗi máy phải thấy 6 container.
 
 **Kiểm tra từng bước, trên máy A:**
 
@@ -87,6 +92,55 @@ Phải thấy **9 container** (redpanda, console, nginx, và 6 container của c
 | http://localhost:8080 | Redpanda Console, có topic `inventory.movement` |
 
 Trên dashboard qua nginx, sau khoảng 10 giây phải có đủ hai thẻ CN1, CN2, và bảng bản sao có hai dòng A, B cùng ghi **Khớp từng ô**. Đến đây thì hệ thống đã thông hoàn toàn.
+
+### Chạy trên một máy (3 node, không cần mạng overlay)
+
+Mỗi "máy" là một compose project (`minigo-a`, `minigo-b`, `minigo-c`) chạy cùng `infra/compose.yml`, ghép thêm
+`infra/compose.local.yml`, env ở `infra/env/local-<x>.env` (không cần `.env`). "Mạng overlay" là docker network
+chung `minigo-wan`. "Rút mạng máy B" là gỡ mọi container của B khỏi `minigo-wan`: B vẫn chạy đủ bên trong (CSDL,
+POS, bản sao), chỉ mất liên lạc với node khác, đúng như rút dây mạng. RAM: 21 container đo được khoảng 1,1 GB.
+
+```bash
+make local-up        # tạo minigo-wan, dựng node C, B rồi A (21 container)
+make cut N=b         # rút mạng node B
+make heal N=b        # cắm lại, đúng IP và alias cũ
+make local-down      # dừng 3 node, giữ dữ liệu
+make local-reset     # xoá dữ liệu 3 node rồi dựng lại
+```
+
+| Node | POS | Dashboard bản sao | Riêng node A |
+|---|---|---|---|
+| A | http://localhost:8001 (CN1) | http://localhost:8000 | nginx http://localhost/, Console http://localhost:8080 |
+| B | http://localhost:8011 (CN2) | http://localhost:8010 | |
+| C | http://localhost:8021 (CN3) | http://localhost:8020 | |
+
+K1–K6 ở mục 5 giữ nguyên, chỉ đổi thao tác:
+
+| Kịch bản | Máy thật | Một máy |
+|---|---|---|
+| POS máy B, dashboard bản sao B | `localhost:8001`, `localhost:8000` trên máy B | `localhost:8011`, `localhost:8010` |
+| K3 rút mạng máy B | Tắt Wi-Fi máy B | `make cut N=b` |
+| K4 cắm lại | Bật Wi-Fi máy B | `make heal N=b` |
+| K5 trễ 300 ms tới máy A | Clumsy, tc, hoặc `tre.sh on 300 <IP_A>` | `docker exec minigo-b-relay-1 sh tre.sh on 300 redpanda-a` và `docker exec minigo-b-branch_api-1 sh tre.sh on 300 replica-a`; bỏ: `... sh tre.sh off` |
+| K6 phát lại | `docker compose stop sink` ... | `docker stop minigo-a-sink-1`, `docker exec minigo-a-redpanda-1 rpk group seek replica-A --to start`, `docker start minigo-a-sink-1` |
+| Xem container, log | `make ps`, `make logs S=relay` | `docker ps --filter name=minigo-b`, `docker logs -f minigo-b-relay-1` |
+
+**Vì sao gọi nhau bằng `replica-b` mà không bằng `replica_api`?** Compose tự thêm tên service làm alias trên mọi
+network, nên trên `minigo-wan` tên `replica_api` trỏ về cả ba node. Mỗi node có alias riêng (`branch-b`,
+`replica-b`, `redpanda-a`), gắn trên cả mạng riêng của node lẫn `minigo-wan`: lúc B bị rút mạng, CN2 vẫn gửi
+heartbeat được cho bản sao B.
+
+**Vì sao `heal` phải nối lại đúng IP cũ?** Nginx phân giải tên `replica-b` một lần lúc khởi động rồi nhớ IP. Cắm
+lại mà IP đổi thì nginx gửi nhầm container. `make cut` ghi IP và alias vào `.cut-<x>` ở gốc repo, `make heal` đọc lại.
+
+Giới hạn của bản mô phỏng:
+- Nginx (node A) chỉ khởi động được khi `replica-b`, `branch-c`... đều phân giải được, nên `make local-up` dựng C,
+  B trước A. Nếu nginx khởi động lại lúc một node đang bị rút mạng, nó báo `host not found in upstream`: `make heal`
+  rồi `docker restart minigo-a-nginx-1`.
+- Trong lúc B bị rút mạng, đừng dựng lại container nào khác (`make local-up`): container mới có thể lấy IP cũ của
+  B, `make heal` sẽ báo lỗi. Khi đó `make local-reset`.
+- Đo ngày 19/11/2026: sau `make heal N=b`, outbox CN2 về 0 trong ≤ 4 giây; bản sao B khớp sau khoảng 17 giây (sink
+  B chờ thư viện Kafka nối lại Redpanda).
 
 ## 4. Giả lập độ trễ mạng
 
@@ -277,10 +331,12 @@ Dòng đầu dashboard (khi bản sao A trả lời): số "bỏ qua … bản t
 | Máy A không có redpanda, nginx | Profile core chưa bật | Kiểm tra `COMPOSE_PROFILES=core`, hoặc `docker compose --profile core up -d` |
 | Relay máy B báo `Message timed out` | Không tới được `IP_A:19092` | `ping` IP máy A; kiểm tra firewall máy A; kiểm tra `KAFKA_BROKERS` |
 | Relay nối được rồi lỗi, log nhắc `localhost` hay `redpanda` | `IP_A` trong `.env` máy A sai nên Redpanda tự giới thiệu sai địa chỉ | Sửa `.env` máy A, chạy lại `docker compose up -d` |
-| Bảng bản sao dòng B luôn "Không liên lạc được" | Nginx không tới được `IP_B:8000` | Mở firewall máy B cổng 8000; từ máy A: `curl http://<IP_B>:8000/health` |
+| Bảng bản sao dòng B luôn "Không liên lạc được" | Nginx không tới được `REPLICA_B` | Mở firewall máy B cổng 8000; từ máy A: `curl http://<IP máy B>:8000/health` |
 | Không có ô "Các bản sao trung tâm" | Đang mở dashboard trực tiếp ở cổng 8000, không qua nginx | Mở `http://localhost/` (cổng 80) |
 | Cổng 80 bị chiếm (Windows hay gặp) | IIS hoặc ứng dụng khác | Thêm `NGINX_PORT=8088` vào `.env`, mở `http://localhost:8088/` |
-| Thêm máy C mà nginx lỗi khởi động | Bỏ `#` các dòng `[MÁY C]` nhưng chưa đặt `IP_C` | Thêm `IP_C=...` vào `.env` máy A |
+| Nginx lỗi khởi động, báo `Chưa đặt REPLICA_C` | File `.env` cũ, chưa có khối `REPLICA_*`, `BRANCH_*` | Chép lại từ `infra/env/may-<x>.env` |
+| Một máy: nginx báo `host not found in upstream` | Node B hoặc C chưa chạy, hoặc đang bị `make cut` | `make heal N=<x>` hoặc `make local-up`, rồi `docker restart minigo-a-nginx-1` |
+| Một máy: `make heal` báo `Address already in use` | Có container mới lấy IP cũ của node đang bị rút mạng | `make local-reset` |
 | Sửa `db/*.sql` không thấy tác dụng | Script khởi tạo chỉ chạy khi volume trống | `make reset` trên **mọi máy** |
 
 **Làm lại từ đầu:** chạy `make reset` trên **tất cả** các máy, máy A trước.
@@ -297,10 +353,12 @@ Lệnh make (chạy từ gốc repo, trong Git Bash hoặc shell Linux/macOS; đ
 | `make ps` | Liệt kê container |
 | `make logs` | Log, mặc định 100 dòng cuối mọi service. `S=relay` chọn service, `N=200` đổi số dòng |
 | `make test` | pytest trong container trên CSDL test. `T=tests/replica` chạy một thư mục |
-| `make config` | Kiểm tra file compose với env mẫu, không chạy container |
+| `make config` | Kiểm tra file compose với env mẫu (máy thật và 3 node một máy), không chạy container |
 | `make check` | `config` + `test`; chạy trước khi báo xong một vòng |
+| `make local-up`, `local-down`, `local-reset` | 3 node trên một máy (mục 3, phần "Chạy trên một máy") |
+| `make cut N=b`, `make heal N=b` | Một máy: rút / cắm lại mạng node B |
 
-Mọi lệnh đọc `.env` ở gốc repo; dùng file khác: `make up ENV_FILE=infra/env/may-b.env`.
+Các lệnh `up`, `down`, `reset`, `ps`, `logs` đọc `.env` ở gốc repo; dùng file khác: `make up ENV_FILE=infra/env/may-b.env`.
 
 ```bash
 docker compose ps                         # container nào đang chạy

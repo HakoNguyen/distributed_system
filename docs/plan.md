@@ -5,12 +5,12 @@ Mục tiêu trước mắt: xử lý hai câu hỏi của thầy (mục 3), trê
 
 ## 1. Tiến độ
 
-**Vòng tiếp theo: vòng 1.** Mỗi lần chỉ làm một vòng, đúng thứ tự: vòng sau dựa trên hạ tầng của vòng trước.
+**Vòng tiếp theo: vòng 2** (sau khi vòng 1 được merge). Mỗi lần chỉ làm một vòng, đúng thứ tự: vòng sau dựa trên hạ tầng của vòng trước.
 
 | Vòng | Phạm vi | Nhánh | Việc | Quy tắc | Kịch bản | Trạng thái |
 |---|---|---|---|---|---|---|
-| 0 | khung | `base/restructure-workflow` | Gộp về một bản theo cấu trúc mới; quy trình 4 bước; hạ tầng test, 5 test nền | PT-02, 04, 05, 08, 09 | K1, K6 trên 1 node | đã code (19/11/2026), chờ commit |
-| 1 | `infra` | `infra/local-multi-node` | Mô phỏng 3 máy trên một máy, `make cut/heal` | — | K1–K6 trên 3 node | chưa làm |
+| 0 | khung | `base/restructure-workflow` | Gộp về một bản theo cấu trúc mới; quy trình 4 bước; hạ tầng test, 5 test nền | PT-02, 04, 05, 08, 09 | K1, K6 trên 1 node | xong, đã merge (PR #1) |
+| 1 | `infra` | `infra/local-multi-node` | Mô phỏng 3 máy trên một máy, `make cut/heal` | — | K1–K6 trên 3 node | đã code (19/11/2026), K1–K6 đạt trên 3 node một máy; chờ commit |
 | 2 | `infra`, `branch`, `replica`, `web` | `broker/redpanda-cluster` | Cụm 3 broker; trạng thái đồng bộ trên POS và dashboard | PT-03, PT-06, PT-11 | K7a, K7b, K7c | chưa làm |
 | 3 | `replica`, `branch`, `web` | `replica/gossip-reconcile` | Gossip giữa bản sao; đối soát với chi nhánh | PT-04, PT-05, PT-07, PT-10 | K8, K9 | chưa làm |
 | 4 | `web` | `web/sync-dashboard` | Topology sống, đọc đơn điệu, truy vết sự kiện, POS | — | chạy tay K1–K9 | chưa làm |
@@ -100,6 +100,7 @@ Mỗi vòng chỉ tạo hoặc sửa các chỗ sau; file nào ngoài mẫu thì
 
 Docker hiện có 10,7 GB, stack `market-*` đang chiếm ~6 GB. Ba node MiniGo (3 broker × ~1 GB, 6 Postgres,
 12 tiến trình Python) cần ~4–5 GB: **tắt stack market-\* trước khi chạy 3 node**.
+Đo ở vòng 1 (1 broker, 21 container): khoảng 1,1 GB.
 
 ### Vòng 1 – Mô phỏng 3 máy trên một máy (`infra/local-multi-node`)
 
@@ -192,8 +193,9 @@ Xong khi: chạy tay K1–K9 nhìn đúng trên giao diện.
 
 - Redpanda chạy được với `--memory=512M` mỗi broker (đỡ RAM); chưa thử. Không được thì giữ 1G và tắt stack market-\*.
 - Cờ tắt write caching (`write_caching_default`) đặt được lúc khởi tạo cụm; kiểm ở `/plan-task` vòng 2.
-- Compose tự thêm tên service làm alias trên mọi network service tham gia, nên trên `minigo-wan` các node phải gọi
-  nhau bằng alias riêng (`replica-b`), không dùng tên service (`replica_api`). Kiểm ở `/plan-task` vòng 1.
+- ~~Compose tự thêm tên service làm alias trên mọi network~~ **Đã kiểm ở vòng 1: đúng.** Trên `minigo-wan`,
+  `replica_api` trỏ về cả ba node; các node gọi nhau bằng alias riêng (`replica-b`), gắn trên cả mạng riêng của
+  node lẫn `minigo-wan` (`infra/compose.local.yml`).
 - Đối soát với chi nhánh chỉ bật khi broker mất quá 15 giây, không chạy thường xuyên, để lúc demo thấy rõ chế độ
   suy giảm.
 

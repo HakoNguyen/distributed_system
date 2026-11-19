@@ -1,0 +1,44 @@
+# =====================================================================
+# Ghép thêm khi chạy 3 node trên MỘT máy (make local-up). Máy thật không dùng file này.
+#   docker compose -p minigo-b --env-file infra/env/local-b.env \
+#     -f infra/compose.yml -f infra/compose.local.yml up -d
+#
+# "Mạng overlay" là docker network chung minigo-wan (make local-up tạo). Container nào
+# nói chuyện với node khác thì nối vào đó; CSDL và console chỉ ở mạng riêng của node.
+#
+# Compose tự thêm tên service (replica_api) làm alias trên MỌI network, nên trên
+# minigo-wan tên đó trỏ về cả ba node. Vì vậy mỗi node có alias riêng (replica-b...),
+# gắn trên cả mạng riêng lẫn minigo-wan: rút mạng node B thì CN2 vẫn gọi được bản sao B.
+# (DNS của Docker không phân biệt hoa thường: alias replica-B gọi bằng replica-b.)
+# =====================================================================
+
+services:
+  branch_api:
+    networks:
+      default: { aliases: ["branch-${NODE_NAME}"] }
+      wan: { aliases: ["branch-${NODE_NAME}"] }
+
+  replica_api:
+    networks:
+      default: { aliases: ["replica-${NODE_NAME}"] }
+      wan: { aliases: ["replica-${NODE_NAME}"] }
+
+  relay:
+    networks: [default, wan]
+
+  sink:
+    networks: [default, wan]
+
+  # Chỉ node A (profile core)
+  redpanda:
+    networks:
+      default: { aliases: ["redpanda-${NODE_NAME}"] }
+      wan: { aliases: ["redpanda-${NODE_NAME}"] }
+
+  nginx:
+    networks: [default, wan]
+
+networks:
+  wan:
+    name: minigo-wan
+    external: true

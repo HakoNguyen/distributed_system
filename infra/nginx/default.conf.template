@@ -3,17 +3,24 @@
 # Người dùng chỉ cần nhớ http://<IP máy A>/ — không cần biết phía sau có
 # bao nhiêu bản sao, nằm ở máy nào (tính trong suốt vị trí).
 #
-# ${IP_B}, ${IP_C} được thay bằng giá trị trong file .env lúc container khởi động.
-# Có máy C thì bỏ dấu # ở các dòng đánh dấu [MÁY C].
+# ${REPLICA_A}... ${BRANCH_C} là địa chỉ host:port, thay bằng giá trị trong .env
+# lúc container khởi động:
+#   máy thật:  REPLICA_B=100.64.0.2:8000   BRANCH_B=100.64.0.2:8001 (cổng host)
+#   một máy:   REPLICA_B=replica-b:8000    BRANCH_B=branch-b:8000   (cổng trong container)
+# Tên được phân giải MỘT lần lúc nginx khởi động: một máy thì node B, C phải chạy
+# trước node A (make local-up lo việc này).
+# Chỉ có 2 máy thật: chạy được, nhưng bản sao C hiện "Không liên lạc được" và thỉnh thoảng một
+# request chậm khoảng 1 giây (mỗi worker nginx tự thử lại C sau 10 giây).
+# Muốn gọn: thêm # trước dòng "server ${REPLICA_C}" và bỏ "C" ở /lb/replicas.json.
 # =====================================================================
 
 # Nhóm các bản sao trung tâm. Mặc định nginx chia lần lượt (round-robin).
 upstream replicas {
     # max_fails=1 fail_timeout=10s: gọi một bản sao thất bại 1 lần thì
     # tạm gạch tên nó 10 giây, sau đó thử lại xem nó sống lại chưa.
-    server replica_api:8000  max_fails=1 fail_timeout=10s;   # máy A (cùng mạng Docker)
-    server ${IP_B}:8000      max_fails=1 fail_timeout=10s;   # máy B (qua mạng overlay)
-    # server ${IP_C}:8000    max_fails=1 fail_timeout=10s;   # [MÁY C]
+    server ${REPLICA_A}  max_fails=1 fail_timeout=10s;   # máy A
+    server ${REPLICA_B}  max_fails=1 fail_timeout=10s;   # máy B (qua mạng overlay)
+    server ${REPLICA_C}  max_fails=1 fail_timeout=10s;   # [MÁY C]
 }
 
 server {
@@ -42,19 +49,19 @@ server {
     # ---------------- Đi thẳng tới từng bản sao, để so sánh chúng ----------------
     location = /lb/replicas.json {
         default_type application/json;
-        return 200 '["A","B"]';        # [MÁY C] đổi thành '["A","B","C"]'
+        return 200 '["A","B","C"]';
     }
-    location /replica/A/ { proxy_pass http://replica_api:8000/; }
-    location /replica/B/ { proxy_pass http://${IP_B}:8000/; }
-    # location /replica/C/ { proxy_pass http://${IP_C}:8000/; }   # [MÁY C]
+    location /replica/A/ { proxy_pass http://${REPLICA_A}/; }
+    location /replica/B/ { proxy_pass http://${REPLICA_B}/; }
+    location /replica/C/ { proxy_pass http://${REPLICA_C}/; }
 
     # ---------------- Màn hình quầy của từng chi nhánh ----------------
     # Quản lý ở trụ sở mở http://<IP máy A>/cn2/ mà không cần biết CN2 ở máy nào.
     # Dữ liệu của một chi nhánh chỉ nằm ở chi nhánh đó, nên không có bản sao
     # dự phòng: máy chi nhánh mất mạng thì trang này báo rõ thay vì treo.
-    location /cn1/ { proxy_pass http://branch_api:8000/;  error_page 502 504 = @branch_offline; }
-    location /cn2/ { proxy_pass http://${IP_B}:8001/;     error_page 502 504 = @branch_offline; }
-    # location /cn3/ { proxy_pass http://${IP_C}:8001/;   error_page 502 504 = @branch_offline; }  # [MÁY C]
+    location /cn1/ { proxy_pass http://${BRANCH_A}/; error_page 502 504 = @branch_offline; }
+    location /cn2/ { proxy_pass http://${BRANCH_B}/; error_page 502 504 = @branch_offline; }
+    location /cn3/ { proxy_pass http://${BRANCH_C}/; error_page 502 504 = @branch_offline; }
 
     location @branch_offline {
         default_type "text/html; charset=utf-8";

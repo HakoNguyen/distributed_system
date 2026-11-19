@@ -35,9 +35,9 @@ db/        SQL khởi tạo: product.sql (dùng chung), branch.sql, replica.sql
 common/    cấu hình, pool CSDL, model, phần dùng chung với Redpanda
 api/       main.py, routers/ (mỏng), services/ (SQL và quy tắc), workers/ (relay, sink, heartbeat)
 web/       pos.html, dashboard.html (HTML + JS thuần, không build)
-infra/     compose.yml, compose.test.yml, nginx/, env/ (mẫu .env cho từng máy)
+infra/     compose.yml, compose.local.yml (3 node một máy), compose.test.yml, nginx/, env/ (máy thật, local)
 tests/     pytest trên PostgreSQL thật, chạy trong container
-scripts/   tre.sh: giả lập độ trễ mạng trong container
+scripts/   tre.sh: giả lập độ trễ mạng trong container; net.sh: 3 node một máy, cut/heal
 ```
 
 ## Chạy
@@ -57,6 +57,11 @@ Cần Docker Desktop và một mạng overlay (Tailscale hoặc ZeroTier) nối 
 | `make reset` | Xóa dữ liệu và dựng lại từ đầu |
 | `make ps`, `make logs S=relay` | Trạng thái, log |
 
+**Chỉ có một máy:** `make local-up` dựng 3 node (A, B, C) trên cùng máy, nối nhau qua docker network `minigo-wan`
+thay cho mạng overlay; không cần `.env`. Mở http://localhost/ (nginx), POS CN1/CN2/CN3 ở cổng 8001/8011/8021,
+dashboard bản sao A/B/C ở 8000/8010/8020. `make cut N=b` rút mạng node B, `make heal N=b` cắm lại;
+`make local-down`, `make local-reset`. Chi tiết: [docs/demo.md](docs/demo.md) mục 3, phần "Chạy trên một máy".
+
 Không có `make` thì dùng thẳng `docker compose up -d --build`: file `.env` đã chỉ tới `infra/compose.yml`
 qua biến `COMPOSE_FILE`, nên mọi lệnh `docker compose ...` gõ từ gốc repo đều chạy được.
 Tài liệu API tự sinh: http://localhost:8001/docs (chi nhánh), http://localhost:8000/docs (bản sao).
@@ -69,7 +74,7 @@ Mỗi vòng trong [docs/plan.md](docs/plan.md) đi bốn bước bằng lệnh d
 | Lệnh | Việc làm |
 |---|---|
 | `make test` | pytest trong container, trên CSDL test riêng; chỉ cần Docker. Một thư mục: `make test T=tests/replica` |
-| `make config` | Kiểm tra file compose hợp lệ với env mẫu |
+| `make config` | Kiểm tra file compose hợp lệ với env mẫu; với 3 node một máy: cổng không trùng, đủ alias, nginx đủ địa chỉ |
 | `make check` | `config` + `test`; chạy trước khi báo xong một vòng |
 
 Quy ước code và làm việc với AI: [CLAUDE.md](CLAUDE.md). Quy ước kiểm thử: [docs/tests.md](docs/tests.md).

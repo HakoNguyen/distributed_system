@@ -71,19 +71,28 @@ việc so dấu vân tay do trình duyệt làm qua nginx. Kênh trực tiếp g
 ### Biến môi trường
 
 Đặt trong `.env` ở gốc repo (chép từ `infra/env/may-<x>.env`). `infra/compose.yml` đưa vào container; code đọc ở
-`common/config.py`.
+`common/config.py`. Chạy 3 node trên một máy thì mỗi node đọc `infra/env/local-<x>.env` (`make local-up`).
 
 | Biến | Đặt ở | Ai đọc | Ý nghĩa, ví dụ |
 |---|---|---|---|
 | `COMPOSE_FILE` | `.env` | docker compose | `infra/compose.yml`, để gõ `docker compose ...` từ gốc repo |
 | `COMPOSE_PROFILES` | `.env` máy A | docker compose | `core`: bật `redpanda`, `console`, `nginx` |
-| `IP_A`, `IP_B`, `IP_C` | `.env` | compose (redpanda), nginx | IP overlay từng máy; `IP_C` để trống khi không có máy C |
+| `IP_A` | `.env` | compose (redpanda) | Địa chỉ máy A mà Redpanda tự giới thiệu ở cửa ngoài `:19092`. Máy thật: IP overlay `100.64.0.1`; một máy: alias `redpanda-a` |
+| `REPLICA_A`, `REPLICA_B`, `REPLICA_C` | `.env`, giống nhau ở mọi file | nginx | `host:port` của bản sao từng node. Máy thật: `replica_api:8000` (A, cùng máy), `100.64.0.2:8000`; một máy: `replica-b:8000` |
+| `BRANCH_A`, `BRANCH_B`, `BRANCH_C` | `.env`, giống nhau ở mọi file | nginx | `host:port` của POS chi nhánh trên từng node. Máy thật: `branch_api:8000` (A), `100.64.0.2:8001`; một máy: `branch-b:8000` |
 | `NGINX_PORT` | `.env` (tuỳ chọn) | compose | Cổng host của nginx, mặc định `80` |
+| `BRANCH_PORT`, `REPLICA_PORT` | `.env` (tuỳ chọn) | compose | Cổng host của POS và dashboard, mặc định `8001`, `8000`. Một máy: node B `8011`, `8010`; node C `8021`, `8020` |
 | `NODE_NAME` | `.env` | `replica_api`, `sink` | Tên bản sao `A`, `B`, `C`; consumer group là `replica-<NODE_NAME>` |
 | `BRANCH_ID` | `.env` | `branch_api`, `relay` | Số chi nhánh `1`, `2`, `3` |
 | `BRANCH_NAME` | `.env` (tuỳ chọn) | `branch_api` | Tên hiển thị, mặc định `Chi nhánh <BRANCH_ID>` |
-| `KAFKA_BROKERS` | `.env` | `relay`, `sink` | Máy A `redpanda:9092`, máy khác `<IP_A>:19092` |
-| `REPLICA_URLS` | `.env` | `branch_api` | Bản sao nhận heartbeat: `A=http://replica_api:8000,B=http://<IP_B>:8000` |
+| `KAFKA_BROKERS` | `.env` | `relay`, `sink` | Máy A `redpanda:9092`, máy khác `<IP_A>:19092` (một máy: `redpanda-a:19092`) |
+| `REPLICA_URLS` | `.env` | `branch_api` | Bản sao nhận heartbeat: `A=http://replica_api:8000,B=http://100.64.0.2:8000,C=...`; một máy: `A=http://replica-a:8000,...` |
+
+**Chạy 3 node trên một máy** (`infra/compose.local.yml`): mỗi node là một compose project `minigo-a`, `minigo-b`,
+`minigo-c`; "mạng overlay" là docker network chung `minigo-wan`. Compose tự thêm tên service (`replica_api`) làm
+alias trên mọi network, nên trên `minigo-wan` tên service trỏ về cả ba node: giữa các node chỉ gọi bằng alias riêng
+`branch-<x>`, `replica-<x>`, `redpanda-a`. Lệnh: `make local-up`, `local-down`, `local-reset`, `make cut N=<x>`,
+`make heal N=<x>` (`docs/demo.md` mục "Chạy trên một máy").
 | `ROLE` | `infra/compose.yml` | mọi tiến trình Python | `branch` hoặc `replica` |
 | `DATABASE_URL` | `infra/compose.yml` | mọi tiến trình Python | CSDL của chính tiến trình: `postgresql://app:app@branch_db:5432/kho` hoặc `@replica_db` |
 | `TEST_DB_URL` | `infra/compose.test.yml` | `tests/conftest.py` | CSDL test, tên phải kết thúc bằng `_test`: `postgresql://app:app@test_db:5432/kho_test` |

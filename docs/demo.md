@@ -1,0 +1,315 @@
+# Kịch bản demo
+
+Dựng hệ thống trên 2–3 máy thật, rồi đi qua K1–K6 để chứng minh từng tính chất ở `spec.md` mục 2.
+Nên dựng đủ trên hai máy **sớm**, ít nhất hai ngày trước hôm demo, và chạy đủ K1 đến K5 ít nhất hai lần.
+
+## 1. Nối các máy bằng mạng overlay
+
+Mạng overlay là một mạng ảo dựng **trên** mạng thật. Mỗi máy nhận thêm một IP riêng (ví dụ `100.x.x.x`), và các máy gọi nhau bằng IP đó như đang cắm chung một switch, dù thực tế mỗi máy ở một nhà. Đây cũng chính là khái niệm *Overlay Network* ở slide "Xoá bỏ cấu trúc tập trung".
+
+Chọn **một** trong hai công cụ. **Nhóm nên dùng Tailscale** vì cài nhanh hơn.
+
+### Cách 1: Tailscale (khuyên dùng)
+
+1. Tải và cài tại https://tailscale.com/download trên **mọi máy**.
+2. Đăng nhập **cùng một tài khoản** (Google, Microsoft hay GitHub đều được) trên mọi máy.
+3. Xem IP overlay của từng máy: bấm biểu tượng Tailscale trên thanh tác vụ, hoặc chạy `tailscale ip -4`. IP có dạng `100.x.y.z`.
+
+### Cách 2: ZeroTier
+
+1. Tạo tài khoản ở https://my.zerotier.com, bấm **Create A Network**, chép **Network ID** (16 ký tự).
+2. Cài ZeroTier One trên mọi máy (https://www.zerotier.com/download), rồi Join network bằng Network ID đó.
+3. Trở lại trang quản lý, tick ô **Auth** cho từng máy mới xin vào. Máy nào chưa được tick thì chưa vào mạng được.
+4. Cột **Managed IPs** trên trang đó là IP overlay của từng máy.
+
+### Kiểm tra hai máy thấy nhau
+
+Từ máy B: `ping <IP overlay máy A>`. Có trả lời thì mạng overlay đã thông.
+
+### Mở cổng firewall
+
+| Máy | Cổng cần mở | Ai gọi vào |
+|---|---|---|
+| A | 80 (nginx), 8000, 19092 (Redpanda) | trình duyệt, chi nhánh các máy khác |
+| B, C | 8000 (bản sao), 8001 (POS) | nginx ở máy A, heartbeat từ chi nhánh khác |
+
+Trên Windows, mở PowerShell bằng quyền Administrator:
+
+```powershell
+# Máy A
+New-NetFirewallRule -DisplayName "MiniGo" -Direction Inbound -Protocol TCP -LocalPort 80,8000,19092 -Action Allow
+# Máy B, C
+New-NetFirewallRule -DisplayName "MiniGo" -Direction Inbound -Protocol TCP -LocalPort 8000,8001 -Action Allow
+```
+
+Trên Linux có ufw: `sudo ufw allow 80,8000,8001,19092/tcp`. macOS thường tự hỏi, bấm Allow.
+
+## 2. Điền file env
+
+Mỗi máy có một file mẫu trong `infra/env/`. Mở **cả hai** file `infra/env/may-a.env` và `infra/env/may-b.env`, thay các IP mẫu `100.64.0.1`, `100.64.0.2` bằng IP overlay thật. Chúng xuất hiện ở các dòng `IP_A`, `IP_B`, `KAFKA_BROKERS`, `REPLICA_URLS`.
+
+Rồi **trên mỗi máy**, copy file của máy đó thành `.env` ở gốc repo:
+
+```bash
+# Máy A — Windows: copy infra\env\may-a.env .env
+cp infra/env/may-a.env .env
+# Máy B — Windows: copy infra\env\may-b.env .env
+cp infra/env/may-b.env .env
+```
+
+Sau bước này, trên mọi máy, mọi lệnh đều là `docker compose ...` ngắn gọn, không cần thêm tham số.
+
+**Tại sao trong file env có chỗ ghi `replica_api:8000`, có chỗ ghi IP?** Container trên cùng một máy gọi nhau bằng tên service trong mạng Docker (nhanh, không phụ thuộc mạng ngoài). Container ở máy khác thì phải đi qua IP overlay.
+
+**Lỗi từng gặp:** đặt `IP_B` bằng IP máy A (hoặc cho cả `A=` lẫn `B=` trong `REPLICA_URLS` cùng một địa chỉ). Khi đó nginx "chia tải" giữa A và chính A, dòng B trên bảng bản sao là A tự so với mình, còn bản sao B thật không nhận heartbeat nào. `IP_B` luôn là IP overlay của **máy B**.
+
+## 3. Chạy
+
+**Máy A trước:**
+
+```bash
+make up        # hoặc: docker compose up -d --build
+docker compose ps
+```
+
+Phải thấy **9 container** (redpanda, console, nginx, và 6 container của chi nhánh và bản sao). Nếu không thấy redpanda, console, nginx, kiểm tra lại dòng `COMPOSE_PROFILES=core` trong `.env`, hoặc chạy `docker compose --profile core up -d`.
+
+**Rồi máy B:** cùng lệnh `make up`, phải thấy 6 container.
+
+**Kiểm tra từng bước, trên máy A:**
+
+| Mở | Phải thấy |
+|---|---|
+| http://localhost:8001 | POS CN1 Cầu Giấy |
+| http://localhost:8000 | Dashboard của bản sao A |
+| http://localhost/ | Dashboard qua nginx; dòng đầu ghi bản sao nào trả lời, có ô "Các bản sao trung tâm" |
+| http://localhost/cn2/ | POS của CN2, **đang chạy trên máy B** |
+| http://localhost:8080 | Redpanda Console, có topic `inventory.movement` |
+
+Trên dashboard qua nginx, sau khoảng 10 giây phải có đủ hai thẻ CN1, CN2, và bảng bản sao có hai dòng A, B cùng ghi **Khớp từng ô**. Đến đây thì hệ thống đã thông hoàn toàn.
+
+## 4. Giả lập độ trễ mạng
+
+Mạng overlay giữa hai laptop cạnh nhau thường chỉ trễ vài mili giây, trong khi chi nhánh Đà Nẵng nối về Hà Nội thật sẽ trễ hàng chục đến hàng trăm mili giây. Các công cụ dưới đây làm mạng xấu đi **có kiểm soát** để thấy hệ thống phản ứng ra sao.
+
+### Clumsy (Windows)
+
+1. Tải bản `clumsy-0.3-win64` tại https://github.com/jagt/clumsy/releases, giải nén.
+2. Chạy `clumsy.exe` **bằng quyền Administrator** (chuột phải, Run as administrator).
+3. Ô **Filtering**, gõ bộ lọc để chỉ làm xấu đường tới máy A:
+   ```
+   ip.DstAddr == 100.64.0.1 or ip.SrcAddr == 100.64.0.1
+   ```
+   (thay bằng IP overlay thật của máy A)
+4. Tick **Lag**, điền `300` ms. Muốn thêm mất gói thì tick **Drop**, điền `20` (%).
+5. Bấm **Start**. Bấm **Stop** để trả mạng về bình thường.
+
+Lưu ý: bộ lọc trên áp dụng cả hai chiều, nên RTT đo được sẽ tăng khoảng 2 × 300 = 600 ms.
+
+### tc netem (Linux)
+
+Chạy trên máy chi nhánh, áp lên card mạng overlay (`tailscale0` với Tailscale, `zt...` với ZeroTier; xem bằng `ip link`):
+
+```bash
+sudo tc qdisc add dev tailscale0 root netem delay 300ms             # trễ 300 ms
+sudo tc qdisc change dev tailscale0 root netem delay 300ms loss 20% # thêm mất 20% gói
+sudo tc qdisc del dev tailscale0 root                               # trả về bình thường
+```
+
+Vì chỉ áp lên card overlay, mạng Internet bình thường của máy không bị ảnh hưởng.
+
+### Phương án dự phòng: giả lập ngay trong container
+
+Nếu Clumsy hay tc trên máy thật không tác động tới traffic của Docker (kiểm tra bằng cách nhìn chip RTT trên POS, xem K5), dùng script có sẵn trong image chi nhánh. Nó chỉ làm trễ gói tin đi tới **một IP**, nên kết nối tới CSDL cục bộ vẫn nhanh:
+
+```bash
+# Trên máy B: làm trễ đường tới máy A, cho cả relay (sự kiện) và branch_api (heartbeat)
+docker compose exec relay      sh tre.sh on 300 100.64.0.1
+docker compose exec branch_api sh tre.sh on 300 100.64.0.1
+# thêm mất 20% gói:  ... sh tre.sh on 300 100.64.0.1 20
+# bỏ:                ... sh tre.sh off
+```
+
+## 5. Kịch bản K1–K6
+
+Bố trí màn hình khi thuyết trình:
+- **Máy A** chiếu lên: dashboard qua nginx `http://localhost/`.
+- **Máy B**: POS `http://localhost:8001` (đây là máy sẽ bị rút mạng).
+- Nếu được, mở thêm tab `http://localhost:8000` trên máy B, tức dashboard của riêng bản sao B, dùng cho K3.
+
+Bảng tóm tắt: **kịch bản nào chứng minh tính chất gì, nhìn ở đâu, thấy gì**:
+
+| # | Tính chất | Làm gì | Nhìn ở đâu | Thấy gì |
+|---|---|---|---|---|
+| K1 | Đồng bộ dữ liệu | Bán ở POS máy B | Dashboard máy A | Ô CN2 nháy vàng, giảm số trong 1–2 giây; bảng bản sao A và B cùng dấu vân tay, "Khớp từng ô" |
+| K2 | Trong suốt vị trí | Mở `http://<IP máy A>/` và `/cn2/` | Dòng "do bản sao máy … trả lời"; `curl -I` | Vệt `A B A B`: người dùng gõ một địa chỉ nhưng được hai máy phục vụ; `/cn2/` mở POS của máy B qua IP máy A |
+| K3 | Chịu lỗi, failover | Rút mạng máy B | Dashboard máy A; POS máy B | Dashboard vẫn chạy, vệt chỉ còn `A A A`; bản sao B "Không liên lạc được"; thẻ CN2 tô đỏ, số cũ; POS máy B vẫn bán, dải đỏ đếm sự kiện chờ |
+| K4 | Tự phục hồi | Cắm mạng lại, không làm gì khác | Bảng bản sao; thẻ CN2; vệt served-by | B "Đang đuổi theo, thiếu N sự kiện" rồi "Khớp từng ô"; CN2 hết đỏ, sự kiện "Đến muộn" hiện ra; vệt có lại `B` |
+| K5 | Độ trễ mạng | Bật Clumsy/tc trễ 300 ms trên máy B | Chip RTT trên POS máy B; thẻ CN2 trên dashboard | RTT từ vài ms lên hàng trăm ms, sự kiện trễ theo; nhưng POS vẫn báo "xử lý tại chỗ trong ~5 ms" |
+| K6 | Chống trùng (phụ) | Phát lại toàn bộ sự kiện | Dòng đầu dashboard | Số bản trùng bỏ qua tăng vọt, bảng tồn không đổi |
+
+Chi tiết từng kịch bản:
+
+### K1. Đồng bộ dữ liệu giữa các máy
+
+**Làm:** Bấm **Bán 1** vài lần trên POS máy B.
+
+**Thấy:** Trên dashboard máy A, ô CN2 nháy vàng và giảm số sau 1–2 giây, sự kiện hiện ở cột bên phải kèm độ trễ. Ở ô **Các bản sao trung tâm**, hai dòng A và B có **cùng dấu vân tay** (mã băm của toàn bộ bảng tồn) và cùng ghi *Khớp từng ô*.
+
+**Nói:** Dữ liệu được đồng bộ tự động giữa các máy bằng luồng sự kiện: chi nhánh phát, mỗi bản sao tự đọc và áp. Dấu vân tay giống nhau chứng minh hai máy giữ **đúng cùng một số liệu đến từng ô**, không chỉ "trông giống".
+
+**Nói rõ mức nhất quán:** Đây là **nhất quán cuối** (eventual consistency), không phải nhất quán mạnh. "Thời gian thực" ở đây nghĩa là trễ 1–2 giây, và con số trễ đó hiện ngay trên màn hình. Nếu thầy hỏi vì sao không làm nhất quán mạnh: vì muốn vậy thì mỗi lượt bán phải chờ mọi máy xác nhận, mất mạng là ngừng bán. Đó là đánh đổi CAP mà hệ chọn.
+
+### K2. Trong suốt vị trí qua nginx
+
+**Làm:**
+1. Mở `http://<IP máy A>/` (hoặc `http://localhost/` ngay trên máy A).
+2. Chạy vài lần: `curl -I http://localhost/api/stats`
+3. Mở `http://localhost/cn2/`.
+
+**Thấy:**
+- Dòng đầu dashboard ghi "Lần làm mới này do bản sao máy **A** trả lời", và vệt nhỏ bên cạnh xen kẽ `A B A B`: nginx chia lần lượt (round-robin).
+- `curl -I` in ra hai dòng `X-Served-By: replica-A` và `X-Upstream: ...`, đổi qua lại giữa các lần chạy.
+- `/cn2/` mở màn hình POS của CN2, dù CN2 chạy trên máy B.
+
+**Nói:** Người dùng chỉ biết **một địa chỉ**. Họ không biết, và không cần biết, phía sau có mấy máy, máy nào đang trả lời, CN2 nằm ở đâu. Đó là tính trong suốt vị trí. Nginx ở đây vừa là **bộ cân bằng tải** vừa là cổng vào duy nhất.
+
+### K3. Chịu lỗi và chuyển đổi khi lỗi: rút mạng máy B
+
+**Làm:** Tắt Wi-Fi (hoặc rút dây mạng) máy B. Trên POS máy B, bấm **Bán 20 đơn ngẫu nhiên**. Chờ khoảng 20 giây.
+
+**Thấy trên dashboard máy A (qua nginx):**
+- Dashboard **vẫn chạy bình thường**. Vệt served-by chỉ còn `A A A`: nginx phát hiện bản sao B không trả lời và tự chuyển hết sang A. Thỉnh thoảng một lần làm mới chậm khoảng 1 giây, vì nginx chờ B 1 giây rồi mới bỏ cuộc và thử lại (xem `proxy_connect_timeout` trong `infra/nginx/default.conf.template`).
+- Ô bản sao: dòng B ghi **Không liên lạc được**.
+- Sau 15 giây, thẻ CN2 tô sọc đỏ "Mất liên lạc … giây", cột CN2 chuyển xám nghiêng kèm nhãn "số cũ". CN1 vẫn chạy bình thường.
+- Mở `http://localhost/cn2/`: trang báo rõ "Không liên lạc được với chi nhánh này" thay vì treo.
+
+**Thấy trên máy B:**
+- POS **vẫn bán được**. Dải trạng thái chuyển đỏ "Chưa gửi được lên trung tâm từ … giây", số sự kiện chờ trong outbox tăng dần. Chip "Bản sao máy A: mất liên lạc".
+- Tab `localhost:8000` (bản sao B) vẫn mở được nhưng số đứng yên. Điều thú vị là **bản sao B thấy CN2 còn sống còn CN1 mất liên lạc**, ngược hẳn với bản sao A.
+
+**Nói:**
+- Lỗi cục bộ: một máy chết, phần còn lại vẫn chạy, và người dùng qua nginx gần như không nhận ra.
+- Mỗi bên mạng bị chia cắt vẫn phục vụ được, nhưng với số liệu cũ: **ưu tiên sẵn sàng hơn nhất quán**.
+- Hai bản sao có hai "góc nhìn" khác nhau về việc ai còn sống. Trong hệ phân tán **không có trạng thái toàn cục** mà mọi máy cùng thấy, và một máy không phân biệt được "máy kia chết" với "đường mạng tới máy kia bị đứt".
+
+### K4. Tự phục hồi: cắm mạng lại
+
+**Làm:** Bật Wi-Fi máy B. **Không bấm gì thêm.**
+
+**Thấy (trong khoảng 10–20 giây):**
+1. Relay máy B gửi bù toàn bộ sự kiện tồn đọng; dải đỏ trên POS biến mất.
+2. Dashboard máy A: các sự kiện của CN2 hiện ra, đánh dấu **Đến muộn** kèm độ trễ; thẻ CN2 hết đỏ.
+3. Ô bản sao: dòng B hiện **Đang đuổi theo, thiếu N sự kiện**, N giảm dần, rồi chuyển sang **Khớp từng ô**, cùng dấu vân tay với A.
+4. Vệt served-by có lại chữ `B`: nginx tự đưa bản sao B trở lại sau tối đa 10 giây (`fail_timeout=10s`).
+
+**Nói:** Ba cơ chế tự phục hồi chạy cùng lúc mà không ai can thiệp:
+- **Outbox** giữ sự kiện của chi nhánh, relay gửi tiếp từ đúng chỗ dừng.
+- **Redpanda** nhớ vị trí đã đọc của từng bản sao (offset của consumer group), nên sink B đọc tiếp đúng phần còn thiếu.
+- **Nginx** định kỳ thử lại bản sao đã bị gạch tên.
+
+**Biến thể nếu còn thời gian:** chỉ tắt tiến trình, không rút mạng.
+
+```bash
+docker compose stop sink     # trên máy B
+# bán vài đơn ở cả hai máy, nhìn dòng B "Đang đuổi theo" tăng dần
+docker compose start sink
+```
+
+### K5. Độ trễ mạng
+
+**Làm:** Trên máy B, bật Clumsy (hoặc tc) với trễ 300 ms tới máy A (mục 4). Bấm bán vài lần.
+
+**Thấy:**
+- Trên POS máy B: chip **Bản sao máy A** tăng từ vài chục ms lên khoảng 300–600 ms, còn chip **Bản sao máy B** vẫn thấp (cùng máy, không qua mạng).
+- Trên dashboard: thẻ CN2 có **Độ trễ vòng (RTT)** tăng tương ứng; sự kiện của CN2 có độ trễ lớn hơn hẳn CN1.
+- Nhưng dòng thông báo trên POS vẫn ghi **"Xử lý tại chỗ trong ~5 ms"**. Khách không phải chờ thêm chút nào.
+
+RTT đo được gồm cả thời gian bản sao xử lý heartbeat (ghi vào CSDL), nên khi chưa bật giả lập, con số thường khoảng 5–40 ms chứ không phải 0.
+
+**Nói:** Đặt hai con số cạnh nhau để so sánh. Nếu hệ thống tập trung, mỗi lượt bán phải đi về trung tâm ít nhất một vòng, tức ít nhất 300–600 ms, và thực tế nhiều hơn vì một transaction cần vài lượt hỏi đáp với CSDL. Kiến trúc này đẩy độ trễ ra khỏi đường bán hàng, chỉ để nó ảnh hưởng tới việc đồng bộ, đúng tinh thần Edge Computing: xử lý ở gần người dùng.
+
+**Thêm mất gói:** bật Drop 20% (hoặc `sh tre.sh on 300 <IP_A> 20`). Sự kiện đến chậm hơn, heartbeat chập chờn, nhưng sau khi tắt Clumsy, dấu vân tay hai bản sao vẫn khớp: **không mất sự kiện nào**, vì relay chỉ đánh dấu đã gửi khi Redpanda xác nhận.
+
+Nhớ **Stop** Clumsy (hoặc `tre.sh off`) sau khi xong.
+
+### K6 (phụ). Phát lại sự kiện, số vẫn đúng
+
+Trên máy A:
+
+```bash
+docker compose stop sink
+docker compose exec redpanda rpk group seek replica-A --to start
+docker compose start sink
+```
+
+Dòng đầu dashboard (khi bản sao A trả lời): số "bỏ qua … bản trùng" tăng vọt, bảng tồn không đổi, dấu vân tay A vẫn khớp B. Áp một sự kiện nhiều lần cho kết quả như áp một lần (idempotent), nên hệ thống được phép gửi lại thoải mái.
+
+## 6. Câu hỏi thường gặp khi bảo vệ
+
+| Câu hỏi | Từ khoá | Trả lời ngắn |
+|---|---|---|
+| Mất mạng giữa chừng thì sao? | Lỗi cục bộ, outbox | Quầy vẫn bán: sự kiện ghi vào `outbox` cùng transaction với trừ tồn, relay gửi bù khi có mạng. |
+| Làm sao biết dữ liệu hai nơi giống nhau? | Nhất quán cuối, dấu vân tay | Có mạng lại thì tự đồng bộ bù; so mã băm toàn bộ snapshot giữa các bản sao. |
+| Gửi lặp hai lần có trừ tồn hai lần không? | Lũy đẳng | Bản sao dùng khoá `(branch_id, movement_id)`; thấy rồi thì bỏ qua. Chi nhánh dùng `request_id`. |
+| Sao người dùng không cần biết IP từng máy? | Trong suốt vị trí | Nginx là cổng vào duy nhất, tự chọn bản sao và chia tải. |
+| Trung tâm sập thì cửa hàng có sập không? | Tách rời qua broker | Chi nhánh và trung tâm nói chuyện qua Redpanda, không cần chạy cùng lúc. |
+| Redpanda gặp sự cố thì xử lý thế nào? | Phòng, chống, phục hồi | Quầy vẫn bán, outbox giữ sự kiện; bật lại thì relay gửi bù, sink đọc tiếp từ offset. Redpanda là đường nhanh, không phải nguồn sự thật: nguồn sự thật là sổ cái chi nhánh. Chi tiết và phần còn thiếu: `plan.md` mục 3.1. |
+| ReplicaA và ReplicaB trao đổi thông tin bằng cơ chế gì? | Nhân bản máy trạng thái qua log chung | Hiện gián tiếp: cùng đọc một log trên Redpanda (mỗi bên một consumer group), áp lũy đẳng nên ra cùng trạng thái. Hai bên chưa gọi nhau trực tiếp; kênh trực tiếp (gossip): `plan.md` mục 3.2. |
+
+## 7. Bảng nghiệm thu chạy liên máy
+
+| Yêu cầu | Đạt khi | Kiểm ở đâu |
+|---|---|---|
+| Chạy trên ≥ 2 máy thật, nối bằng overlay | Hai máy thấy nhau qua IP `100.x` (Tailscale), cả hai chạy đủ container | `tailscale status`, `ping`, `docker compose ps` |
+| Trong suốt vị trí (Nginx, một IP) | Mở `http://<IP_A>/` thấy vệt `A B A B`; `/cn2/` mở được POS máy B | Dashboard qua Nginx, `curl -I` |
+| Chịu lỗi & Failover | Rút mạng B: Dashboard Nginx không báo lỗi, vệt chỉ còn `A`, POS B vẫn bán bình thường | Dashboard A, POS B |
+| Tự phục hồi (Eventual Consistency) | Cắm lại mạng: outbox về 0 trong ≤ 30s, dấu vân tay A và B khớp trong ≤ 60s | Bảng bản sao, POS B |
+| Đồng bộ dữ liệu real-time | Bán ở B, Dashboard A đổi trong ≤ 3s; A và B cùng dấu vân tay (Fingerprint) | Dashboard A |
+| Độ trễ mạng (RTT) | Bật Clumsy trễ 300ms: RTT ≥ 500ms nhưng POS vẫn "xử lý tại chỗ" < 20ms | Chip RTT trên POS B, thẻ CN2 |
+| Chống trùng (Idempotency) | Phát lại toàn bộ sự kiện: số bản trùng tăng vọt, dấu vân tay không đổi | Tab `http://localhost:8000` |
+
+## 8. Lỗi hay gặp
+
+| Triệu chứng | Nguyên nhân | Cách xử lý |
+|---|---|---|
+| `Chưa đặt ... trong .env` | Chưa copy file env thành `.env` | Mục 2 |
+| Máy A không có redpanda, nginx | Profile core chưa bật | Kiểm tra `COMPOSE_PROFILES=core`, hoặc `docker compose --profile core up -d` |
+| Relay máy B báo `Message timed out` | Không tới được `IP_A:19092` | `ping` IP máy A; kiểm tra firewall máy A; kiểm tra `KAFKA_BROKERS` |
+| Relay nối được rồi lỗi, log nhắc `localhost` hay `redpanda` | `IP_A` trong `.env` máy A sai nên Redpanda tự giới thiệu sai địa chỉ | Sửa `.env` máy A, chạy lại `docker compose up -d` |
+| Bảng bản sao dòng B luôn "Không liên lạc được" | Nginx không tới được `IP_B:8000` | Mở firewall máy B cổng 8000; từ máy A: `curl http://<IP_B>:8000/health` |
+| Không có ô "Các bản sao trung tâm" | Đang mở dashboard trực tiếp ở cổng 8000, không qua nginx | Mở `http://localhost/` (cổng 80) |
+| Cổng 80 bị chiếm (Windows hay gặp) | IIS hoặc ứng dụng khác | Thêm `NGINX_PORT=8088` vào `.env`, mở `http://localhost:8088/` |
+| Thêm máy C mà nginx lỗi khởi động | Bỏ `#` các dòng `[MÁY C]` nhưng chưa đặt `IP_C` | Thêm `IP_C=...` vào `.env` máy A |
+| Sửa `db/*.sql` không thấy tác dụng | Script khởi tạo chỉ chạy khi volume trống | `make reset` trên **mọi máy** |
+
+**Làm lại từ đầu:** chạy `make reset` trên **tất cả** các máy, máy A trước.
+
+## 9. Lệnh hay dùng
+
+Lệnh make (chạy từ gốc repo, trong Git Bash hoặc shell Linux/macOS; định nghĩa ở `Makefile`):
+
+| Lệnh | Việc làm |
+|---|---|
+| `make up` | Dựng và chạy mọi container của máy này |
+| `make down` | Dừng, giữ dữ liệu |
+| `make reset` | Xoá dữ liệu rồi dựng lại; chạy trên MỌI máy, máy A trước |
+| `make ps` | Liệt kê container |
+| `make logs` | Log, mặc định 100 dòng cuối mọi service. `S=relay` chọn service, `N=200` đổi số dòng |
+| `make test` | pytest trong container trên CSDL test. `T=tests/replica` chạy một thư mục |
+| `make config` | Kiểm tra file compose với env mẫu, không chạy container |
+| `make check` | `config` + `test`; chạy trước khi báo xong một vòng |
+
+Mọi lệnh đọc `.env` ở gốc repo; dùng file khác: `make up ENV_FILE=infra/env/may-b.env`.
+
+```bash
+docker compose ps                         # container nào đang chạy
+docker compose logs -f relay              # relay gửi được không
+docker compose logs -f sink               # sink đang áp sự kiện nào
+docker compose exec redpanda rpk group list                    # (máy A) các consumer group
+docker compose exec redpanda rpk group describe replica-B      # (máy A) bản sao B còn thiếu bao nhiêu (cột LAG)
+curl -I http://localhost/api/stats        # (máy A) bản sao nào trả lời
+docker compose exec branch_db psql -U app -d kho -c "SELECT branch_id, count(*) FROM inventory GROUP BY 1;"
+```
+
+Tài liệu API tự sinh: `http://localhost:8001/docs` (chi nhánh), `http://localhost:8000/docs` (bản sao).

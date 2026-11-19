@@ -1,0 +1,177 @@
+"""
+Nghiệp vụ của MỘT chi nhánh: tồn kho, sổ cái, outbox.
+
+Nguyên tắc quan trọng nhất: chỉ nói chuyện với CSDL của chính chi nhánh mình
+(chạy trên cùng máy). Vì vậy khi mất mạng tới trung tâm, quầy vẫn bán hàng
+bình thường. Việc báo lên trung tâm là việc của relay (workers/relay.py),
+chạy riêng và không làm chậm việc bán.
+"""
+import random
+
+from fastapi import HTTPException
+from psycopg.errors import UniqueViolation
+from psycopg.types.json import Jsonb
+
+from common.config import BRANCH_ID
+from common.db import pool
+
+
+# ---------------------------------------------------------------------------
+# 1. Khởi tạo dữ liệu lần đầu
+# ---------------------------------------------------------------------------
+def seed_if_empty() -> None:
+    """Lần chạy đầu tiên: tạo tồn kho ban đầu cho chi nhánh này.
+
+    Mỗi dòng tồn ban đầu cũng được ghi thành một biến động loại INIT và
+    đưa vào outbox. Nhờ vậy trung tâm nhận được số tồn ban đầu qua đúng
+    con đường sự kiện như mọi lần bán sau này, không cần cơ chế riêng.
+    """
+    with pool.connection() as conn, conn.transaction():
+        if conn.execute("SELECT 1 FROM inventory LIMIT 1").fetchone():
+            return
+        products = conn.execute("SELECT product_id FROM product ORDER BY product_id").fetchall()
+        for p in products:
+            pid = p["product_id"]
+            # Số tồn giả lập, khác nhau giữa các chi nhánh nhưng cố định giữa các lần chạy
+            qty = 40 + (pid * 37 * BRANCH_ID) % 120
+            conn.execute(
+                "INSERT INTO inventory (product_id, branch_id, qty_on_hand) VALUES (%s, %s, %s)",
+                (pid, BRANCH_ID, qty),
+            )
+            record_movement(conn, pid, "INIT", qty, qty, None)
+    print(f"[api cn{BRANCH_ID}] Đã tạo tồn kho ban đầu cho {len(products)} mã hàng")
+
+
+def record_movement(conn, product_id, move_type, qty_delta, qty_after, request_id):
+    """Ghi một dòng vào sổ cái stock_movement VÀ một dòng vào outbox.
+
+    Hàm này luôn được gọi BÊN TRONG transaction của nghiệp vụ. Hoặc cả ba
+    việc (sửa tồn, ghi sổ cái, ghi outbox) cùng thành công, hoặc không việc
+    nào xảy ra. Đây là toàn bộ ý tưởng của outbox pattern.
+    """
+    m = conn.execute(
+        """INSERT INTO stock_movement (product_id, move_type, qty_delta, qty_after, request_id)
+           VALUES (%s, %s, %s, %s, %s)
+           RETURNING movement_id, created_at""",
+        (product_id, move_type, qty_delta, qty_after, request_id),
+    ).fetchone()
+
+    event = {
+        "branch_id": BRANCH_ID,
+        "movement_id": m["movement_id"],
+        "product_id": product_id,
+        "move_type": move_type,
+        "qty_delta": qty_delta,
+        "qty_after": qty_after,
+        "node_time": m["created_at"].isoformat(),  # giờ theo đồng hồ chi nhánh
+    }
+    conn.execute(
+        "INSERT INTO outbox (event_id, payload) VALUES (%s, %s)",
+        (m["movement_id"], Jsonb(event)),
+    )
+    return m["movement_id"]
+
+
+# ---------------------------------------------------------------------------
+# 2. Bán và nhập hàng
+# ---------------------------------------------------------------------------
+def change_stock(product_id: int, delta: int, move_type: str,
+                 expected_version: int | None, request_id: str | None) -> dict:
+    try:
+        return _change_stock(product_id, delta, move_type, expected_version, request_id)
+    except UniqueViolation:
+        # Hai yêu cầu cùng request_id tới gần như cùng lúc: yêu cầu sau
+        # đụng ràng buộc UNIQUE. Trả kết quả của yêu cầu trước.
+        with pool.connection() as conn:
+            return _replayed_result(conn, request_id)
+
+
+def _replayed_result(conn, request_id):
+    m = conn.execute(
+        "SELECT movement_id, product_id, qty_after FROM stock_movement WHERE request_id = %s",
+        (request_id,),
+    ).fetchone()
+    return {"movement_id": m["movement_id"], "product_id": m["product_id"],
+            "qty_on_hand": m["qty_after"], "replayed": True}
+
+
+def _change_stock(product_id, delta, move_type, expected_version, request_id):
+    with pool.connection() as conn, conn.transaction():
+        # (a) Yêu cầu này đã xử lý rồi? Thì trả lại kết quả cũ.
+        if request_id and conn.execute(
+            "SELECT 1 FROM stock_movement WHERE request_id = %s", (request_id,)
+        ).fetchone():
+            return _replayed_result(conn, request_id)
+
+        # (b) Sửa tồn bằng MỘT câu UPDATE có điều kiện.
+        #     Postgres khoá dòng trong lúc sửa, nên hai quầy cùng bán một mã
+        #     hàng sẽ xếp hàng lần lượt, không bao giờ bán lố tồn.
+        sql = """UPDATE inventory
+                 SET qty_on_hand = qty_on_hand + %(delta)s,
+                     version = version + 1,
+                     updated_at = now()
+                 WHERE product_id = %(pid)s
+                   AND qty_on_hand + %(delta)s >= 0"""
+        if expected_version is not None:
+            sql += " AND version = %(ver)s"
+        row = conn.execute(
+            sql + " RETURNING qty_on_hand, version",
+            {"delta": delta, "pid": product_id, "ver": expected_version},
+        ).fetchone()
+
+        # (c) Không dòng nào được sửa: tìm lý do để trả mã lỗi đúng.
+        if row is None:
+            cur = conn.execute(
+                "SELECT qty_on_hand, version FROM inventory WHERE product_id = %s", (product_id,)
+            ).fetchone()
+            if cur is None:
+                raise HTTPException(404, {"error": "product_not_found"})
+            if expected_version is not None and cur["version"] != expected_version:
+                raise HTTPException(409, {"error": "version_conflict",
+                                          "current_version": cur["version"]})
+            raise HTTPException(422, {"error": "insufficient_stock",
+                                      "qty_on_hand": cur["qty_on_hand"]})
+
+        # (d) Ghi sổ cái + outbox trong CÙNG transaction.
+        movement_id = record_movement(conn, product_id, move_type, delta,
+                                      row["qty_on_hand"], request_id)
+
+    return {"movement_id": movement_id, "product_id": product_id,
+            "qty_on_hand": row["qty_on_hand"], "version": row["version"]}
+
+
+def random_sales(count: int) -> dict:
+    """Bán nhanh `count` đơn ngẫu nhiên, mỗi đơn 1–3 đơn vị. Dùng khi demo."""
+    with pool.connection() as conn:
+        pids = [r["product_id"] for r in conn.execute("SELECT product_id FROM inventory").fetchall()]
+    done, skipped = 0, 0
+    for _ in range(count):
+        try:
+            change_stock(random.choice(pids), -random.randint(1, 3), "SALE", None, None)
+            done += 1
+        except HTTPException:  # hết hàng mã đó thì bỏ qua
+            skipped += 1
+    return {"sold": done, "skipped_out_of_stock": skipped}
+
+
+# ---------------------------------------------------------------------------
+# 3. Truy vấn
+# ---------------------------------------------------------------------------
+def list_inventory() -> list[dict]:
+    with pool.connection() as conn:
+        return conn.execute(
+            """SELECT i.product_id, p.name, p.unit, p.reorder_point,
+                      i.qty_on_hand, i.version, i.updated_at
+               FROM inventory i JOIN product p USING (product_id)
+               ORDER BY i.product_id"""
+        ).fetchall()
+
+
+def outbox_backlog() -> dict:
+    """Số sự kiện chưa gửi và tuổi của sự kiện cũ nhất (giây)."""
+    with pool.connection() as conn:
+        return conn.execute(
+            """SELECT count(*) AS n,
+                      extract(epoch FROM now() - min(created_at)) AS oldest_s
+               FROM outbox WHERE sent_at IS NULL"""
+        ).fetchone()

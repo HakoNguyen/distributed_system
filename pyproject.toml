@@ -1,0 +1,7 @@
+# Chỉ dùng cho cấu hình công cụ; dependency nằm trong requirements*.txt
+[tool.pytest.ini_options]
+# Trong container, api/ nằm ở /app cạnh common/; test dựng lại bố cục đó
+pythonpath = [".", "api", "tests"]
+testpaths = ["tests"]
+# importlib: cho phép trùng tên file test giữa các thư mục tests/<module>/
+addopts = "--import-mode=importlib -p no:cacheprovider"

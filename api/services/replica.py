@@ -160,4 +160,25 @@ def query_digest(conn):
 
 
 def query_stats(conn):
-    return conn.execute("SELECT processed, duplicates, last_event_at FROM sink_stats").fetchone()
+    return conn.execute(
+        """SELECT processed, duplicates, last_event_at,
+                  broker_ok, broker_lost_at, lag, broker_checked_at
+           FROM sink_stats"""
+    ).fetchone()
+
+
+# ---------------------------------------------------------------------------
+# 4. Trạng thái đường đọc Redpanda (sink gọi mỗi 5 giây, SAU khi đã hỏi Redpanda xong)
+# ---------------------------------------------------------------------------
+def record_broker_check(ok: bool, lag: int | None) -> None:
+    """ok=False: giữ mốc mất broker đầu tiên của đợt này và giữ lag cũ.
+    ok=True: xoá mốc mất, ghi lag mới. Dashboard dựa vào đây để báo "Đồng bộ dừng từ HH:MM:SS"."""
+    with pool.connection() as conn:
+        conn.execute(
+            """UPDATE sink_stats
+               SET broker_ok = %(ok)s,
+                   broker_checked_at = now(),
+                   broker_lost_at = CASE WHEN %(ok)s THEN NULL ELSE coalesce(broker_lost_at, now()) END,
+                   lag = coalesce(%(lag)s::bigint, lag)""",
+            {"ok": ok, "lag": lag},
+        )

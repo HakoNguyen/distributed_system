@@ -45,13 +45,15 @@ def database():
 
 @pytest.fixture
 def db(database):
-    """Mỗi test bắt đầu với CSDL trống, chỉ còn danh mục sản phẩm và dòng bộ đếm của sink."""
+    """Mỗi test bắt đầu với CSDL trống, chỉ còn danh mục sản phẩm và các bảng một dòng
+    (bộ đếm của sink, trạng thái relay)."""
     with pool.connection() as conn:
         tables = [r["tablename"] for r in conn.execute(
             "SELECT tablename FROM pg_tables WHERE schemaname = 'public' AND tablename <> 'product'"
         ).fetchall()]
         conn.execute(f"TRUNCATE {', '.join(tables)} RESTART IDENTITY CASCADE")
         conn.execute("INSERT INTO sink_stats (id) VALUES (1)")
+        conn.execute("INSERT INTO relay_status (id) VALUES (1)")
 
 
 def _client(router) -> TestClient:

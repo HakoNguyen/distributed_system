@@ -31,3 +31,16 @@ def snapshot_cell(branch_id: int, product_id: int) -> dict | None:
             " WHERE branch_id = %s AND product_id = %s",
             (branch_id, product_id),
         ).fetchone()
+
+
+def unsent_ids() -> list[int]:
+    """event_id của các dòng outbox chưa gửi, theo thứ tự."""
+    with pool.connection() as conn:
+        rows = conn.execute("SELECT event_id FROM outbox WHERE sent_at IS NULL ORDER BY event_id").fetchall()
+    return [r["event_id"] for r in rows]
+
+
+def one_row(table: str) -> dict:
+    """Dòng duy nhất của bảng một dòng (relay_status, sink_stats)."""
+    with pool.connection() as conn:
+        return conn.execute(f"SELECT * FROM {table}").fetchone()

@@ -8,7 +8,8 @@ ROLE = os.environ["ROLE"]
 # CSDL của CHÍNH tiến trình này: branch_db hoặc replica_db (tên service trong compose)
 DATABASE_URL = os.environ["DATABASE_URL"]
 
-# Redpanda ở máy A. Trên máy A là "redpanda:9092", máy khác là "<IP máy A>:19092".
+# Cụm Redpanda, mỗi máy một broker: liệt kê cả ba "<host>:19092", giống nhau ở mọi máy.
+# Topic do service topic-init tạo (infra/compose.yml), relay và sink không tự tạo.
 KAFKA_BROKERS = os.environ.get("KAFKA_BROKERS", "")
 TOPIC = "inventory.movement"
 
@@ -44,3 +45,5 @@ NODE_NAME = os.environ.get("NODE_NAME", "?")
 CONSUMER_GROUP = f"replica-{NODE_NAME}"
 # Quá bấy nhiêu giây không nhận heartbeat thì coi chi nhánh là mất liên lạc
 NODE_TIMEOUT_S = 15
+# Sink tự kiểm đường đọc Redpanda (broker_ok, lag trong sink_stats) mỗi bấy nhiêu giây
+BROKER_CHECK_EVERY_S = 5

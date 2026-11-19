@@ -7,6 +7,7 @@ bình thường. Việc báo lên trung tâm là việc của relay (workers/rel
 chạy riêng và không làm chậm việc bán.
 """
 import random
+from collections.abc import Callable
 
 from fastapi import HTTPException
 from psycopg.errors import UniqueViolation
@@ -175,3 +176,46 @@ def outbox_backlog() -> dict:
                       extract(epoch FROM now() - min(created_at)) AS oldest_s
                FROM outbox WHERE sent_at IS NULL"""
         ).fetchone()
+
+
+# ---------------------------------------------------------------------------
+# 4. Relay (workers/relay.py gọi): gửi outbox và ghi trạng thái gửi
+# ---------------------------------------------------------------------------
+def relay_batch(send: Callable[[list[dict]], None], limit: int = 200) -> int:
+    """Gửi một lô outbox chưa gửi bằng `send`, rồi mới đánh dấu sent_at (PT-03). Trả số sự kiện đã gửi.
+
+    `send` nhận các payload theo thứ tự event_id và ném lỗi nếu Redpanda chưa xác nhận đủ cả lô.
+    Lời gọi mạng nằm NGOÀI transaction: đọc lô, gửi, rồi mới mở transaction mới để đánh dấu đúng
+    các event_id của lô. Lỗi giữa chừng -> không đánh dấu gì, lần sau gửi lại (at-least-once).
+    Mỗi chi nhánh chỉ có một relay nên không cần khoá dòng.
+    """
+    with pool.connection() as conn:
+        rows = conn.execute(
+            "SELECT event_id, payload FROM outbox WHERE sent_at IS NULL ORDER BY event_id LIMIT %s",
+            (limit,),
+        ).fetchall()
+    if not rows:
+        return 0
+    send([r["payload"] for r in rows])
+    with pool.connection() as conn:
+        conn.execute("UPDATE outbox SET sent_at = now() WHERE event_id = ANY(%s)",
+                     ([r["event_id"] for r in rows],))
+    return len(rows)
+
+
+def record_relay_result(error: str | None) -> None:
+    """Ghi kết quả một lần gửi: None = Redpanda đã xác nhận cả lô; chuỗi = lỗi.
+    failing_since giữ mốc lỗi ĐẦU TIÊN của đợt lỗi, để POS hiện "lỗi từ HH:MM:SS"."""
+    with pool.connection() as conn:
+        if error is None:
+            conn.execute("UPDATE relay_status SET last_ok_at = now(), failing_since = NULL")
+        else:
+            conn.execute(
+                "UPDATE relay_status SET last_error = %s, failing_since = coalesce(failing_since, now())",
+                (error,),
+            )
+
+
+def relay_status() -> dict:
+    with pool.connection() as conn:
+        return conn.execute("SELECT last_ok_at, failing_since, last_error FROM relay_status").fetchone()

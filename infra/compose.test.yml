@@ -1,0 +1,33 @@
+# CSDL test và ảnh chạy pytest. Chạy từ gốc repo: make test
+#   docker compose -f infra/compose.test.yml run --rm --build tests
+# CSDL nằm trên tmpfs: tắt là mất, mỗi phiên test tự dựng lại schema từ db/*.sql.
+name: minigo-test
+
+services:
+  test_db:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: app
+      POSTGRES_PASSWORD: app
+      POSTGRES_DB: kho_test
+    tmpfs:
+      - /var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD", "pg_isready", "-h", "127.0.0.1", "-U", "app", "-d", "kho_test"]
+      interval: 2s
+      timeout: 3s
+      retries: 30
+
+  tests:
+    build:
+      context: ..
+      dockerfile: api/Dockerfile
+      target: test
+    environment:
+      TEST_DB_URL: postgresql://app:app@test_db:5432/kho_test
+    volumes:
+      - ..:/repo
+    depends_on:
+      test_db:
+        condition: service_healthy
+    command: ["pytest"]

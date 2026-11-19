@@ -1,0 +1,180 @@
+# =====================================================================
+# MỘT file compose cho MỌI máy. Máy nào chạy gì là do file .env quyết định:
+#   - Mọi máy: 1 chi nhánh (branch_*, relay) + 1 bản sao trung tâm (replica_*, sink)
+#   - Riêng máy A: thêm nhóm "core" (redpanda, console, nginx)
+#     nhờ dòng COMPOSE_PROFILES=core trong .env của máy A.
+#
+# Chạy từ gốc repo: make up
+#   docker compose --env-file .env -f infra/compose.yml up -d --build
+# .env ở gốc repo, chép từ infra/env/may-<x>.env.
+# =====================================================================
+name: minigo
+
+# Cả 4 tiến trình Python dùng chung một image (api/Dockerfile)
+x-api-build: &api_build
+  context: ..
+  dockerfile: api/Dockerfile
+
+services:
+
+  # ------------------------------------------------------------------
+  # CHI NHÁNH: dữ liệu của riêng chi nhánh này, bán được cả khi mất mạng
+  # ------------------------------------------------------------------
+  branch_db:
+    image: postgres:16-alpine
+    environment: &pg_env
+      POSTGRES_USER: app
+      POSTGRES_PASSWORD: app
+      POSTGRES_DB: kho
+    volumes:
+      # File trong /docker-entrypoint-initdb.d chạy theo thứ tự tên, CHỈ ở lần khởi tạo đầu
+      - ../db/product.sql:/docker-entrypoint-initdb.d/01-product.sql:ro
+      - ../db/branch.sql:/docker-entrypoint-initdb.d/02-schema.sql:ro
+      - branch_pgdata:/var/lib/postgresql/data
+    healthcheck: &pg_health
+      # -h 127.0.0.1: chỉ báo sẵn sàng khi Postgres chạy thật, không phải lúc đang khởi tạo
+      test: ["CMD", "pg_isready", "-h", "127.0.0.1", "-U", "app", "-d", "kho"]
+      interval: 3s
+      timeout: 3s
+      retries: 30
+    restart: unless-stopped
+
+  # Dịch vụ quầy + màn hình POS: http://localhost:8001
+  branch_api:
+    build: *api_build
+    environment:
+      ROLE: branch
+      BRANCH_ID: ${BRANCH_ID:?Chưa đặt BRANCH_ID trong .env}
+      BRANCH_NAME: ${BRANCH_NAME}
+      DATABASE_URL: postgresql://app:app@branch_db:5432/kho
+      REPLICA_URLS: ${REPLICA_URLS:?Chưa đặt REPLICA_URLS trong .env}
+    ports:
+      - "8001:8000"
+    cap_add: [NET_ADMIN]   # cho phép dùng `tc` để giả lập độ trễ (scripts/tre.sh)
+    depends_on:
+      branch_db:
+        condition: service_healthy
+    restart: unless-stopped
+
+  # Đẩy outbox lên Redpanda ở máy A
+  relay:
+    build: *api_build
+    command: ["python", "-m", "workers.relay"]
+    environment:
+      ROLE: branch
+      BRANCH_ID: ${BRANCH_ID}
+      DATABASE_URL: postgresql://app:app@branch_db:5432/kho
+      KAFKA_BROKERS: ${KAFKA_BROKERS:?Chưa đặt KAFKA_BROKERS trong .env}
+    cap_add: [NET_ADMIN]
+    depends_on:
+      branch_db:
+        condition: service_healthy
+    restart: unless-stopped
+
+  # ------------------------------------------------------------------
+  # BẢN SAO TRUNG TÂM: bảng tồn toàn chuỗi, dựng lại từ sự kiện
+  # ------------------------------------------------------------------
+  replica_db:
+    image: postgres:16-alpine
+    environment: *pg_env
+    volumes:
+      - ../db/product.sql:/docker-entrypoint-initdb.d/01-product.sql:ro
+      - ../db/replica.sql:/docker-entrypoint-initdb.d/02-schema.sql:ro
+      - replica_pgdata:/var/lib/postgresql/data
+    healthcheck: *pg_health
+    restart: unless-stopped
+
+  # Dashboard của bản sao này: http://localhost:8000
+  replica_api:
+    build: *api_build
+    environment:
+      ROLE: replica
+      NODE_NAME: ${NODE_NAME:?Chưa đặt NODE_NAME trong .env}
+      DATABASE_URL: postgresql://app:app@replica_db:5432/kho
+    ports:
+      - "8000:8000"
+    depends_on:
+      replica_db:
+        condition: service_healthy
+    restart: unless-stopped
+
+  # Đọc Redpanda, cập nhật bảng tổng hợp của bản sao này
+  sink:
+    build: *api_build
+    command: ["python", "-m", "workers.sink"]
+    environment:
+      ROLE: replica
+      NODE_NAME: ${NODE_NAME}
+      DATABASE_URL: postgresql://app:app@replica_db:5432/kho
+      KAFKA_BROKERS: ${KAFKA_BROKERS}
+    depends_on:
+      replica_db:
+        condition: service_healthy
+    restart: unless-stopped
+
+  # ------------------------------------------------------------------
+  # CORE: chỉ chạy trên máy A
+  # ------------------------------------------------------------------
+  redpanda:
+    profiles: [core]
+    image: docker.redpanda.com/redpandadata/redpanda:v24.2.8
+    command:
+      - redpanda
+      - start
+      - --mode=dev-container
+      - --smp=1
+      - --memory=1G
+      # Hai "cửa" nghe kết nối:
+      #   internal :9092  cho container cùng máy A
+      #   external :19092 cho máy khác, đi qua mạng overlay
+      - --kafka-addr=internal://0.0.0.0:9092,external://0.0.0.0:19092
+      # Địa chỉ Redpanda "tự giới thiệu" với client ở từng cửa.
+      # Cửa ngoài PHẢI là IP overlay của máy A, nếu không máy khác sẽ lỗi.
+      - --advertise-kafka-addr=internal://redpanda:9092,external://${IP_A:?Chưa đặt IP_A trong .env}:19092
+      - --rpc-addr=redpanda:33145
+      - --advertise-rpc-addr=redpanda:33145
+    ports:
+      - "19092:19092"
+    volumes:
+      - redpanda_data:/var/lib/redpanda/data
+    healthcheck:
+      test: ["CMD-SHELL", "rpk cluster health | grep -E 'Healthy:.+true' || exit 1"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+    restart: unless-stopped
+
+  # Giao diện xem topic và từng sự kiện: http://localhost:8080
+  console:
+    profiles: [core]
+    image: docker.redpanda.com/redpandadata/console:v2.7.2
+    environment:
+      KAFKA_BROKERS: redpanda:9092
+    ports:
+      - "8080:8080"
+    depends_on:
+      redpanda:
+        condition: service_healthy
+    restart: unless-stopped
+
+  # Cổng vào duy nhất: http://<IP máy A>/
+  nginx:
+    profiles: [core]
+    image: nginx:1.27-alpine
+    environment:
+      IP_B: ${IP_B:?Chưa đặt IP_B trong .env}
+      IP_C: ${IP_C:-}
+    volumes:
+      # Ảnh nginx tự thay ${IP_B}... trong file .template rồi chép vào conf.d
+      - ./nginx/default.conf.template:/etc/nginx/templates/default.conf.template:ro
+    ports:
+      - "${NGINX_PORT:-80}:80"
+    depends_on:
+      - replica_api
+      - branch_api
+    restart: unless-stopped
+
+volumes:
+  branch_pgdata:
+  replica_pgdata:
+  redpanda_data:

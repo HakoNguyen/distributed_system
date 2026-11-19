@@ -51,7 +51,7 @@ Mỗi máy có một file mẫu trong `infra/env/`. Mở **cả ba** file `infra
 
 `REPLICA_B`, `BRANCH_B`... là địa chỉ đầy đủ `host:port` mà nginx (máy A) dùng để gọi bản sao và POS của từng máy: `100.64.0.2:8000` là bản sao máy B, `100.64.0.2:8001` là POS CN2 (cổng host).
 
-**Chỉ có 2 máy thật?** Vẫn chạy được, nhưng dòng C trên bảng bản sao ghi "Không liên lạc được", `/cn3/` báo mất liên lạc, và cứ khoảng 10 giây nginx chờ máy C 1 giây. Muốn gọn: trong `infra/nginx/default.conf.template` thêm `#` trước dòng `server ${REPLICA_C}` và bỏ `"C"` ở `/lb/replicas.json`.
+**Chỉ có 2 máy thật?** Vẫn chạy được, nhưng dòng C trên bảng bản sao ghi "Không liên lạc được", `/cn3/` báo mất liên lạc, và thỉnh thoảng một request qua nginx chậm khoảng 1 giây (mỗi worker nginx tự thử lại máy C sau 10 giây). Muốn gọn: trong `infra/nginx/default.conf.template` thêm `#` trước dòng `server ${REPLICA_C}` và bỏ `"C"` ở `/lb/replicas.json`.
 
 Rồi **trên mỗi máy**, copy file của máy đó thành `.env` ở gốc repo:
 

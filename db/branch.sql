@@ -38,3 +38,12 @@ CREATE TABLE outbox (
 
 -- Chỉ mục riêng cho các dòng chưa gửi, để relay quét nhanh dù outbox dài.
 CREATE INDEX outbox_unsent ON outbox (event_id) WHERE sent_at IS NULL;
+
+-- Trạng thái gửi của relay, hiện lên POS ("Gửi lên Redpanda: lỗi từ HH:MM:SS"). Đúng một dòng.
+CREATE TABLE relay_status (
+    id            INT PRIMARY KEY DEFAULT 1 CHECK (id = 1),
+    last_ok_at    TIMESTAMPTZ,  -- lần cuối Redpanda xác nhận cả một lô
+    failing_since TIMESTAMPTZ,  -- lần lỗi đầu tiên của đợt lỗi hiện tại; NULL = đang gửi được
+    last_error    TEXT          -- lỗi gần nhất
+);
+INSERT INTO relay_status (id) VALUES (1);

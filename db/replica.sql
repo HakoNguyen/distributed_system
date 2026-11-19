@@ -43,11 +43,16 @@ CREATE TABLE event_log (
 );
 CREATE INDEX event_log_recent ON event_log (received_at DESC);
 
--- Bộ đếm của sink, hiện lên dashboard.
+-- Bộ đếm của sink và trạng thái đường đọc Redpanda, hiện lên dashboard.
 CREATE TABLE sink_stats (
     id            INT    PRIMARY KEY DEFAULT 1 CHECK (id = 1),
     processed     BIGINT NOT NULL DEFAULT 0,  -- sự kiện mới đã áp vào snapshot
     duplicates    BIGINT NOT NULL DEFAULT 0,  -- sự kiện trùng đã bỏ qua
-    last_event_at TIMESTAMPTZ
+    last_event_at TIMESTAMPTZ,
+    -- Sink tự kiểm broker mỗi 5 giây (workers/sink.py)
+    broker_ok         BOOLEAN,      -- NULL = chưa kiểm lần nào
+    broker_lost_at    TIMESTAMPTZ,  -- lần lỗi đầu tiên của đợt mất broker hiện tại; NULL = đang đọc được
+    lag               BIGINT,       -- số sự kiện trên Redpanda bản sao này chưa áp (đo lần được gần nhất)
+    broker_checked_at TIMESTAMPTZ   -- lần kiểm gần nhất; cũ quá nghĩa là chính sink đã dừng
 );
 INSERT INTO sink_stats (id) VALUES (1);

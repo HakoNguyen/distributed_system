@@ -1,8 +1,9 @@
 # =====================================================================
 # MỘT file compose cho MỌI máy. Máy nào chạy gì là do file .env quyết định:
 #   - Mọi máy: 1 chi nhánh (branch_*, relay) + 1 bản sao trung tâm (replica_*, sink)
-#   - Riêng máy A: thêm nhóm "core" (redpanda, console, nginx)
-#     nhờ dòng COMPOSE_PROFILES=core trong .env của máy A.
+#   - Profile "broker" (mọi máy): 1 broker Redpanda; ba máy thành cụm 3 broker
+#   - Profile "core" (chỉ máy A): topic-init, console, nginx
+#     COMPOSE_PROFILES=core,broker ở máy A, =broker ở máy B, C.
 #
 # Chạy từ gốc repo: make up
 #   docker compose --env-file .env -f infra/compose.yml up -d --build
@@ -57,7 +58,7 @@ services:
         condition: service_healthy
     restart: unless-stopped
 
-  # Đẩy outbox lên Redpanda ở máy A
+  # Đẩy outbox lên cụm Redpanda
   relay:
     build: *api_build
     command: ["python", "-m", "workers.relay"]
@@ -114,48 +115,81 @@ services:
     restart: unless-stopped
 
   # ------------------------------------------------------------------
-  # CORE: chỉ chạy trên máy A
+  # BROKER (profile broker, mọi máy): mỗi máy một broker, ba broker thành một cụm Raft.
+  # Mất 1/3 vẫn còn đa số: tự bầu leader mới. Mất 2/3: không ghi được, quầy vẫn bán (outbox giữ).
   # ------------------------------------------------------------------
   redpanda:
-    profiles: [core]
+    profiles: [broker]
     image: docker.redpanda.com/redpandadata/redpanda:v24.2.8
     command:
       - redpanda
       - start
-      - --mode=dev-container
+      # KHÔNG dùng --mode=dev-container: chế độ đó bỏ fsync và bật write caching, nên acks=all
+      # chưa chắc đã ghi đĩa. Image vẫn để developer_mode (nhờ vậy chạy được với 512M), nên
+      # ghi rõ từng cờ, và tắt bỏ-fsync, write caching, tự tạo topic (docs/plan.md mục 6).
+      - --overprovisioned
       - --smp=1
-      - --memory=1G
-      # Hai "cửa" nghe kết nối:
-      #   internal :9092  cho container cùng máy A
-      #   external :19092 cho máy khác, đi qua mạng overlay
-      - --kafka-addr=internal://0.0.0.0:9092,external://0.0.0.0:19092
-      # Địa chỉ Redpanda "tự giới thiệu" với client ở từng cửa.
-      # Cửa ngoài PHẢI là IP overlay của máy A (một máy: alias redpanda-a), nếu không máy khác sẽ lỗi.
-      - --advertise-kafka-addr=internal://redpanda:9092,external://${IP_A:?Chưa đặt IP_A trong .env}:19092
-      - --rpc-addr=redpanda:33145
-      - --advertise-rpc-addr=redpanda:33145
+      - --memory=512M
+      - --reserve-memory=0M
+      - --check=false
+      - --unsafe-bypass-fsync=false
+      - --node-id=${BRANCH_ID}   # broker 1, 2, 3 = máy A, B, C
+      # Một cửa :19092 cho mọi client (relay, sink, console ở mọi máy). Mỗi broker tự giới thiệu
+      # địa chỉ riêng của máy mình (máy thật: IP overlay; một máy: alias redpanda-b).
+      - --kafka-addr=0.0.0.0:19092
+      - --advertise-kafka-addr=${BROKER_HOST:?Chưa đặt BROKER_HOST trong .env}:19092
+      - --rpc-addr=0.0.0.0:33145
+      - --advertise-rpc-addr=${BROKER_HOST}:33145
+      # Cả ba broker; cụm chỉ lập lần đầu khi đủ mọi seed (empty_seed_starts_cluster=false)
+      - --seeds=${BROKER_SEEDS:?Chưa đặt BROKER_SEEDS trong .env}
+      - --set
+      - redpanda.empty_seed_starts_cluster=false
+      - --set
+      - redpanda.write_caching_default=false
+      - --set
+      - redpanda.auto_create_topics_enabled=false
     ports:
-      - "19092:19092"
+      - "19092:19092"   # client từ máy khác
+      - "33145:33145"   # broker máy khác (Raft)
     volumes:
       - redpanda_data:/var/lib/redpanda/data
     healthcheck:
-      test: ["CMD-SHELL", "rpk cluster health | grep -E 'Healthy:.+true' || exit 1"]
+      # Chỉ hỏi broker này. `rpk cluster health` báo hỏng cả cụm khi 1/3 broker dừng.
+      test: ["CMD", "curl", "-sf", "http://localhost:9644/v1/status/ready"]
       interval: 5s
       timeout: 5s
       retries: 20
     restart: unless-stopped
+
+  # ------------------------------------------------------------------
+  # CORE: chỉ chạy trên máy A
+  # ------------------------------------------------------------------
+  # Tạo topic MỘT lần, ở một chỗ. Chờ tới khi cụm trả lời (cụm chỉ lập khi đủ mọi seed).
+  # RF = số broker trong BROKER_SEEDS (3; 2 máy thật thì 1, vì Redpanda chỉ nhận RF lẻ).
+  topic-init:
+    profiles: [core]
+    image: docker.redpanda.com/redpandadata/redpanda:v24.2.8
+    environment:
+      KAFKA_BROKERS: ${KAFKA_BROKERS}
+      BROKER_SEEDS: ${BROKER_SEEDS}
+    entrypoint: ["/bin/sh", "-c"]
+    command:
+      - |
+        rf=$$(echo "$$BROKER_SEEDS" | tr ',' '\n' | grep -c .)
+        until out=$$(rpk topic create inventory.movement -p 3 -r $$rf -c write.caching=false -X brokers=$$KAFKA_BROKERS 2>&1) &&
+              echo "$$out" | grep -qE 'inventory.movement +(OK|TOPIC_ALREADY_EXISTS)'; do
+          echo "Chờ cụm broker: $$out"; sleep 3
+        done
+        echo "$$out (RF=$$rf)"
 
   # Giao diện xem topic và từng sự kiện: http://localhost:8080
   console:
     profiles: [core]
     image: docker.redpanda.com/redpandadata/console:v2.7.2
     environment:
-      KAFKA_BROKERS: redpanda:9092
+      KAFKA_BROKERS: ${KAFKA_BROKERS}
     ports:
       - "8080:8080"
-    depends_on:
-      redpanda:
-        condition: service_healthy
     restart: unless-stopped
 
   # Cổng vào duy nhất: http://<IP máy A>/

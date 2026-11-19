@@ -7,7 +7,7 @@
 # nói chuyện với node khác thì nối vào đó; CSDL và console chỉ ở mạng riêng của node.
 #
 # Compose tự thêm tên service (replica_api) làm alias trên MỌI network, nên trên
-# minigo-wan tên đó trỏ về cả ba node. Vì vậy mỗi node có alias riêng (replica-b...),
+# minigo-wan tên đó trỏ về cả ba node. Vì vậy mỗi node có alias riêng (replica-b, redpanda-b...),
 # gắn trên cả mạng riêng lẫn minigo-wan: rút mạng node B thì CN2 vẫn gọi được bản sao B.
 # (DNS của Docker không phân biệt hoa thường: alias replica-B gọi bằng replica-b.)
 # =====================================================================
@@ -23,17 +23,31 @@ services:
       default: { aliases: ["replica-${NODE_NAME}"] }
       wan: { aliases: ["replica-${NODE_NAME}"] }
 
+  # Tên của container đã dừng (broker bị tắt ở K7) bị DNS của Docker Desktop hỏi ra ngoài, mất ~8 giây
+  # mới báo "không có"; trong lúc đó thư viện Kafka treo lô đang gửi. Bỏ cuộc sau 1 giây (đo: còn ~2 giây).
+  # Máy thật gọi nhau bằng IP nên không cần.
   relay:
     networks: [default, wan]
+    dns_opt: ["timeout:1", "attempts:1"]
 
   sink:
     networks: [default, wan]
+    dns_opt: ["timeout:1", "attempts:1"]
 
-  # Chỉ node A (profile core)
+  # Mỗi node một broker (profile broker). Không publish cổng ra host: 3 broker cùng máy sẽ đụng
+  # 19092/33145, và các node gọi nhau qua minigo-wan bằng alias redpanda-a/b/c.
   redpanda:
+    ports: !reset []
     networks:
       default: { aliases: ["redpanda-${NODE_NAME}"] }
       wan: { aliases: ["redpanda-${NODE_NAME}"] }
+
+  # Chỉ node A (profile core). topic-init, console cần gọi broker của node khác.
+  topic-init:
+    networks: [default, wan]
+
+  console:
+    networks: [default, wan]
 
   nginx:
     networks: [default, wan]

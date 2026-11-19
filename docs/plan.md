@@ -5,13 +5,13 @@ Mục tiêu trước mắt: xử lý hai câu hỏi của thầy (mục 3), trê
 
 ## 1. Tiến độ
 
-**Vòng tiếp theo: vòng 2** (sau khi vòng 1 được merge). Mỗi lần chỉ làm một vòng, đúng thứ tự: vòng sau dựa trên hạ tầng của vòng trước.
+**Vòng tiếp theo: vòng 3** (sau khi vòng 2 được merge). Mỗi lần chỉ làm một vòng, đúng thứ tự: vòng sau dựa trên hạ tầng của vòng trước.
 
 | Vòng | Phạm vi | Nhánh | Việc | Quy tắc | Kịch bản | Trạng thái |
 |---|---|---|---|---|---|---|
 | 0 | khung | `base/restructure-workflow` | Gộp về một bản theo cấu trúc mới; quy trình 4 bước; hạ tầng test, 5 test nền | PT-02, 04, 05, 08, 09 | K1, K6 trên 1 node | xong, đã merge (PR #1) |
-| 1 | `infra` | `infra/local-multi-node` | Mô phỏng 3 máy trên một máy, `make cut/heal` | — | K1–K6 trên 3 node | đã code (19/11/2026), K1–K6 đạt trên 3 node một máy; chờ commit |
-| 2 | `infra`, `branch`, `replica`, `web` | `broker/redpanda-cluster` | Cụm 3 broker; trạng thái đồng bộ trên POS và dashboard | PT-03, PT-06, PT-11 | K7a, K7b, K7c | chưa làm |
+| 1 | `infra` | `infra/local-multi-node` | Mô phỏng 3 máy trên một máy, `make cut/heal` | — | K1–K6 trên 3 node | xong, đã merge (PR #2) |
+| 2 | `infra`, `branch`, `replica`, `web` | `broker/redpanda-cluster` | Cụm 3 broker; trạng thái đồng bộ trên POS và dashboard | PT-03, PT-06, PT-11 | K7a, K7b, K7c | đã code (19/11/2026); `make check` xanh (16 test); K1–K7c đạt trên 3 node một máy; chờ commit |
 | 3 | `replica`, `branch`, `web` | `replica/gossip-reconcile` | Gossip giữa bản sao; đối soát với chi nhánh | PT-04, PT-05, PT-07, PT-10 | K8, K9 | chưa làm |
 | 4 | `web` | `web/sync-dashboard` | Topology sống, đọc đơn điệu, truy vết sự kiện, POS | — | chạy tay K1–K9 | chưa làm |
 | 5 | `replica`, `scripts`, `docs` | `chore/hardening` | `dead_letter`, `scripts/chaos-check.sh`, chốt tài liệu | PT-06 | `chaos-check.sh` | chưa làm |
@@ -38,15 +38,16 @@ vào `docs/` ở `/test-first`, trước khi viết code xử lý.
 
 ### 3.1. Redpanda gặp sự cố thì xử lý thế nào?
 
-**Hiện trạng.** Một broker duy nhất ở máy A, `--mode=dev-container`, topic `replication_factor=1`.
+**Hiện trạng (sau vòng 2).** Cụm 3 broker, mỗi máy một broker, topic RF=3, write caching và bỏ-fsync đã tắt.
 
 | Khi Redpanda chết | Đã có chưa |
 |---|---|
 | Quầy vẫn bán, outbox giữ sự kiện | Có |
 | Bật lại: relay gửi bù, sink đọc tiếp từ offset; container tự khởi động lại | Có |
-| Dashboard báo "đồng bộ đang dừng". Hiện heartbeat vẫn tới (HTTP thẳng) nên chi nhánh hiện "còn sống" mà số đứng yên | Vòng 2 |
+| Dashboard báo "đồng bộ dừng từ HH:MM:SS" tách khỏi "còn sống" (heartbeat HTTP thẳng); POS báo "Gửi lên Redpanda: lỗi từ HH:MM:SS" | Có (vòng 2, K7b) |
+| Mất 1/3 broker: tự bầu leader mới, không mất sự kiện | Có (vòng 2, K7a) |
 | Mất dữ liệu Redpanda: sự kiện bản sao chưa kịp đọc mất hẳn, dấu vân tay lệch mãi | Vòng 3 |
-| `dev-container` bật write caching: `acks=all` chưa chắc đã ghi đĩa | Vòng 2 |
+| `dev-container` bật write caching và bỏ fsync: `acks=all` chưa chắc đã ghi đĩa | Đã sửa (vòng 2): bỏ `--mode=dev-container`, `--unsafe-bypass-fsync=false`, `write_caching_default=false` |
 
 **Trả lời theo ba tầng.**
 1. **Phòng**: cụm 3 broker, mỗi node một broker, topic RF=3. Raft: mất 1/3 vẫn còn đa số, tự bầu leader mới,
@@ -100,7 +101,8 @@ Mỗi vòng chỉ tạo hoặc sửa các chỗ sau; file nào ngoài mẫu thì
 
 Docker hiện có 10,7 GB, stack `market-*` đang chiếm ~6 GB. Ba node MiniGo (3 broker × ~1 GB, 6 Postgres,
 12 tiến trình Python) cần ~4–5 GB: **tắt stack market-\* trước khi chạy 3 node**.
-Đo ở vòng 1 (1 broker, 21 container): khoảng 1,1 GB.
+Đo ở vòng 1 (1 broker, 21 container): khoảng 1,1 GB. Đo ở vòng 2 (3 broker `--memory=512M`, 23 container): khoảng 1,23 GB,
+mỗi broker ~130 MB.
 
 ### Vòng 1 – Mô phỏng 3 máy trên một máy (`infra/local-multi-node`)
 
@@ -124,7 +126,7 @@ Xong khi: K1–K6 chạy được với 3 node trên một máy; `make cut N=b` 
 
 | Việc | File |
 |---|---|
-| Mỗi node chạy một broker (A, B, C = broker 0, 1, 2; `--seeds` trỏ cả ba). `KAFKA_BROKERS` liệt kê cả ba | `infra/compose.yml`, `infra/env/*` |
+| Mỗi node chạy một broker (A, B, C = broker 1, 2, 3 = `BRANCH_ID`; `--seeds` trỏ cả ba). `KAFKA_BROKERS` liệt kê cả ba | `infra/compose.yml`, `infra/env/*` |
 | Topic RF=3, tạo ở một chỗ (service `topic-init` chạy `rpk topic create` một lần) thay vì `common/kafka.py`. Tắt write caching để `acks=all` nghĩa là đã ghi đĩa trên đa số | `infra/compose.yml`, xoá `common/kafka.py` |
 | Relay ghi `relay_status` (lần gửi được cuối, lỗi cuối); POS hiện "Gửi lên Redpanda: lỗi từ HH:MM:SS" | `db/branch.sql`, `api/workers/relay.py`, `api/services/branch.py`, `api/routers/branch.py`, `web/pos.html` |
 | Sink kiểm tra broker mỗi 5 giây, ghi `broker_ok`, `broker_lost_at`, `lag` vào `sink_stats`; dashboard tách "đồng bộ dừng" khỏi "chi nhánh còn sống" | `db/replica.sql`, `api/workers/sink.py`, `api/services/replica.py`, `web/dashboard.html` |
@@ -191,8 +193,14 @@ Xong khi: chạy tay K1–K9 nhìn đúng trên giao diện.
 
 ## 6. Giả định còn mở
 
-- Redpanda chạy được với `--memory=512M` mỗi broker (đỡ RAM); chưa thử. Không được thì giữ 1G và tắt stack market-\*.
-- Cờ tắt write caching (`write_caching_default`) đặt được lúc khởi tạo cụm; kiểm ở `/plan-task` vòng 2.
+- ~~Redpanda chạy được với `--memory=512M`~~ **Đã kiểm ở vòng 2: được** (log cảnh báo "below recommended" nhưng chạy;
+  ~130 MB mỗi broker). Phải giữ `developer_mode` của image: tắt nó thì broker đòi tối thiểu 1 GB.
+- ~~Cờ tắt write caching đặt được lúc khởi tạo cụm~~ **Đã kiểm ở vòng 2: được**, bằng `--set
+  redpanda.write_caching_default=false` (nhập vào cấu hình cụm lúc lập cụm) và `-c write.caching=false` khi tạo topic.
+  Phát hiện thêm: image để `developer_mode` nên rpk tự thêm `--unsafe-bypass-fsync=true` (không fsync gì cả), kể cả khi
+  bỏ `--mode=dev-container`; phải ghi rõ `--unsafe-bypass-fsync=false`.
+- Máy thật: container gọi được IP overlay của chính máy mình (`KAFKA_BROKERS` có cả địa chỉ máy A cho relay máy A);
+  chưa kiểm vì chỉ có một máy.
 - ~~Compose tự thêm tên service làm alias trên mọi network~~ **Đã kiểm ở vòng 1: đúng.** Trên `minigo-wan`,
   `replica_api` trỏ về cả ba node; các node gọi nhau bằng alias riêng (`replica-b`), gắn trên cả mạng riêng của
   node lẫn `minigo-wan` (`infra/compose.local.yml`).

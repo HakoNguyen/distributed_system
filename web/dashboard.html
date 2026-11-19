@@ -34,6 +34,10 @@
   h1 small { font-weight: 400; color: var(--muted); font-size: 1rem; margin-left: .5rem; }
   #stats { color: var(--muted); }
   #stats b { color: var(--ink); font-weight: 600; }
+  #sync { color: var(--muted); }
+  #sync b { color: var(--ink); font-weight: 600; }
+  #sync.down { color: var(--alert); font-weight: 600; }
+  #sync.down b { color: var(--alert); }
   #served { color: var(--muted); display: flex; align-items: center; gap: .5rem; flex-wrap: wrap; }
   #served b { color: var(--ink); }
   #served .trail { display: inline-flex; gap: 3px; }
@@ -73,6 +77,7 @@
     outline: 2px solid var(--alert); outline-offset: -2px;
   }
   .node.down .state { color: var(--alert); }
+  .node.sync-off .state { color: var(--pending); }
   .empty { padding: 1.25rem; color: var(--muted); background: var(--card); border-radius: 10px; }
 
   /* ---------- Bảng tồn + dòng sự kiện ---------- */
@@ -114,6 +119,7 @@
   <h1>MiniGo <small>Tồn kho toàn chuỗi</small></h1>
   <div>
     <div id="stats">Đang tải…</div>
+    <div id="sync" role="status"></div>
     <div id="served"></div>
   </div>
 </header>
@@ -165,7 +171,28 @@ async function getJSON(url, signal) {
   return r.json();
 }
 
-function renderNodes(nodes) {
+const clock = (ts) => new Date(ts).toLocaleTimeString("vi-VN", { hour12: false });
+
+// Đường đọc Redpanda của bản sao đang trả lời (sink tự kiểm mỗi 5 giây, sink_stats).
+// Tách khỏi "còn sống": heartbeat đi HTTP thẳng, nên mất broker thì chi nhánh vẫn sống mà số đứng yên.
+function syncState(d) {
+  if (d.broker_checked_at && Date.now() - Date.parse(d.broker_checked_at) > 15000)
+    return { down: true, text: `Đồng bộ dừng: sink của bản sao này không chạy (kiểm lần cuối ${ago(d.broker_checked_at)})` };
+  if (d.broker_ok === false)
+    return { down: true, since: d.broker_lost_at,
+             text: `Đồng bộ dừng từ <b>${clock(d.broker_lost_at)}</b>: bản sao này không đọc được Redpanda. Chi nhánh vẫn bán, số dưới đây là số cũ` };
+  if (d.broker_ok === true)
+    return { down: false, text: `Đồng bộ qua Redpanda đang chạy, còn <b>${d.lag}</b> sự kiện chưa áp` };
+  return { down: false, text: "Đồng bộ qua Redpanda: đang kiểm…" };
+}
+
+function renderSync(s) {
+  const el = document.getElementById("sync");
+  el.className = s.down ? "down" : "";
+  el.innerHTML = s.text;
+}
+
+function renderNodes(nodes, sync) {
   const el = document.getElementById("nodes");
   if (!nodes.length) {
     el.innerHTML = `<div class="empty">Chưa chi nhánh nào gửi heartbeat tới bản sao này. Kiểm tra dòng REPLICA_URLS trong file .env của các máy, và chắc rằng cổng 8000 của máy này đã mở.</div>`;
@@ -173,12 +200,16 @@ function renderNodes(nodes) {
   }
   el.innerHTML = nodes.map((n) => {
     const down = !n.alive;
-    const state = down ? `Mất liên lạc ${ago(n.last_seen).replace(" trước", "")}` : "Đang hoạt động";
+    // Còn sống (heartbeat) nhưng đồng bộ dừng (broker): hai trạng thái khác nhau
+    const syncOff = !down && sync.down;
+    const state = down ? `Mất liên lạc ${ago(n.last_seen).replace(" trước", "")}`
+                : syncOff ? "Còn sống, đồng bộ dừng" : "Đang hoạt động";
     const backlog = down ? `${n.outbox_backlog}, lần báo cuối` : n.outbox_backlog;
-    return `<article class="node ${down ? "down" : ""}" style="--c:${color(n.branch_id)}">
+    return `<article class="node ${down ? "down" : syncOff ? "sync-off" : ""}" style="--c:${color(n.branch_id)}">
       <h2>CN${n.branch_id} ${esc(n.branch_name)}</h2>
       <div class="state">${state}</div>
       <dl>
+        <dt>Đồng bộ qua Redpanda</dt><dd>${sync.down ? (sync.since ? `dừng từ ${clock(sync.since)}` : "dừng") : "đang chạy"}</dd>
         <dt>Sự kiện chờ gửi</dt><dd class="${n.outbox_backlog > 0 ? "backlog-hot" : ""}">${backlog}</dd>
         <dt>Độ trễ vòng (RTT)</dt><dd>${n.rtt_ms == null ? "–" : n.rtt_ms + " ms"}</dd>
         <dt>Lệch giờ đo được</dt><dd title="Giờ chi nhánh trừ giờ trung tâm, gồm cả thời gian gói tin đi trên mạng">${fmtMs(n.clock_offset_ms)}</dd>
@@ -295,8 +326,9 @@ async function tick() {
   const err = document.getElementById("conn-error");
   try {
     const o = await getJSON("api/overview");
-    renderNodes(o.nodes); renderInventory(o.inventory, o.nodes); renderEvents(o.events);
-    renderStats(o.digest); renderServed(o.served_by);
+    const sync = syncState(o.digest);
+    renderNodes(o.nodes, sync); renderInventory(o.inventory, o.nodes); renderEvents(o.events);
+    renderStats(o.digest); renderSync(sync); renderServed(o.served_by);
     err.style.display = "none";
   } catch (e) {
     err.textContent = `Không đọc được dữ liệu (${e.message}). Nếu đang mở qua nginx, mọi bản sao có thể đều đang mất liên lạc.`;

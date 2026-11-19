@@ -50,6 +50,8 @@ def status():
         "oldest_unsent_s": round(oldest, 1),
         # Sự kiện cũ nhất đã nằm chờ quá lâu -> relay đang không gửi được
         "sync_stuck": b["n"] > 0 and oldest >= STUCK_AFTER_S,
+        # Relay ghi lại lần gửi cuối: failing_since khác None -> "Gửi lên Redpanda: lỗi từ HH:MM:SS"
+        "relay": branch.relay_status(),
         "links": [
             {"name": l["name"], "ok": l["ok"], "rtt_ms": l["rtt_ms"],
              "seconds_since_ok": None if l["last_ok"] is None

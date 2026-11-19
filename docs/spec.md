@@ -19,44 +19,42 @@ Một chuỗi cửa hàng tiện lợi có nhiều chi nhánh ở nhiều thành
 | Đồng bộ dữ liệu (data consistency) | Sự kiện đi qua Redpanda tới mọi bản sao; so bằng dấu vân tay | K1, K4 |
 | Chịu được độ trễ mạng | Bán tại chỗ, đồng bộ bất đồng bộ; đo RTT trực tiếp | K5 |
 | Chống trùng (idempotency) | Khoá `(branch_id, movement_id)` ở bản sao | K6 |
+| Chịu lỗi của broker | Cụm 3 broker Redpanda (Raft, RF=3, `acks=all` có fsync); đồng bộ dừng thì POS và dashboard báo rõ, quầy vẫn bán | K7a, K7b, K7c |
 
 ## 3. Kiến trúc
 
 ```
                            Người dùng chỉ biết MỘT địa chỉ: http://<IP máy A>/
                                               │
- ┌────────────────────────── MÁY A ───────────┼──────────────────────────────┐
- │                                            ▼                              │
- │   ┌──────────┐  sự kiện   ┌───────────────────────┐                       │
- │   │ redpanda │◀────────── │ nginx (cổng vào duy   │── chia tải ──┐        │
- │   └────┬─────┘            │ nhất, chia tải)       │              │        │
- │        │                  └──────────┬────────────┘              │        │
- │        │ đọc                         ▼                           │        │
- │        ├──────────▶ sink A ──▶ replica_db A ◀── replica_api A    │        │
- │        │                                        (dashboard)      │        │
- │        │          relay ◀── branch_db CN1 ◀── branch_api CN1     │        │
- │        │ ▲                                    (POS Cầu Giấy)     │        │
- └────────┼─┼───────────────────────────────────────────────────────┼────────┘
-          │ │ sự kiện của CN1                                        │
-     ═════╪═╪════════════ mạng overlay (Tailscale / ZeroTier) ═══════╪═══════
-          │                                                          │
- ┌────────┼──────────────────────── MÁY B ───────────────────────────┼────────┐
- │        │ đọc                                                      ▼        │
- │        └──────────▶ sink B ──▶ replica_db B ◀── replica_api B (dashboard)  │
- │                                                                            │
- │   gửi sự kiện lên redpanda máy A ◀── relay ◀── branch_db CN2 ◀── branch_api│
- │                                                                  CN2 (POS) │
+ ┌──────────────────────── MÁY A ─────────────┼───────────────────────────────┐
+ │                                            ▼                               │
+ │  POS CN1 ─▶ branch_api ─▶ branch_db ─▶ relay ─┐   nginx (cổng vào duy nhất,│
+ │                                               │   chia tải các bản sao)    │
+ │  dashboard ◀ replica_api ◀ replica_db ◀ sink ◀┤                            │
+ │                                         ┌─────┴──────┐                     │
+ │                                         │ broker 1   │  console, topic-init│
+ └─────────────────────────────────────────┼────────────┼─────────────────────┘
+     ══════════ mạng overlay (Tailscale / ZeroTier) ═══ │ cụm Redpanda (Raft) ══
+ ┌──────────────────── MÁY B ──────────────┼────────────┼─────────────────────┐
+ │                                         │ broker 2   │                     │
+ │  POS CN2 ─▶ branch_api ─▶ branch_db ─▶ relay ─┤  topic inventory.movement  │
+ │  dashboard ◀ replica_api ◀ replica_db ◀ sink ◀┘  3 phân hoạch, RF=3        │
  └────────────────────────────────────────────────────────────────────────────┘
+   MÁY C giống máy B (broker 3, CN3, bản sao C). Relay, sink mỗi máy nói chuyện với CẢ cụm.
 ```
 
-Mọi máy chạy **giống hệt nhau**: một chi nhánh (`branch_db`, `branch_api`, `relay`) và một bản sao trung tâm
-(`replica_db`, `replica_api`, `sink`). Riêng máy A chạy thêm nhóm **core**: `redpanda`, `console`, `nginx`.
+Mọi máy chạy **giống hệt nhau**: một chi nhánh (`branch_db`, `branch_api`, `relay`), một bản sao trung tâm
+(`replica_db`, `replica_api`, `sink`) và một broker Redpanda (profile **broker**). Ba broker thành **một cụm**: mỗi
+phân hoạch có 3 bản (RF=3), một leader, ghi xong khi đa số (2/3) đã ghi đĩa. Mất 1 broker thì cụm tự bầu leader mới;
+mất 2 broker thì không ghi được nữa, quầy vẫn bán và POS, dashboard báo "đồng bộ dừng" (PT-11). Riêng máy A chạy thêm
+nhóm **core**: `nginx`, `console`, `topic-init` (tạo topic một lần khi cụm đã đủ broker).
 
 | | Máy A | Máy B | Máy C (tuỳ chọn) |
 |---|---|---|---|
 | Chi nhánh | CN1 Cầu Giấy | CN2 Hà Đông | CN3 Đà Nẵng |
 | Bản sao trung tâm | Bản sao A | Bản sao B | Bản sao C |
-| Core | redpanda, console, nginx | — | — |
+| Broker | broker 1 | broker 2 | broker 3 |
+| Core | nginx, console, topic-init | — | — |
 | File env | `infra/env/may-a.env` | `infra/env/may-b.env` | `infra/env/may-c.env` |
 
 **Tại sao mỗi máy một bản sao trung tâm?** Nếu chỉ có một dashboard ở máy A, thì "chịu lỗi" chỉ là lời nói. Có
@@ -76,8 +74,9 @@ việc so dấu vân tay do trình duyệt làm qua nginx. Kênh trực tiếp g
 | Biến | Đặt ở | Ai đọc | Ý nghĩa, ví dụ |
 |---|---|---|---|
 | `COMPOSE_FILE` | `.env` | docker compose | `infra/compose.yml`, để gõ `docker compose ...` từ gốc repo |
-| `COMPOSE_PROFILES` | `.env` máy A | docker compose | `core`: bật `redpanda`, `console`, `nginx` |
-| `IP_A` | `.env` | compose (redpanda) | Địa chỉ máy A mà Redpanda tự giới thiệu ở cửa ngoài `:19092`. Máy thật: IP overlay `100.64.0.1`; một máy: alias `redpanda-a` |
+| `COMPOSE_PROFILES` | `.env` | docker compose | `broker` (mọi máy): bật `redpanda`; `core` (chỉ máy A): bật `console`, `nginx`, `topic-init`. Máy A `core,broker`, máy B, C `broker` |
+| `BROKER_HOST` | `.env`, riêng từng máy | compose (redpanda) | Địa chỉ broker của máy này tự giới thiệu cho client (`:19092`) và broker khác (`:33145`). Máy thật: IP overlay của chính máy đó `100.64.0.2`; một máy: alias `redpanda-b` |
+| `BROKER_SEEDS` | `.env`, giống nhau ở mọi file | compose (redpanda, topic-init) | Các broker lập cụm, cổng RPC `33145`: `100.64.0.1:33145,100.64.0.2:33145,100.64.0.3:33145`; một máy: `redpanda-a:33145,redpanda-b:33145,redpanda-c:33145`. Cụm chỉ lập khi đủ mọi seed; RF của topic = số seed |
 | `REPLICA_A`, `REPLICA_B`, `REPLICA_C` | `.env`, giống nhau ở mọi file | nginx | `host:port` của bản sao từng node. Máy thật: `replica_api:8000` (A, cùng máy), `100.64.0.2:8000`; một máy: `replica-b:8000` |
 | `BRANCH_A`, `BRANCH_B`, `BRANCH_C` | `.env`, giống nhau ở mọi file | nginx | `host:port` của POS chi nhánh trên từng node. Máy thật: `branch_api:8000` (A), `100.64.0.2:8001`; một máy: `branch-b:8000` |
 | `NGINX_PORT` | `.env` (tuỳ chọn) | compose | Cổng host của nginx, mặc định `80` |
@@ -85,31 +84,34 @@ việc so dấu vân tay do trình duyệt làm qua nginx. Kênh trực tiếp g
 | `NODE_NAME` | `.env` | `replica_api`, `sink` | Tên bản sao `A`, `B`, `C`; consumer group là `replica-<NODE_NAME>` |
 | `BRANCH_ID` | `.env` | `branch_api`, `relay` | Số chi nhánh `1`, `2`, `3` |
 | `BRANCH_NAME` | `.env` (tuỳ chọn) | `branch_api` | Tên hiển thị, mặc định `Chi nhánh <BRANCH_ID>` |
-| `KAFKA_BROKERS` | `.env` | `relay`, `sink` | Máy A `redpanda:9092`, máy khác `<IP_A>:19092` (một máy: `redpanda-a:19092`) |
+| `KAFKA_BROKERS` | `.env`, giống nhau ở mọi file | `relay`, `sink`, `console`, `topic-init` | Cả ba broker, cổng `19092`, cùng host và thứ tự với `BROKER_SEEDS`: `100.64.0.1:19092,100.64.0.2:19092,100.64.0.3:19092`; một máy: `redpanda-a:19092,redpanda-b:19092,redpanda-c:19092` |
 | `REPLICA_URLS` | `.env` | `branch_api` | Bản sao nhận heartbeat: `A=http://replica_api:8000,B=http://100.64.0.2:8000,C=...`; một máy: `A=http://replica-a:8000,...` |
+
+| `ROLE` | `infra/compose.yml` | mọi tiến trình Python | `branch` hoặc `replica` |
+| `DATABASE_URL` | `infra/compose.yml` | mọi tiến trình Python | CSDL của chính tiến trình: `postgresql://app:app@branch_db:5432/kho` hoặc `@replica_db` |
+| `TEST_DB_URL` | `infra/compose.test.yml` | `tests/conftest.py` | CSDL test, tên phải kết thúc bằng `_test`: `postgresql://app:app@test_db:5432/kho_test` |
 
 **Chạy 3 node trên một máy** (`infra/compose.local.yml`): mỗi node là một compose project `minigo-a`, `minigo-b`,
 `minigo-c`; "mạng overlay" là docker network chung `minigo-wan`. Compose tự thêm tên service (`replica_api`) làm
 alias trên mọi network, nên trên `minigo-wan` tên service trỏ về cả ba node: giữa các node chỉ gọi bằng alias riêng
-`branch-<x>`, `replica-<x>`, `redpanda-a`. Lệnh: `make local-up`, `local-down`, `local-reset`, `make cut N=<x>`,
+`branch-<x>`, `replica-<x>`, `redpanda-<x>`. Lệnh: `make local-up`, `local-down`, `local-reset`, `make cut N=<x>`,
 `make heal N=<x>` (`docs/demo.md` mục "Chạy trên một máy").
-| `ROLE` | `infra/compose.yml` | mọi tiến trình Python | `branch` hoặc `replica` |
-| `DATABASE_URL` | `infra/compose.yml` | mọi tiến trình Python | CSDL của chính tiến trình: `postgresql://app:app@branch_db:5432/kho` hoặc `@replica_db` |
-| `TEST_DB_URL` | `infra/compose.test.yml` | `tests/conftest.py` | CSDL test, tên phải kết thúc bằng `_test`: `postgresql://app:app@test_db:5432/kho_test` |
 
 ## 4. Một lượt bán đi qua những đâu
 
 1. Thu ngân bấm **Bán 1** ở POS máy B.
 2. `branch_api` mở **một transaction** trên CSDL của CN2: trừ tồn, ghi sổ cái `stock_movement`, ghi `outbox`.
    Commit. Xong trong vài mili giây, chưa có gì đi qua mạng.
-3. `relay` ở máy B đọc outbox, gửi sự kiện qua mạng overlay lên Redpanda ở máy A, chờ xác nhận rồi mới đánh dấu
-   đã gửi.
+3. `relay` ở máy B đọc outbox, gửi sự kiện tới broker đang làm leader của phân hoạch (có thể ở máy khác, qua mạng
+   overlay), chờ cụm xác nhận đa số broker đã ghi đĩa rồi mới đánh dấu đã gửi, và ghi kết quả vào `relay_status`.
 4. `sink A` và `sink B` **mỗi cái đọc riêng** toàn bộ luồng sự kiện (hai consumer group khác nhau), mỗi cái cập nhật
    bảng tổng hợp của bản sao mình.
 5. Dashboard, mở qua nginx, lần lượt được bản sao A và bản sao B trả lời. Cả hai hiện cùng một con số.
 
 Song song, `branch_api` gửi heartbeat tới **mọi** bản sao mỗi 5 giây (HTTP thẳng, không qua Redpanda), kèm số sự
-kiện còn trong outbox và RTT lần trước. Mỗi bản sao tự phán đoán chi nhánh nào còn sống.
+kiện còn trong outbox và RTT lần trước. Mỗi bản sao tự phán đoán chi nhánh nào còn sống. Vì heartbeat không qua
+broker, "chi nhánh còn sống" và "đồng bộ đang chạy" là hai trạng thái khác nhau: sink mỗi bản sao tự kiểm đường đọc
+Redpanda mỗi 5 giây (`sink_stats.broker_ok`, `lag`), dashboard hiện riêng "Đồng bộ dừng từ HH:MM:SS".
 
 ## 5. Mức nhất quán
 
@@ -123,10 +125,16 @@ kiện còn trong outbox và RTT lần trước. Mỗi bản sao tự phán đo�
 
 ## 6. Giới hạn
 
-- **Máy A là điểm chết duy nhất cho phần đồng bộ và cổng vào.** Nginx và Redpanda chỉ chạy ở máy A, Redpanda chỉ
-  một broker (`replication_factor=1`, chế độ `dev-container`). Rút mạng máy A thì quầy ở mọi máy **vẫn bán**,
-  dashboard của bản sao B vẫn mở được trực tiếp ở `B:8000` (số cũ), nhưng địa chỉ nginx không vào được và việc
-  đồng bộ tạm dừng. Cắm lại thì tự phục hồi như K4. Cách bỏ điểm chết này: `plan.md`. **Khi demo, rút mạng máy B.**
+- **Máy A là điểm chết duy nhất cho cổng vào** (nginx). Rút mạng máy A thì địa chỉ nginx không vào được, nhưng
+  quầy ở mọi máy **vẫn bán**, và máy B, C vẫn đồng bộ với nhau qua 2 broker còn lại (K7c); xem thẳng dashboard
+  `B:8000`, `C:8000`. Cắm lại thì tự phục hồi.
+- **Cụm broker chịu được mất 1 trong 3 broker** (K7a). Mất đa số (2/3) thì đồng bộ dừng cho tới khi có lại đa số;
+  quầy vẫn bán, outbox giữ sự kiện, POS và dashboard báo "đồng bộ dừng" (K7b). Trong lúc bầu leader mới (vài giây)
+  dashboard có thể báo "đồng bộ dừng" ngắn rồi tự hết.
+- **Chỉ có 2 máy thật thì broker vẫn là điểm chết**: Redpanda chỉ nhận RF lẻ và cụm 2 broker không chịu được lỗi
+  nào, nên chỉ máy A chạy broker, RF=1 (`docs/demo.md` mục 2).
+- **Mất dữ liệu broker** (xoá volume, hỏng đĩa trên đa số broker) thì sự kiện bản sao chưa kịp đọc mất hẳn khỏi
+  Redpanda; chưa có đường dựng lại từ sổ cái chi nhánh (vòng 3).
 - **Dữ liệu mỗi chi nhánh chỉ có một bản chính**, ở chính máy chi nhánh. Bản sao trung tâm chỉ là bản tổng hợp để
   đọc. Máy B hỏng ổ cứng thì mất các lượt bán chưa kịp gửi đi.
 - **Bản sao bỏ lỡ sự kiện thì không có cơ chế tự vá**: nếu dữ liệu Redpanda mất trước khi một bản sao kịp đọc, dấu
@@ -147,7 +155,7 @@ kiện còn trong outbox và RTT lần trước. Mỗi bản sao tự phán đo�
 | Overlay network | Tailscale / ZeroTier là một mạng phủ dựng trên Internet |
 | Super-peer, BitTorrent tracker | Máy chủ điều phối của Tailscale giúp các máy tìm thấy nhau, rồi dữ liệu đi thẳng giữa các máy |
 | Edge & Fog | Chi nhánh là edge: xử lý tại chỗ, độ trễ thấp (K5) |
-| Phổ kiến trúc | Phi tập trung ở phần bán hàng, tập trung ở phần điều phối (máy A) |
+| Phổ kiến trúc | Phi tập trung ở phần bán hàng và broker (cụm 3 máy), tập trung ở cổng vào (nginx máy A) |
 
 ## 8. Quy tắc bất biến
 
@@ -158,7 +166,7 @@ dòng ở đây trước khi code.
 |---|---|---|
 | PT-01 | Chi nhánh chỉ nói chuyện với CSDL của chính nó; đường bán hàng không có lời gọi mạng | `api/services/branch.py` |
 | PT-02 | Sửa tồn, ghi `stock_movement`, ghi `outbox` trong MỘT transaction | `record_movement`, `_change_stock` |
-| PT-03 | Relay chỉ đánh dấu `sent_at` sau khi Redpanda xác nhận mọi thông điệp của lô (at-least-once) | `api/workers/relay.py` |
+| PT-03 | Relay chỉ đánh dấu `sent_at` sau khi Redpanda xác nhận mọi thông điệp của lô (at-least-once) | `relay_batch` (`api/services/branch.py`), gọi từ `api/workers/relay.py` |
 | PT-04 | Áp sự kiện lũy đẳng: khoá `(branch_id, movement_id)` | `apply_event` |
 | PT-05 | Chịu lệch thứ tự: snapshot chỉ ghi đè khi `movement_id` lớn hơn; không so thứ tự bằng đồng hồ | `apply_event` |
 | PT-06 | Sink ghi CSDL xong rồi mới commit offset | `api/workers/sink.py` |
@@ -166,4 +174,4 @@ dòng ở đây trước khi code.
 | PT-08 | Nginx chỉ tự thử lại yêu cầu idempotent; lệnh bán chống trừ hai lần bằng `request_id` | nginx, `_change_stock` |
 | PT-09 | Không bán lố tồn: trừ bằng một câu `UPDATE` có điều kiện `qty_on_hand + delta >= 0` | `_change_stock` |
 | PT-10 | Mọi kênh cập nhật snapshot (sink, gossip, đối soát) dùng chung một luật merge giao hoán, lũy đẳng theo từng ô | vòng 3 |
-| PT-11 | Mất đa số broker không làm dừng bán; trạng thái "đồng bộ dừng" phải hiện trên POS và dashboard | vòng 2 |
+| PT-11 | Mất đa số broker không làm dừng bán; trạng thái "đồng bộ dừng" phải hiện trên POS và dashboard | `record_relay_result` (`relay_status`), `record_broker_check` (`sink_stats`), `web/pos.html`, `web/dashboard.html` |

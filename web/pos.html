@@ -136,10 +136,19 @@ document.getElementById("bulk").addEventListener("click", async (ev) => {
   btn.disabled = false; refresh();
 });
 
+const clock = (ts) => new Date(ts).toLocaleTimeString("vi-VN", { hour12: false });
+
 function renderLink(s) {
   const el = document.getElementById("link");
   const n = s.outbox_backlog;
-  if (s.sync_stuck) {
+  const relay = s.relay || {};
+  el.title = relay.failing_since ? relay.last_error || "" : "";
+  if (relay.failing_since) {
+    // Relay tự ghi lỗi gửi (mất mạng, mất đa số broker): báo đúng mốc bắt đầu lỗi
+    el.className = "down";
+    el.innerHTML = `Gửi lên Redpanda: lỗi từ <b>${clock(relay.failing_since)}</b>. ` +
+      `Quầy vẫn bán bình thường; <b>${n}</b> sự kiện đang nằm chờ trong outbox và sẽ tự gửi khi có lại.`;
+  } else if (s.sync_stuck) {
     el.className = "down";
     el.innerHTML = `Chưa gửi được lên trung tâm từ ${Math.round(s.oldest_unsent_s)} giây. ` +
       `Quầy vẫn bán bình thường; <b>${n}</b> sự kiện đang nằm chờ trong outbox và sẽ tự gửi khi có mạng.`;

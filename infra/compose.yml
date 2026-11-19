@@ -7,6 +7,7 @@
 # Chạy từ gốc repo: make up
 #   docker compose --env-file .env -f infra/compose.yml up -d --build
 # .env ở gốc repo, chép từ infra/env/may-<x>.env.
+# 3 node trên MỘT máy: make local-up (ghép thêm infra/compose.local.yml, env infra/env/local-<x>.env).
 # =====================================================================
 name: minigo
 
@@ -49,7 +50,7 @@ services:
       DATABASE_URL: postgresql://app:app@branch_db:5432/kho
       REPLICA_URLS: ${REPLICA_URLS:?Chưa đặt REPLICA_URLS trong .env}
     ports:
-      - "8001:8000"
+      - "${BRANCH_PORT:-8001}:8000"
     cap_add: [NET_ADMIN]   # cho phép dùng `tc` để giả lập độ trễ (scripts/tre.sh)
     depends_on:
       branch_db:
@@ -92,7 +93,7 @@ services:
       NODE_NAME: ${NODE_NAME:?Chưa đặt NODE_NAME trong .env}
       DATABASE_URL: postgresql://app:app@replica_db:5432/kho
     ports:
-      - "8000:8000"
+      - "${REPLICA_PORT:-8000}:8000"
     depends_on:
       replica_db:
         condition: service_healthy
@@ -129,7 +130,7 @@ services:
       #   external :19092 cho máy khác, đi qua mạng overlay
       - --kafka-addr=internal://0.0.0.0:9092,external://0.0.0.0:19092
       # Địa chỉ Redpanda "tự giới thiệu" với client ở từng cửa.
-      # Cửa ngoài PHẢI là IP overlay của máy A, nếu không máy khác sẽ lỗi.
+      # Cửa ngoài PHẢI là IP overlay của máy A (một máy: alias redpanda-a), nếu không máy khác sẽ lỗi.
       - --advertise-kafka-addr=internal://redpanda:9092,external://${IP_A:?Chưa đặt IP_A trong .env}:19092
       - --rpc-addr=redpanda:33145
       - --advertise-rpc-addr=redpanda:33145
@@ -161,11 +162,17 @@ services:
   nginx:
     profiles: [core]
     image: nginx:1.27-alpine
+    # Địa chỉ host:port của bản sao và POS từng node. Máy thật: 100.64.0.2:8000; một máy: replica-b:8000.
+    # Compose kiểm `:?` cả khi profile core tắt, nên mọi file env đều phải có đủ 6 biến này.
     environment:
-      IP_B: ${IP_B:?Chưa đặt IP_B trong .env}
-      IP_C: ${IP_C:-}
+      REPLICA_A: ${REPLICA_A:?Chưa đặt REPLICA_A trong .env}
+      REPLICA_B: ${REPLICA_B:?Chưa đặt REPLICA_B trong .env}
+      REPLICA_C: ${REPLICA_C:?Chưa đặt REPLICA_C trong .env}
+      BRANCH_A: ${BRANCH_A:?Chưa đặt BRANCH_A trong .env}
+      BRANCH_B: ${BRANCH_B:?Chưa đặt BRANCH_B trong .env}
+      BRANCH_C: ${BRANCH_C:?Chưa đặt BRANCH_C trong .env}
     volumes:
-      # Ảnh nginx tự thay ${IP_B}... trong file .template rồi chép vào conf.d
+      # Ảnh nginx tự thay ${REPLICA_B}... trong file .template rồi chép vào conf.d
       - ./nginx/default.conf.template:/etc/nginx/templates/default.conf.template:ro
     ports:
       - "${NGINX_PORT:-80}:80"

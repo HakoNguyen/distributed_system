@@ -14,7 +14,10 @@ code, không sửa kỳ vọng.
 - Đặt tên: `tests/<module>/test_<thành_phần>.py`, `<module>` trùng tên file trong `api/services/` (`branch`,
   `replica`). Docstring mỗi test ghi mã quy tắc (`"""PT-04: ..."""`).
 - Không `sleep`, không gọi mạng thật. Phần gọi node khác tách thành hàm nhận dữ liệu đã lấy về.
-- Hạ tầng (compose, nginx, script mô phỏng mạng) kiểm bằng `make config` và kịch bản chạy tay ở `docs/demo.md`;
+- Hạ tầng (compose, nginx, script mô phỏng mạng) kiểm bằng `make config` và kịch bản chạy tay ở `docs/demo.md`.
+  `make config` gọi `scripts/net.sh check`: 3 env local hợp lệ, cổng host không trùng, mỗi node đủ alias
+  (`branch-<x>`, `replica-<x>`, `redpanda-a`) và nối vào `minigo-wan`, không gọi node khác bằng tên service, nginx đủ
+  6 địa chỉ `REPLICA_*`, `BRANCH_*`. Chế độ máy thật: `config -q` với `may-a/b/c.env`;
   vòng 5 gom các kịch bản chính vào `scripts/chaos-check.sh`.
 
 ## 2. Quy tắc và test chứng minh
@@ -39,12 +42,12 @@ Các bước chạy tay ở [demo.md](demo.md). "Đạt" ghi kèm ngày và các
 
 | Mã | Tính chất | Vòng | Trạng thái |
 |---|---|---|---|
-| K1 | Đồng bộ dữ liệu | 0 | đạt trên 1 node (19/11/2026) |
-| K2 | Trong suốt vị trí | 0 | đạt một phần trên 1 node: nginx, `/cn1/`; chưa có bản sao B thật |
-| K3 | Chịu lỗi, failover | 1 | chưa chạy |
-| K4 | Tự phục hồi | 1 | chưa chạy |
-| K5 | Độ trễ mạng | 1 | chưa chạy |
-| K6 | Chống trùng khi phát lại | 0 | đạt trên 1 node (19/11/2026) |
+| K1 | Đồng bộ dữ liệu | 0 | đạt trên 1 node; đạt trên 3 node một máy (19/11/2026): bán ở CN2, 3 bản sao cùng dấu vân tay sau 2 giây |
+| K2 | Trong suốt vị trí | 0, 1 | đạt trên 3 node một máy (19/11/2026): vệt `C A B C A B`, `/cn1/`–`/cn3/` mở đúng chi nhánh |
+| K3 | Chịu lỗi, failover | 1 | đạt trên 3 node một máy (19/11/2026) bằng `make cut N=b`: vệt chỉ còn A, C; `/cn2/` báo mất liên lạc; POS B vẫn bán, outbox 20; bản sao B thấy CN2 sống, CN1, CN3 mất |
+| K4 | Tự phục hồi | 1 | đạt trên 3 node một máy (19/11/2026) bằng `make heal N=b`: outbox về 0 trong ≤ 4 giây, 3 dấu vân tay khớp sau ~17 giây, vệt có lại B |
+| K5 | Độ trễ mạng | 1 | đạt trên 3 node một máy (19/11/2026) bằng `tre.sh`: RTT tới A 5 → 605 ms, bán tại chỗ 2,2 ms; tắt thì vẫn khớp |
+| K6 | Chống trùng khi phát lại | 0 | đạt trên 1 node; đạt trên 3 node một máy (19/11/2026): 86 bản trùng bỏ qua, dấu vân tay không đổi |
 | K7a, K7b, K7c | Redpanda chịu lỗi | 2 | chưa có |
 | K8 | Gossip tự vá | 3 | chưa có |
 | K9 | Đối soát với chi nhánh | 3 | chưa có |

@@ -3,8 +3,8 @@
 Đọc file này ở đầu mọi phiên làm việc. Các quy tắc dưới đây là bắt buộc.
 
 ## Dự án
-Demo hệ thống kho phân tán cho môn Các hệ thống phân tán. Mỗi node chạy một chi nhánh và một bản sao trung tâm;
-node A chạy thêm Redpanda, Redpanda Console, nginx. Chạy bằng Docker Compose, trên 2–3 máy thật hoặc mô phỏng nhiều
+Demo hệ thống kho phân tán cho môn Các hệ thống phân tán. Mỗi node chạy một chi nhánh, một bản sao trung tâm và một
+broker Redpanda (ba broker thành một cụm); node A chạy thêm Redpanda Console, nginx, `topic-init`. Chạy bằng Docker Compose, trên 2–3 máy thật hoặc mô phỏng nhiều
 node trên một máy.
 
 ## Bắt đầu từ đâu
@@ -26,12 +26,12 @@ node trên một máy.
 |---|---|---|
 | `docs/` | Đặc tả, CSDL, API, kiểm thử, kịch bản demo, kế hoạch | `docs/README.md` |
 | `db/` | SQL khởi tạo cho hai loại CSDL | `db/CLAUDE.md` |
-| `common/` | Cấu hình từ biến môi trường, pool CSDL, model Pydantic, `ensure_topic` | |
+| `common/` | Cấu hình từ biến môi trường, pool CSDL, model Pydantic | |
 | `api/` | FastAPI `ROLE=branch` hoặc `ROLE=replica`; `routers/`, `services/`, `workers/` | `api/CLAUDE.md` |
 | `web/` | `pos.html` (chi nhánh), `dashboard.html` (bản sao) | `web/CLAUDE.md` |
 | `infra/` | `compose.yml`, `compose.test.yml`, nginx, mẫu `.env` cho từng máy | `infra/CLAUDE.md` |
 | `tests/` | pytest trên PostgreSQL thật, chạy trong container | `tests/CLAUDE.md` |
-| `scripts/` | `tre.sh`: giả lập độ trễ bằng `tc` trong container | |
+| `scripts/` | `tre.sh`: giả lập độ trễ bằng `tc` trong container; `net.sh`: 3 node một máy, `make cut/heal`, `make config` | |
 | `.claude/commands/` | Bốn lệnh của quy trình | |
 
 ## Phạm vi sửa

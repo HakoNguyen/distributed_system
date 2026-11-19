@@ -18,13 +18,16 @@ Tài liệu tự sinh: `http://localhost:8001/docs` (chi nhánh), `http://localh
 | GET | `/health` | Kiểm tra sống, có chạm CSDL |
 | GET | `/api/info` | `branch_id`, `branch_name`, tên các bản sao |
 | GET | `/api/inventory` | Tồn của chi nhánh, kèm `version` |
-| GET | `/api/status` | Số sự kiện chờ trong outbox, `sync_stuck`, RTT và tình trạng tới từng bản sao |
+| GET | `/api/status` | Số sự kiện chờ trong outbox, `sync_stuck`, `relay`, RTT và tình trạng tới từng bản sao |
 | POST | `/api/sale` | Bán. Body: `{product_id, qty, version?, request_id?}` |
 | POST | `/api/receipt` | Nhập, cùng body |
 | POST | `/api/sale/random?count=20` | Bán nhanh `count` đơn ngẫu nhiên (dùng khi demo) |
 
 `/api/sale`, `/api/receipt` trả `{movement_id, product_id, qty_on_hand, version, elapsed_ms}`; gửi lại cùng
 `request_id` thì trả kết quả cũ kèm `replayed: true`.
+
+`/api/status` có `relay: {last_ok_at, failing_since, last_error}` (bảng `relay_status`): `failing_since` khác NULL
+thì POS hiện "Gửi lên Redpanda: lỗi từ HH:MM:SS".
 
 | Mã lỗi | Khi nào |
 |---|---|
@@ -42,12 +45,19 @@ Mọi phản hồi có header `X-Served-By: replica-<X>`.
 | GET | `/health` | Kiểm tra sống |
 | POST | `/api/heartbeat` | Nhận heartbeat. Body: `{branch_id, branch_name, node_time_ms, outbox_backlog, rtt_ms}` |
 | GET | `/api/overview` | Mọi thứ dashboard cần trong một lần gọi: `served_by`, `nodes`, `inventory`, `events`, `digest` |
-| GET | `/api/digest` | Dấu vân tay, tổng tồn, `last_movement_by_branch`, bộ đếm sink |
+| GET | `/api/digest` | Dấu vân tay, tổng tồn, `last_movement_by_branch`, bộ đếm và trạng thái broker của sink |
 | GET | `/api/nodes`, `/api/inventory`, `/api/events?limit=30`, `/api/stats` | Từng phần của overview, để gọi bằng tay |
+
+`/api/stats` (và `digest` trong `/api/digest`, `/api/overview`): `processed`, `duplicates`, `last_event_at`,
+`broker_ok`, `broker_lost_at`, `lag`, `broker_checked_at` (cột `sink_stats`, `docs/db.md` mục 3). `broker_ok = false`
+thì dashboard hiện "Đồng bộ dừng từ HH:MM:SS"; chi nhánh vẫn "còn sống" nếu heartbeat còn tới.
 
 ## 3. Sự kiện trên Redpanda
 
-- Topic `inventory.movement`, 3 phân hoạch, `replication_factor=1`.
+- Cụm 3 broker, mỗi node một broker (mã broker = `BRANCH_ID`), mọi client dùng cửa `:19092`
+  (`KAFKA_BROKERS` liệt kê cả ba).
+- Topic `inventory.movement`, 3 phân hoạch, RF = số broker trong `BROKER_SEEDS` (3; chỉ 1 khi 2 máy thật),
+  `write.caching=false`. Chỉ service `topic-init` (node A) tạo topic; broker tắt tự tạo topic.
 - Khoá thông điệp `"<branch_id>:<product_id>"`: mọi sự kiện của cùng một dòng tồn vào cùng một phân hoạch.
 - Giá trị (JSON, chính là `outbox.payload`):
 
@@ -56,8 +66,11 @@ Mọi phản hồi có header `X-Served-By: replica-<X>`.
  "qty_delta": -1, "qty_after": 148, "node_time": "2026-11-19T08:25:39.033693+00:00"}
 ```
 
-- Producer: `acks=all`, `message.timeout.ms=8000`. Consumer: mỗi bản sao group `replica-<NODE_NAME>`,
-  `auto.offset.reset=earliest`, tự commit offset sau khi ghi CSDL.
+- Producer: `acks=all`, `enable.idempotence=true` (gửi lại không trùng, không đảo thứ tự trong phân hoạch),
+  `message.timeout.ms=8000`. Write caching tắt nên `acks=all` nghĩa là đa số broker đã ghi đĩa (fsync).
+- Consumer: mỗi bản sao group `replica-<NODE_NAME>`, `auto.offset.reset=earliest`, tự commit offset sau khi ghi CSDL.
+  Mỗi 5 giây sink hỏi metadata topic, offset đã commit và high watermark từng phân hoạch:
+  `lag = Σ(high watermark − offset đã commit)`; hỏi lỗi hoặc quá hạn thì coi là mất broker.
 
 ## 4. Đường đi qua nginx (máy A, `infra/nginx/default.conf.template`)
 

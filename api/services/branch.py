@@ -168,6 +168,24 @@ def list_inventory() -> list[dict]:
         ).fetchall()
 
 
+def snapshot() -> dict:
+    """Tồn kèm biến động mới nhất từng mã, cho bản sao đối soát khi mất broker. Chỉ đọc (PT-07).
+
+    MỘT câu lệnh nên tồn và movement_id đọc cùng một thời điểm; PT-02 bảo đảm hai giá trị luôn đổi cùng nhau.
+    """
+    with pool.connection() as conn:
+        cells = conn.execute(
+            """SELECT i.product_id, i.qty_on_hand,
+                      m.movement_id AS last_movement, m.created_at AS node_time
+               FROM inventory i
+               JOIN LATERAL (SELECT movement_id, created_at FROM stock_movement s
+                             WHERE s.product_id = i.product_id
+                             ORDER BY movement_id DESC LIMIT 1) m ON true
+               ORDER BY i.product_id"""
+        ).fetchall()
+    return {"branch_id": BRANCH_ID, "cells": cells}
+
+
 def outbox_backlog() -> dict:
     """Số sự kiện chưa gửi và tuổi của sự kiện cũ nhất (giây)."""
     with pool.connection() as conn:

@@ -39,6 +39,12 @@ def inventory():
     return branch.list_inventory()
 
 
+@router.get("/api/snapshot")
+def snapshot():
+    """Bản sao gọi khi đối soát (mất broker quá 15 giây). Chỉ đọc."""
+    return branch.snapshot()
+
+
 @router.get("/api/status")
 def status():
     """Trạng thái cho màn hình POS: outbox còn bao nhiêu, đường nối tới từng bản sao ra sao."""

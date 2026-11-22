@@ -54,6 +54,12 @@
   .tag.low .qty { color: var(--alert); }
   .tag .actions { display: flex; gap: .4rem; margin-top: .2rem; }
   .tag .actions button { flex: 1; padding: .35rem .4rem; white-space: nowrap; }
+  #qty-bar { display: flex; align-items: center; gap: .6rem; padding: .6rem 1.5rem 0; font-weight: 600; }
+  #qty-bar input { font: inherit; font-weight: 700; width: 6.5rem; padding: .35rem .5rem; border-radius: 6px;
+                   border: 1.5px solid var(--c); background: #fff; color: var(--ink); }
+  #qty-bar input:focus-visible { outline: 3px solid var(--ink); outline-offset: 2px; }
+  #qty-bar input:invalid { border-color: var(--alert); color: var(--alert); }
+  #qty-bar small { font-weight: 400; color: var(--muted); }
 </style>
 </head>
 <body>
@@ -66,6 +72,11 @@
 </header>
 <div id="link" role="status">Đang kiểm tra kết nối tới trung tâm…</div>
 <div id="links" aria-label="Đường nối tới các bản sao trung tâm"></div>
+<div id="qty-bar">
+  <label for="qty">Số lượng mỗi lần bấm</label>
+  <input id="qty" type="number" min="1" max="1000" step="1" value="1" inputmode="numeric">
+  <small>từ 1 đến 1000, dùng cho cả Bán và Nhập</small>
+</div>
 <div id="toast" aria-live="polite"></div>
 <div id="grid"></div>
 
@@ -99,6 +110,7 @@ async function change(kind, product, qty) {
     const d = e.data?.detail || {};
     if (d.error === "insufficient_stock") toast(`Không đủ hàng: ${product.name} chỉ còn ${d.qty_on_hand}.`, true);
     else if (d.error === "version_conflict") toast("Số tồn vừa bị quầy khác sửa. Đã tải lại, thử bấm lần nữa.", true);
+    else if (Array.isArray(e.data?.detail)) toast("Số lượng phải là số nguyên từ 1 đến 1000.", true);  // lỗi kiểm của StockChange
     else toast(`Không bán được (mã lỗi ${e.status || e.message}). Kiểm tra container api và db của chi nhánh.`, true);
   }
   refresh();
@@ -114,8 +126,8 @@ function renderGrid() {
       <div class="qty">${p.qty_on_hand}<small>${esc(p.unit)}</small></div>
       <div class="meta">Ngưỡng ${p.reorder_point}, phiên bản ${p.version}</div>
       <div class="actions">
-        <button type="button" data-i="${i}" data-kind="sale">Bán 1</button>
-        <button type="button" data-i="${i}" data-kind="receipt">Nhập 10</button>
+        <button type="button" data-i="${i}" data-kind="sale">Bán</button>
+        <button type="button" data-i="${i}" data-kind="receipt">Nhập</button>
       </div>
     </div>`).join("");
 }
@@ -124,7 +136,10 @@ document.getElementById("grid").addEventListener("click", (ev) => {
   const b = ev.target.closest("button[data-kind]");
   if (!b) return;
   const p = products[Number(b.dataset.i)];
-  change(b.dataset.kind, p, b.dataset.kind === "sale" ? 1 : 10);
+  // Một ô số lượng chung, nằm ngoài lưới nên vẽ lại lưới không làm mất số đang nhập. Giới hạn như StockChange.
+  const qty = Number(document.getElementById("qty").value);
+  if (!Number.isInteger(qty) || qty < 1 || qty > 1000) return toast("Số lượng phải là số nguyên từ 1 đến 1000.", true);
+  change(b.dataset.kind, p, qty);
 });
 
 document.getElementById("bulk").addEventListener("click", async (ev) => {

@@ -58,8 +58,8 @@ Cột từng bảng:
 | `node_status` | `branch_id` (khoá chính), `branch_name`, `last_seen` (giờ trung tâm lúc nhận), `node_time` (giờ chi nhánh), `outbox_backlog`, `rtt_ms`, `branch_url` (địa chỉ POS chi nhánh tự báo trong heartbeat, dùng để đối soát) |
 | `inventory_snapshot` | `branch_id`, `product_id` (khoá chính kép), `qty_on_hand`, `last_movement`, `node_time` (giờ chi nhánh của biến động đó), `updated_at` (giờ trung tâm cập nhật), `source` (kênh đã ghi giá trị hiện tại: `kafka`, `gossip`, `reconcile`; không nằm trong dấu vân tay) |
 | `sync_peer` | `peer` (khoá chính: tên bản sao `A`, hoặc `CN2` cho chi nhánh), `channel` (`gossip` hoặc `reconcile`), `last_ok_at` (lần cuối gọi được và merge xong), `failing_since` (lỗi đầu tiên của đợt lỗi hiện tại; NULL = đang gọi được), `last_error`, `cells_patched` (tổng số ô đã vá nhờ nơi này) |
-| `event_log` | `branch_id`, `movement_id` (khoá chính kép), `product_id`, `move_type`, `qty_delta`, `qty_after`, `node_time` (giờ chi nhánh tạo sự kiện), `received_at` (giờ trung tâm nhận), `kafka_partition`, `kafka_offset` (vị trí trên Redpanda, để truy vết) |
-| `sink_stats` | `id` (luôn 1), `processed`, `duplicates`, `last_event_at`, `broker_ok` (NULL = chưa kiểm), `broker_lost_at` (mốc mất broker đầu tiên của đợt hiện tại; NULL = đang đọc được), `lag` (số sự kiện trên Redpanda chưa áp, đo lần được gần nhất), `broker_checked_at` (lần kiểm gần nhất; cũ quá nghĩa là sink đã dừng) |
+| `event_log` | `branch_id`, `movement_id` (khoá chính kép), `product_id`, `move_type`, `qty_delta`, `qty_after`, `node_time` (giờ chi nhánh tạo sự kiện), `received_at` (giờ trung tâm nhận), `kafka_partition`, `kafka_offset` (vị trí trên Redpanda, để truy vết), `kafka_ts` (timestamp Kafka của thông điệp: topic đặt `LogAppendTime` nên là giờ broker leader ghi; NULL nếu không có) |
+| `sink_stats` | `id` (luôn 1), `processed`, `duplicates`, `last_event_at`, `broker_ok` (NULL = chưa kiểm), `broker_lost_at` (mốc mất broker đầu tiên của đợt hiện tại; NULL = đang đọc được), `lag` (số sự kiện trên Redpanda chưa áp, đo lần được gần nhất), `broker_checked_at` (lần kiểm gần nhất; cũ quá nghĩa là sink đã dừng), `brokers_up` (`INT[]`, mã broker sink thấy còn sống ở lần kiểm gần nhất, theo metadata; NULL = không hỏi được) |
 
 **Luật merge chung** (`merge_cells(conn, rows, source)`, PT-10): mọi kênh ghi `inventory_snapshot` đều qua một câu
 upsert `... ON CONFLICT DO UPDATE ... WHERE inventory_snapshot.last_movement < EXCLUDED.last_movement`. Ô chỉ bị ghi
@@ -88,9 +88,18 @@ bán ở giữa, nên không bịa dòng nhật ký. Hệ quả: `query_events` 
 cho tới khi sink nhận được; `processed` chỉ đếm sự kiện sink áp, nên bản sao đã lỡ sự kiện có `processed` thấp hơn
 bản sao khác mãi mãi (K8: B thấp hơn A đúng số sự kiện bị bỏ qua) dù dấu vân tay khớp; `duplicates` không đổi.
 
-Kiểm broker (`record_broker_check(ok, lag)`, sink gọi mỗi 5 giây sau khi đã hỏi Redpanda xong): một câu `UPDATE
-sink_stats`. `broker_checked_at = now()`; được thì `broker_ok = true`, `broker_lost_at = NULL`, `lag` = số mới; lỗi
-thì `broker_ok = false`, `broker_lost_at` giữ mốc lỗi đầu tiên, `lag` giữ số cũ.
+**Truy vết** (`query_trace(conn, branch_id, movement_id, product_id)`, vòng 4): chỉ đọc dòng `event_log` của sự kiện
+và ô `inventory_snapshot` tương ứng, rồi suy ra `via` (`docs/api.md` mục 2). Ô vá bằng gossip hoặc đối soát không có
+dòng nhật ký, nên `via` dựa vào `last_movement` và `source` của ô. `apply_event(e, partition, offset, kafka_ts)` ghi
+`kafka_ts` cùng câu `INSERT` với `kafka_partition`, `kafka_offset`; sự kiện trùng giữ vị trí và timestamp lần đầu.
+
+Kiểm broker (`record_broker_check(ok, lag, brokers_up)`, sink gọi mỗi 5 giây sau khi đã hỏi Redpanda xong): một câu
+`UPDATE sink_stats`. `broker_checked_at = now()`; được thì `broker_ok = true`, `broker_lost_at = NULL`, `lag` = số mới;
+lỗi thì `broker_ok = false`, `broker_lost_at` giữ mốc lỗi đầu tiên, `lag` giữ số cũ. `brokers_up` luôn ghi đúng số
+vừa hỏi được, kể cả khi `ok = false` (hỏi được metadata nhưng hỏi watermark lỗi, ví dụ lúc bầu leader mới); NULL nếu
+không hỏi được metadata; không giữ số cũ để sơ đồ không tô xanh broker đã chết. Đo ngày 22/11/2026 (Redpanda
+v24.2.8, 3 node một máy): metadata bỏ broker đã dừng ngay lần hỏi sau (ISR thì vẫn giữ cả 3 nên không dùng được),
+bật lại thì có lại sau ~6 giây; mất đa số (dừng 2/3) thì sau ~2 giây không hỏi được metadata nữa, `brokers_up` = NULL.
 
 **Dấu vân tay** (`query_digest`): `md5` của chuỗi `branch_id:product_id:qty_on_hand` của mọi dòng snapshot, sắp
 theo khoá. Hai bản sao cùng dấu vân tay nghĩa là giữ đúng cùng một số liệu đến từng ô. `source` không nằm trong dấu

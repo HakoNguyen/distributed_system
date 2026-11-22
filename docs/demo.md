@@ -199,7 +199,15 @@ docker compose exec branch_api sh tre.sh on 300 100.64.0.1
 # bỏ:                ... sh tre.sh off
 ```
 
-## 5. Kịch bản K1–K9
+## 5. Kịch bản K1–K9, K11, K12
+
+(K10 dành cho vòng 5.) Từ vòng 4 dashboard có **sơ đồ đồng bộ** (topology sống) ngay dưới các thẻ chi nhánh: hàng
+trên là CN1–CN3, giữa là cụm Redpanda với broker 1–3, dưới là bản sao A–C. Cạnh relay → cụm, cụm → sink (kênh 1),
+gossip giữa bản sao (kênh 2), đối soát bản sao → chi nhánh nét đứt vàng (kênh 3, chỉ hiện khi đang đối soát). Màu:
+xanh chạy, vàng tồn đọng hoặc đang đối soát, đỏ lỗi, xám nét đứt không biết hoặc không chạy; cạnh nhấp nháy khi có dữ
+liệu đi qua; di chuột lên cạnh để xem chi tiết. Đây là hình trả lời câu hỏi "ReplicaA và ReplicaB trao đổi thông tin
+bằng cơ chế gì" (`docs/plan.md` mục 3.2). Mở qua nginx thì sơ đồ ghép góc nhìn của mọi bản sao và chi nhánh; mở thẳng
+một bản sao thì chỉ có góc nhìn của bản sao đó.
 
 Bố trí màn hình khi thuyết trình:
 - **Máy A** chiếu lên: dashboard qua nginx `http://localhost/`.
@@ -221,6 +229,27 @@ Bảng tóm tắt: **kịch bản nào chứng minh tính chất gì, nhìn ở 
 | K7c | Mất máy A (broker + nginx) | Rút mạng máy A | Dashboard máy B, C (cổng 8000) | B và C vẫn đồng bộ với nhau qua 2 broker còn lại; cắm lại thì 3 bản sao khớp |
 | K8 | Bản sao tự vá lẫn nhau (gossip) | Dừng sink B, bán, cho B bỏ qua các sự kiện đó | Bảng bản sao (cột Gossip); dashboard B | B lệch rồi khớp lại trong ≤ 20 giây, "vá N ô"; B mãi ít hơn A N sự kiện đã áp nhưng vẫn "Khớp từng ô" |
 | K9 | Đối soát với chi nhánh | Dừng cả 3 broker, bán ở CN2 | Dòng "Đồng bộ"; ô CN2 trên bảng tồn | Sau 15–25 giây kể từ "dừng từ", 3 bản sao cập nhật CN2, ô ghi "qua đối soát", 3 dấu vân tay khớp dù broker còn dừng |
+| K11 | Đọc đơn điệu | Dừng sink B, bán ở CN2, xem dashboard qua nginx | Dải vàng dưới đầu trang; vệt served-by; cột CN2 | Lần B trả lời: số CN2 **không lùi**, ô vàng trong vệt, "Bản sao B trễ N sự kiện ở CN2"; gossip vá B thì nhãn tự mất |
+| K12 | Truy vết sự kiện | Bấm một sự kiện ở cột "Sự kiện vừa nhận" | Khung "Truy vết CN2 #N" | Mốc chi nhánh ghi, broker ghi (phân hoạch, offset, timestamp Kafka), relay đánh dấu đã gửi, từng bản sao nhận qua Redpanda hay được vá bằng gossip/đối soát |
+
+Trên sơ đồ đồng bộ khi chạy lại K1–K9 (22/11/2026, 3 node một máy, `make local-reset` sau vòng 4). Đã kiểm trên
+giao diện (Chrome headless, đọc trạng thái từng cạnh và chụp màn hình): K1, K2, K3, K4, K7a, K7b, K7c, K9. K5, K6
+kiểm số qua API (RTT, bản trùng, dấu vân tay); phần nhấp nháy ở K6 và cạnh sink B xám ở K8 suy từ logic đã kiểm bằng
+`?selftest=1` (ảnh K11 chụp 7 giây sau khi dừng sink B nên cạnh còn xanh, ngưỡng là 15 giây):
+
+| # | Sơ đồ phải thấy |
+|---|---|
+| K1 | Mọi cạnh xanh; cạnh relay CN2 và cụm → sink A, B, C nhấp nháy khi bán; cụm "3/3 broker" |
+| K2 | Hộp bản sao đang trả lời viền đậm, đổi theo vệt `A B C` |
+| K3 | Hộp bản sao B đỏ "không liên lạc được", CN2 đỏ "mất liên lạc", broker 2 đỏ "0/2 sink thấy", cụm "2/3 broker", gossip A–B và B–C đỏ. Mở thẳng `:8010`: "chỉ có góc nhìn của bản sao này", B thấy CN1, CN3 mất liên lạc, sink B đỏ, cạnh đối soát B → CN2 vàng |
+| K4 | Mọi cạnh xanh lại; trong lúc đuổi nhau có thể hiện dải đọc đơn điệu ("Bản sao C trễ 8 ô ở CN2"), số không lùi |
+| K5 | Không đổi màu (RTT nằm trên thẻ CN2: 607 ms) |
+| K6 | Cạnh sink A nhấp nháy liên tục; mọi cạnh xanh |
+| K7a | Broker đã dừng đỏ "0/3 sink thấy", cụm "2/3 broker"; vài chục giây đầu broker còn sống có thể vàng "k/3 sink thấy" (các sink thấy metadata khác nhau) rồi xanh lại |
+| K7b | Relay ba chi nhánh đỏ "gửi lỗi từ …", cụm → sink đỏ, cụm "không hỏi được", broker xám "không biết"; sau ~15 giây hiện cạnh đối soát vàng nét đứt từ mọi bản sao tới mọi chi nhánh; thẻ "Còn sống, đồng bộ dừng" |
+| K7c | Mở thẳng `:8010`: broker 1 đỏ, CN1 đỏ, gossip B–A đỏ, B–C xanh; sau `heal` mọi cạnh xanh trong ~25 giây |
+| K8 | Cụm → sink B xám "sink không chạy" (sau 15 giây); cạnh gossip A–B / B–C nhấp nháy khi vá |
+| K9 | Như K7b, thêm relay CN1, CN3 vẫn xanh nếu không bán gì (relay chỉ ghi trạng thái khi có lô để gửi) |
 
 Chi tiết từng kịch bản:
 
@@ -435,6 +464,68 @@ nhánh: PT-07) và merge bằng đúng luật của sink và gossip (PT-10). Chi
   khớp trong lúc broker dừng. Bật lại: outbox về 0 sau 5 giây, sink đọc tiếp sau ~55 giây (như K7b), +5 sự kiện, dấu
   vân tay không đổi.
 
+### K11. Đọc đơn điệu: bản sao trễ không làm số lùi lại
+
+Mở sẵn: dashboard qua nginx `http://localhost/` (vệt served-by xen kẽ `A B C`).
+
+**Làm:**
+1. Dừng sink B: `docker stop minigo-b-sink-1` (máy thật: `docker compose stop sink` trên máy B).
+2. Bán vài đơn ở CN2: `curl -X POST "localhost:8011/api/sale/random?count=5"` (hoặc bấm trên POS).
+3. Nhìn dashboard khoảng 20 giây, không bấm gì. Đối chứng: mở thêm tab `http://localhost:8010` (thẳng bản sao B).
+4. Bật lại: `docker start minigo-b-sink-1`.
+
+**Thấy:**
+- Sau 1–2 giây các ô CN2 đổi số (A hoặc C trả lời). Tới lượt B trả lời: số **giữ nguyên**, không lùi về số cũ; ô
+  của B trong vệt served-by tô vàng, dòng trên đầu ghi "(trễ, giữ số cũ)"; dải vàng "Bản sao B trễ 5 sự kiện ở CN2
+  (trả lời lúc HH:MM:SS). Đang giữ số mới nhất đã thấy, không để số lùi lại (đọc đơn điệu)". Bảng bản sao: B "Đang
+  đuổi theo".
+- Tab `:8010` (chỉ B) vẫn hiện số cũ: đó là số thật của B, chỉ lớp đọc đơn điệu của tab qua nginx mới giữ số mới.
+- Trong ≤ 20 giây gossip vá B (K8), lần B trả lời sau đó được nhận lại, dải vàng tự mất.
+
+**Nói:** Nhất quán cuối cho phép hai bản sao tạm khác nhau; qua nginx, hai lần làm mới liên tiếp có thể rơi vào hai
+bản sao, nên trước vòng 4 số có thể "lùi lại". Đọc đơn điệu (Tanenbaum 7.3, mô hình lấy client làm trung tâm): đã
+đọc x thì lần sau đọc x phải ra cùng giá trị hoặc mới hơn. Tab dashboard nhớ phiên bản từng ô (`movement_id` do chi
+nhánh cấp, không phải đồng hồ) và chỉ nhận phản hồi không cũ hơn ở **mọi ô**; không thì giữ nguyên phản hồi cũ và
+nói rõ bản sao nào trễ bao nhiêu. Không trộn số của hai bản sao: màn hình luôn là đúng một phản hồi.
+
+Đo ngày 22/11/2026 (3 node một máy, lấy mẫu mỗi giây trong 32 giây): 6 lần B trả lời bị giữ số cũ, nhãn "Bản sao B
+trễ 5 sự kiện ở CN2"; **0 lần** ô CN2 lùi phiên bản trên màn hình; gossip vá B sau ~22 giây, nhãn tự mất. Chạy lại K4
+cũng thấy "Bản sao C trễ 8 ô ở CN2" vài giây, 0 lần lùi.
+
+### K12. Truy vết một sự kiện qua chi nhánh, broker, từng bản sao
+
+Mở dashboard qua nginx (mở thẳng một bản sao thì chỉ có dòng của bản sao đó, không hỏi được chi nhánh).
+
+**Làm:** bán 1 đơn ở CN2, rồi bấm sự kiện đó ở cột "Sự kiện vừa nhận". "Truy vết lại" hỏi lại; "Đóng" ẩn khung.
+
+**Thấy** (khung "Truy vết CN2 #N", mỗi dòng một mốc, giờ đến mili giây):
+1. CN2 ghi biến động vào sổ cái và outbox (cùng transaction), giờ chi nhánh.
+2. Broker leader ghi vào phân hoạch p, offset o: timestamp Kafka (topic `LogAppendTime`), giờ broker.
+3. Relay CN2 nhận xác nhận của cụm, đánh dấu đã gửi (`outbox.sent_at`), giờ chi nhánh. Mốc này luôn sau mốc 2:
+   broker ghi rồi mới xác nhận, relay nhận xác nhận rồi mới đánh dấu (PT-03).
+4. Mỗi bản sao A, B, C: "nhận qua Redpanda (… ms sau khi chi nhánh ghi)", hoặc "ô được vá bằng gossip / đối soát,
+   tới #N; không có dòng nhật ký", hoặc "bỏ qua sự kiện này, ô đã có #N mới hơn", hoặc "chưa biết sự kiện này".
+
+Biến thể:
+- **Sau K8**: bấm một sự kiện B đã bỏ qua (hiện khi A hoặc C trả lời): dòng B "ô được vá bằng gossip (bản sao khác),
+  tới #N", A và C "nhận qua Redpanda".
+- **Sau K9 / K7b** (khi đã bật lại broker): bấm một sự kiện "Đến muộn" bán trong lúc mất đa số: mốc chi nhánh trước
+  lúc dừng broker, mốc broker sau lúc bật lại, mỗi bản sao "nhận qua Redpanda … Trước đó ô đã được vá bằng đối soát
+  lúc …".
+
+**Nói:** Ba kênh hiện ra trên cùng một sự kiện. Redpanda là đường nhanh: bình thường cả ba bản sao nhận trong vài
+chục mili giây sau khi broker ghi. Khi đường nhanh hỏng, số tồn vẫn tới bằng gossip hoặc đối soát, nhưng chỉ là số mới
+nhất của ô, không có nhật ký từng lượt. Ba loại mốc theo ba đồng hồ khác nhau, chỉ để hiển thị; thứ tự dựa vào
+`movement_id`.
+
+Đo ngày 22/11/2026 (3 node một máy):
+- CN2 #22: chi nhánh ghi 13:45:16,160; broker ghi 13:45:17,603 (phân hoạch 1, offset 22); `sent_at` 13:45:17,605;
+  A, B, C nhận 13:45:17,606–693 (1,4–1,5 giây sau khi chi nhánh ghi, phần lớn là chu kỳ đọc outbox của relay).
+- Sau K8: CN2 #24, dòng B "ô được vá bằng gossip lúc 13:46:15,147, tới #24", A, C nhận qua Redpanda 13:45:57,68.
+- Sau K7b: CN2 #79 bán 13:53:03 khi mất đa số; ô đã vá bằng đối soát 13:53:11–19 ở cả ba bản sao; broker ghi
+  13:54:05 (bật lại 13:53:56); bản sao nhận 13:54:50–57. Khoảng ~50 giây giữa broker ghi và sink đọc chính là độ chậm
+  "sink đọc tiếp sau ~55 giây" ở `docs/plan.md` mục 6, giờ nhìn thấy được trên giao diện.
+
 ## 6. Câu hỏi thường gặp khi bảo vệ
 
 | Câu hỏi | Từ khoá | Trả lời ngắn |
@@ -446,6 +537,7 @@ nhánh: PT-07) và merge bằng đúng luật của sink và gossip (PT-10). Chi
 | Trung tâm sập thì cửa hàng có sập không? | Tách rời qua broker | Chi nhánh và trung tâm nói chuyện qua Redpanda, không cần chạy cùng lúc. |
 | Redpanda gặp sự cố thì xử lý thế nào? | Phòng, chống, phục hồi | **Phòng**: cụm 3 broker, RF=3, mất 1 broker tự bầu leader mới (K7a). **Chống**: mất đa số thì quầy vẫn bán, outbox giữ sự kiện, POS và dashboard báo "đồng bộ dừng từ HH:MM:SS" (K7b). Mất đa số quá 15 giây thì bản sao **đối soát thẳng với chi nhánh** qua API (chỉ đọc), số tồn vẫn đúng (K9). **Phục hồi**: có lại đa số thì relay gửi bù, sink đọc tiếp từ offset, không ai làm gì (K7b, K7c). Mất hẳn dữ liệu broker: số tồn dựng lại từ bản sao khác (gossip, K8) hoặc từ chi nhánh (đối soát, K9); chỉ mất nhật ký các sự kiện chưa kịp đọc. Redpanda là đường nhanh, không phải nguồn sự thật: nguồn sự thật là sổ cái chi nhánh. |
 | ReplicaA và ReplicaB trao đổi thông tin bằng cơ chế gì? | Nhân bản máy trạng thái qua log chung; gossip (anti-entropy); CRDT theo từng ô | Ba kênh, một luật merge. (1) Gián tiếp: cùng đọc một log trên Redpanda (mỗi bên một consumer group), áp lũy đẳng nên ra cùng trạng thái. (2) Trực tiếp: mỗi 10 giây gọi `/api/digest` của nhau; dấu vân tay lệch ở 2 lần kiểm liên tiếp thì kéo `/api/snapshot` và vá ô còn thiếu (K8). (3) Mất broker thì mỗi bên đọc thẳng chi nhánh (K9). Luật "`movement_id` lớn hơn thắng" theo từng ô giao hoán, lũy đẳng, nên đến từ kênh nào, theo thứ tự nào cũng hội tụ (PT-10). |
+| Qua nginx, lần làm mới sau rơi vào bản sao trễ thì số có lùi không? | Đọc đơn điệu (monotonic reads), nhất quán lấy client làm trung tâm | Không (K11). Tab dashboard nhớ phiên bản (`movement_id`) từng ô đã hiện, chỉ nhận phản hồi không cũ hơn ở mọi ô; bản sao trễ thì giữ nguyên số cũ và ghi "Bản sao B trễ N sự kiện ở CN2". Bảo đảm trong một lần mở trang; không cần chờ mọi bản sao đồng bộ (vẫn là nhất quán cuối giữa các bản sao). |
 | Gossip có làm sai số khi sink đang chạy bình thường không? | Lũy đẳng, chờ kênh chính | Không: chỉ vá ô thiếu ở 2 lần kiểm cách nhau 10 giây, và chỉ ghi đè khi `movement_id` mới hơn. Bán liên tục (K1) thì "vá 0 ô". Sự kiện tới sau khi ô đã được vá vẫn vào nhật ký nhưng không đổi số. |
 
 ## 7. Bảng nghiệm thu chạy liên máy

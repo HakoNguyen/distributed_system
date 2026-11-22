@@ -15,6 +15,11 @@ Tiến độ và thứ tự làm: [docs/plan.md](docs/plan.md).
 | Phục hồi từ nguồn sự thật | Mất broker quá 15 giây thì bản sao đối soát thẳng với chi nhánh qua API | K9 |
 | Đồng bộ dữ liệu | Sự kiện đi qua Redpanda tới mọi bản sao; so bằng dấu vân tay | K1, K4 |
 | Chịu được độ trễ mạng | Bán tại chỗ, đồng bộ bất đồng bộ; đo RTT trực tiếp | K5 |
+| Đọc đơn điệu (monotonic reads) | Dashboard chỉ nhận phản hồi mà mọi ô có `movement_id` không cũ hơn số đang hiện; bản sao trễ thì giữ số cũ và gắn nhãn | K11 |
+| Truy vết sự kiện | Bấm một sự kiện: mốc ở chi nhánh, ở broker (timestamp Kafka), ở từng bản sao (qua Redpanda hay vá bằng gossip, đối soát) | K12 |
+
+Dashboard có **sơ đồ topology sống**: 3 node, mỗi node chi nhánh, broker, bản sao; cạnh relay → cụm, cụm → sink,
+gossip giữa bản sao, đối soát bản sao → chi nhánh, đổi màu theo trạng thái và nhấp nháy khi có dữ liệu đi qua.
 
 ## Kiến trúc
 
@@ -38,7 +43,7 @@ docs/      đặc tả, CSDL, API, kịch bản demo, kế hoạch (nguồn sự
 db/        SQL khởi tạo: product.sql (dùng chung), branch.sql, replica.sql
 common/    cấu hình, pool CSDL, model
 api/       main.py, routers/ (mỏng), services/ (SQL và quy tắc), workers/ (relay, sink, heartbeat, gossip)
-web/       pos.html, dashboard.html (HTML + JS thuần, không build)
+web/       pos.html, dashboard.html (HTML + JS thuần, không build; dashboard tự kiểm bằng ?selftest=1)
 infra/     compose.yml, compose.local.yml (3 node một máy), compose.test.yml, nginx/, env/ (máy thật, local)
 tests/     pytest trên PostgreSQL thật, chạy trong container
 scripts/   tre.sh: giả lập độ trễ mạng trong container; net.sh: 3 node một máy, cut/heal
@@ -64,7 +69,8 @@ Cần Docker Desktop và một mạng overlay (Tailscale hoặc ZeroTier) nối 
 **Chỉ có một máy:** `make local-up` dựng 3 node (A, B, C) trên cùng máy, nối nhau qua docker network `minigo-wan`
 thay cho mạng overlay; không cần `.env`. Mở http://localhost/ (nginx), POS CN1/CN2/CN3 ở cổng 8001/8011/8021,
 dashboard bản sao A/B/C ở 8000/8010/8020. `make cut N=b` rút mạng node B, `make heal N=b` cắm lại;
-`make local-down`, `make local-reset` (bắt buộc một lần khi lên từ bản một broker). Dừng một broker cho K7:
+`make local-down`, `make local-reset` (bắt buộc một lần khi lên từ bản một broker, và khi lên vòng 4: thêm cột
+`event_log.kafka_ts`, `sink_stats.brokers_up`, topic `LogAppendTime`). Dừng một broker cho K7:
 `docker stop minigo-b-redpanda-1`. Chi tiết: [docs/demo.md](docs/demo.md) mục 3, phần "Chạy trên một máy".
 
 Không có `make` thì dùng thẳng `docker compose up -d --build`: file `.env` đã chỉ tới `infra/compose.yml`

@@ -33,6 +33,8 @@ BRANCH_NAME = os.environ.get("BRANCH_NAME") or f"Chi nhánh {BRANCH_ID}"
 # phán đoán "chi nhánh này còn sống không" theo những gì nó nghe được.
 REPLICAS = _parse_replicas(os.environ.get("REPLICA_URLS", ""))
 HEARTBEAT_EVERY_S = 5
+# Địa chỉ POS của chính chi nhánh này nhìn từ máy khác; gửi kèm heartbeat để bản sao đối soát khi mất broker
+BRANCH_URL = os.environ.get("BRANCH_URL") or None
 # Sự kiện nằm trong outbox lâu hơn chừng này mà chưa gửi được thì POS báo đỏ
 STUCK_AFTER_S = 5
 
@@ -47,3 +49,15 @@ CONSUMER_GROUP = f"replica-{NODE_NAME}"
 NODE_TIMEOUT_S = 15
 # Sink tự kiểm đường đọc Redpanda (broker_ok, lag trong sink_stats) mỗi bấy nhiêu giây
 BROKER_CHECK_EVERY_S = 5
+
+# ---------------- Kênh trực tiếp giữa các bản sao (vòng 3) ----------------
+# Các bản sao KHÁC để gossip: REPLICA_URLS bỏ dòng trùng tên chính mình
+PEERS = [(name, url) for name, url in REPLICAS if name != NODE_NAME]
+GOSSIP_EVERY_S = 10
+# Đối soát với chi nhánh: kiểm mỗi 5 giây; chỉ bật khi mất broker quá 15 giây và sink vẫn còn kiểm
+# (lần kiểm cuối mới hơn 15 giây). Mọi mốc tính bằng now() của replica_db.
+RECONCILE_EVERY_S = 5
+RECONCILE_AFTER_S = 15
+SINK_STALE_S = 15
+# Gọi bản sao hoặc chi nhánh khác: quá chừng này thì bỏ, để một node chết không làm treo vòng gossip
+PEER_TIMEOUT_S = 2

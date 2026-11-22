@@ -6,9 +6,11 @@ Nó chỉ đọc/ghi CSDL của chính mình: bảng tổng hợp dựng lại t
 """
 from datetime import datetime, timezone
 
-from common.config import NODE_NAME, NODE_TIMEOUT_S
+from psycopg.types.json import Jsonb
+
+from common.config import NODE_NAME, NODE_TIMEOUT_S, RECONCILE_AFTER_S, SINK_STALE_S
 from common.db import pool
-from common.models import Heartbeat
+from common.models import Heartbeat, SnapshotCell
 
 
 # ---------------------------------------------------------------------------
@@ -37,23 +39,136 @@ def apply_event(e: dict, partition: int | None = None, offset: int | None = None
             conn.execute("UPDATE sink_stats SET duplicates = duplicates + 1")
             return "duplicate"
 
-        # Lớp thứ hai: chỉ ghi đè khi sự kiện này MỚI HƠN cái đang có.
-        # So sánh bằng movement_id chứ KHÔNG bằng node_time: đồng hồ các máy
-        # lệch nhau nên không tin được, còn movement_id do chính chi nhánh tăng dần.
-        conn.execute(
-            """INSERT INTO inventory_snapshot (branch_id, product_id, qty_on_hand,
-                                               last_movement, node_time, updated_at)
-               VALUES (%s, %s, %s, %s, %s, now())
-               ON CONFLICT (branch_id, product_id) DO UPDATE
-               SET qty_on_hand   = EXCLUDED.qty_on_hand,
-                   last_movement = EXCLUDED.last_movement,
-                   node_time     = EXCLUDED.node_time,
-                   updated_at    = now()
-               WHERE inventory_snapshot.last_movement < EXCLUDED.last_movement""",
-            (e["branch_id"], e["product_id"], e["qty_after"], e["movement_id"], e["node_time"]),
-        )
+        # Lớp thứ hai: cùng luật merge với gossip và đối soát (PT-10)
+        merge_cells(conn, [{"branch_id": e["branch_id"], "product_id": e["product_id"],
+                            "qty_on_hand": e["qty_after"], "last_movement": e["movement_id"],
+                            "node_time": e["node_time"]}], "kafka")
         conn.execute("UPDATE sink_stats SET processed = processed + 1, last_event_at = now()")
         return "new"
+
+
+def merge_cells(conn, rows: list[dict], source: str) -> int:
+    """Luật merge DUY NHẤT cho mọi kênh cập nhật snapshot (PT-10): sink ('kafka'), gossip, đối soát.
+
+    Mỗi ô (chi nhánh, mã hàng) chỉ bị ghi đè khi movement_id MỚI HƠN cái đang có. So bằng movement_id
+    chứ KHÔNG bằng node_time: đồng hồ các máy lệch nhau, còn movement_id do chính chi nhánh tăng dần.
+    Luật này giao hoán, kết hợp, lũy đẳng: nhận theo thứ tự nào, nhận trùng, từ kênh nào cũng hội tụ.
+    Gọi bên trong transaction của người gọi. Trả số ô thực sự được ghi (mới hoặc vá).
+    """
+    if not rows:
+        return 0
+    return conn.execute(
+        """INSERT INTO inventory_snapshot (branch_id, product_id, qty_on_hand, last_movement,
+                                           node_time, source, updated_at)
+           SELECT branch_id, product_id, qty_on_hand, last_movement, node_time, %s, now()
+           FROM jsonb_to_recordset(%s) AS r(branch_id int, product_id int, qty_on_hand int,
+                                           last_movement bigint, node_time timestamptz)
+           ON CONFLICT (branch_id, product_id) DO UPDATE
+           SET qty_on_hand   = EXCLUDED.qty_on_hand,
+               last_movement = EXCLUDED.last_movement,
+               node_time     = EXCLUDED.node_time,
+               source        = EXCLUDED.source,
+               updated_at    = now()
+           WHERE inventory_snapshot.last_movement < EXCLUDED.last_movement""",
+        (source, Jsonb(rows)),
+    ).rowcount
+
+
+# ---------------------------------------------------------------------------
+# 1b. Kênh trực tiếp (vòng 3). workers/gossip.py gọi mạng TRƯỚC, rồi đưa dữ liệu đã lấy về vào đây.
+# ---------------------------------------------------------------------------
+def query_snapshot(conn) -> list[dict]:
+    """Mọi ô của bảng tổng hợp kèm last_movement, cho bản sao khác gossip (GET /api/snapshot)."""
+    return conn.execute(
+        """SELECT branch_id, product_id, qty_on_hand, last_movement, node_time
+           FROM inventory_snapshot ORDER BY branch_id, product_id"""
+    ).fetchall()
+
+
+def pick_stale(remote: list[dict], local: list[dict],
+               pending: dict[tuple[int, int], int]) -> tuple[list[dict], dict[tuple[int, int], int]]:
+    """Gossip: chọn ô cần vá từ snapshot của bản sao khác. Hàm thuần, không gọi mạng, không chạm CSDL.
+
+    pending = các ô bản sao kia đi trước ở LẦN KIỂM TRƯỚC (10 giây trước) -> movement_id lúc đó.
+    Chỉ vá ô mà bản sao này VẪN chưa tới movement_id đó: sink (kênh chính) đã có cả một vòng để giao mà
+    không giao, tức là thật sự thiếu. Sink chậm vài giây (K1) thì không bao giờ bị vá.
+    Trả (ô cần vá, kèm giá trị mới nhất của bản sao kia; pending cho lần kiểm sau).
+    """
+    mine = {(c["branch_id"], c["product_id"]): c["last_movement"] for c in local}
+    patch, ahead = [], {}
+    for c in remote:
+        key = (c["branch_id"], c["product_id"])
+        have = mine.get(key, 0)
+        if c["last_movement"] <= have:
+            continue
+        if have < pending.get(key, 0):
+            patch.append(c)
+        else:
+            ahead[key] = c["last_movement"]
+    return patch, ahead
+
+
+def _record_peer_ok(conn, peer: str, channel: str, patched: int) -> None:
+    conn.execute(
+        """INSERT INTO sync_peer (peer, channel, last_ok_at, cells_patched) VALUES (%s, %s, now(), %s)
+           ON CONFLICT (peer) DO UPDATE
+           SET last_ok_at = now(), failing_since = NULL,
+               cells_patched = sync_peer.cells_patched + EXCLUDED.cells_patched""",
+        (peer, channel, patched),
+    )
+
+
+def merge_replica_snapshot(peer: str, rows: list[dict]) -> int:
+    """Gossip: merge các ô đã chọn từ bản sao `peer` và ghi lần trao đổi, trong MỘT transaction.
+    rows = [] vẫn ghi last_ok_at (hai bên đã khớp). Dữ liệu từ node khác được kiểm trước khi ghi."""
+    cells = [SnapshotCell.model_validate(c).model_dump(mode="json") for c in rows]
+    with pool.connection() as conn, conn.transaction():
+        n = merge_cells(conn, cells, "gossip")
+        _record_peer_ok(conn, peer, "gossip", n)
+    return n
+
+
+def merge_branch_snapshot(branch_id: int, payload: dict) -> int:
+    """Đối soát: merge snapshot đọc thẳng từ chi nhánh (nguồn sự thật) qua GET /api/snapshot (PT-07)."""
+    if payload.get("branch_id") != branch_id:
+        raise ValueError(f"gọi CN{branch_id} mà nhận số của CN{payload.get('branch_id')}")
+    cells = [SnapshotCell.model_validate({**c, "branch_id": branch_id}).model_dump(mode="json")
+             for c in payload["cells"]]
+    with pool.connection() as conn, conn.transaction():
+        n = merge_cells(conn, cells, "reconcile")
+        _record_peer_ok(conn, f"CN{branch_id}", "reconcile", n)
+    return n
+
+
+def record_peer_error(peer: str, channel: str, error: str) -> None:
+    """Gọi node khác lỗi: giữ mốc lỗi đầu tiên của đợt và lần được cuối."""
+    with pool.connection() as conn:
+        conn.execute(
+            """INSERT INTO sync_peer (peer, channel, failing_since, last_error) VALUES (%s, %s, now(), %s)
+               ON CONFLICT (peer) DO UPDATE
+               SET failing_since = coalesce(sync_peer.failing_since, now()), last_error = EXCLUDED.last_error""",
+            (peer, channel, error),
+        )
+
+
+def reconcile_targets(conn) -> list[dict]:
+    """Chi nhánh cần đối soát NGAY BÂY GIỜ; rỗng nếu chưa tới lúc.
+
+    Chỉ khi sink báo mất broker quá RECONCILE_AFTER_S giây VÀ sink vẫn còn kiểm (chết thì gossip lo),
+    và chỉ chi nhánh có heartbeat trong NODE_TIMEOUT_S giây. Mọi mốc so bằng now() của replica_db
+    (cùng một đồng hồ); đây là đếm thời gian chờ, không phải so thứ tự sự kiện.
+    """
+    return conn.execute(
+        """SELECT n.branch_id, n.branch_url
+           FROM node_status n CROSS JOIN sink_stats s
+           WHERE s.broker_ok = false
+             AND s.broker_lost_at    < now() - make_interval(secs => %(after)s)
+             AND s.broker_checked_at > now() - make_interval(secs => %(stale)s)
+             AND n.last_seen         > now() - make_interval(secs => %(alive)s)
+             AND n.branch_url IS NOT NULL
+           ORDER BY n.branch_id""",
+        {"after": RECONCILE_AFTER_S, "stale": SINK_STALE_S, "alive": NODE_TIMEOUT_S},
+    ).fetchall()
 
 
 # ---------------------------------------------------------------------------
@@ -64,13 +179,13 @@ def record_heartbeat(hb: Heartbeat) -> None:
     with pool.connection() as conn:
         conn.execute(
             """INSERT INTO node_status (branch_id, branch_name, last_seen, node_time,
-                                        outbox_backlog, rtt_ms)
-               VALUES (%s, %s, now(), %s, %s, %s)
+                                        outbox_backlog, rtt_ms, branch_url)
+               VALUES (%s, %s, now(), %s, %s, %s, %s)
                ON CONFLICT (branch_id) DO UPDATE
                SET branch_name = EXCLUDED.branch_name, last_seen = now(),
                    node_time = EXCLUDED.node_time, outbox_backlog = EXCLUDED.outbox_backlog,
-                   rtt_ms = EXCLUDED.rtt_ms""",
-            (hb.branch_id, hb.branch_name, node_time, hb.outbox_backlog, hb.rtt_ms),
+                   rtt_ms = EXCLUDED.rtt_ms, branch_url = EXCLUDED.branch_url""",
+            (hb.branch_id, hb.branch_name, node_time, hb.outbox_backlog, hb.rtt_ms, hb.branch_url),
         )
 
 
@@ -101,7 +216,7 @@ def query_inventory(conn):
     """Tồn toàn chuỗi. Người xem thấy MỘT bảng, không cần biết số đến từ máy nào."""
     rows = conn.execute(
         """SELECT p.product_id, p.name, p.unit, p.reorder_point,
-                  s.branch_id, s.qty_on_hand, s.updated_at
+                  s.branch_id, s.qty_on_hand, s.updated_at, s.source
            FROM product p
            LEFT JOIN inventory_snapshot s USING (product_id)
            ORDER BY p.product_id, s.branch_id"""
@@ -117,6 +232,7 @@ def query_inventory(conn):
                 "qty": r["qty_on_hand"],
                 "below_reorder": r["qty_on_hand"] < r["reorder_point"],
                 "updated_at": r["updated_at"],
+                "source": r["source"],  # 'reconcile' -> dashboard gắn nhãn "qua đối soát"
             }
             p["total"] += r["qty_on_hand"]
     return list(products.values())
@@ -154,6 +270,11 @@ def query_digest(conn):
         ).fetchall()
     }
     d.update(query_stats(conn))
+    # Lần trao đổi trực tiếp cuối với từng bản sao (gossip) và chi nhánh (đối soát)
+    d["sync_peers"] = conn.execute(
+        """SELECT peer, channel, last_ok_at, failing_since, last_error, cells_patched
+           FROM sync_peer ORDER BY channel, peer"""
+    ).fetchall()
     d["node"] = NODE_NAME
     d["fingerprint"] = d["fingerprint"][:8]  # 8 ký tự đầu là đủ để so bằng mắt
     return d

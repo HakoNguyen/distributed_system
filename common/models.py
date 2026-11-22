@@ -1,4 +1,6 @@
 """Model Pydantic cho request của cả hai vai."""
+from datetime import datetime
+
 from pydantic import BaseModel, Field
 
 
@@ -21,3 +23,14 @@ class Heartbeat(BaseModel):
     node_time_ms: int  # giờ máy chi nhánh
     outbox_backlog: int = 0
     rtt_ms: int | None = None  # RTT đo được ở lần heartbeat trước
+    # Địa chỉ POS của chi nhánh (BRANCH_URL), để bản sao đối soát khi mất broker (vòng 3)
+    branch_url: str | None = Field(default=None, pattern=r"^https?://\S+$", max_length=200)
+
+
+class SnapshotCell(BaseModel):
+    """Một ô (chi nhánh, mã hàng) nhận từ node khác qua GET /api/snapshot. Kiểm trước khi merge."""
+    branch_id: int
+    product_id: int
+    qty_on_hand: int = Field(ge=0)
+    last_movement: int = Field(gt=0)
+    node_time: datetime | None = None

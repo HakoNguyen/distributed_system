@@ -56,6 +56,13 @@ def digest():
         return replica.query_digest(conn)
 
 
+@router.get("/api/snapshot")
+def snapshot():
+    """Mọi ô kèm last_movement, để bản sao khác gossip (workers/gossip.py)."""
+    with pool.connection() as conn:
+        return {"node": NODE_NAME, "cells": replica.query_snapshot(conn)}
+
+
 # Các endpoint rời để gọi bằng tay khi cần
 @router.get("/api/nodes")
 def nodes():

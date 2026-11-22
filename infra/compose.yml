@@ -50,6 +50,8 @@ services:
       BRANCH_NAME: ${BRANCH_NAME}
       DATABASE_URL: postgresql://app:app@branch_db:5432/kho
       REPLICA_URLS: ${REPLICA_URLS:?Chưa đặt REPLICA_URLS trong .env}
+      # Địa chỉ POS của chi nhánh này nhìn từ máy khác; gửi kèm heartbeat để bản sao đối soát
+      BRANCH_URL: ${BRANCH_URL:?Chưa đặt BRANCH_URL trong .env}
     ports:
       - "${BRANCH_PORT:-8001}:8000"
     cap_add: [NET_ADMIN]   # cho phép dùng `tc` để giả lập độ trễ (scripts/tre.sh)
@@ -86,13 +88,15 @@ services:
     healthcheck: *pg_health
     restart: unless-stopped
 
-  # Dashboard của bản sao này: http://localhost:8000
+  # Dashboard của bản sao này: http://localhost:8000. Chạy thêm luồng gossip với các bản sao khác
+  # (REPLICA_URLS, bỏ dòng trùng NODE_NAME) và đối soát với chi nhánh khi mất broker.
   replica_api:
     build: *api_build
     environment:
       ROLE: replica
       NODE_NAME: ${NODE_NAME:?Chưa đặt NODE_NAME trong .env}
       DATABASE_URL: postgresql://app:app@replica_db:5432/kho
+      REPLICA_URLS: ${REPLICA_URLS:?Chưa đặt REPLICA_URLS trong .env}
     ports:
       - "${REPLICA_PORT:-8000}:8000"
     depends_on:

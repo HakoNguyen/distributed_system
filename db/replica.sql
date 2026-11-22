@@ -43,6 +43,7 @@ CREATE TABLE event_log (
     received_at     TIMESTAMPTZ NOT NULL DEFAULT now(), -- giờ trung tâm nhận được
     kafka_partition INT,
     kafka_offset    BIGINT,
+    kafka_ts        TIMESTAMPTZ,  -- timestamp Kafka (topic LogAppendTime: giờ broker leader ghi), để truy vết
     PRIMARY KEY (branch_id, movement_id)
 );
 CREATE INDEX event_log_recent ON event_log (received_at DESC);
@@ -57,7 +58,8 @@ CREATE TABLE sink_stats (
     broker_ok         BOOLEAN,      -- NULL = chưa kiểm lần nào
     broker_lost_at    TIMESTAMPTZ,  -- lần lỗi đầu tiên của đợt mất broker hiện tại; NULL = đang đọc được
     lag               BIGINT,       -- số sự kiện trên Redpanda bản sao này chưa áp (đo lần được gần nhất)
-    broker_checked_at TIMESTAMPTZ   -- lần kiểm gần nhất; cũ quá nghĩa là chính sink đã dừng
+    broker_checked_at TIMESTAMPTZ,  -- lần kiểm gần nhất; cũ quá nghĩa là chính sink đã dừng
+    brokers_up        INT[]         -- mã broker còn sống theo metadata lần kiểm gần nhất; NULL = không hỏi được
 );
 INSERT INTO sink_stats (id) VALUES (1);
 

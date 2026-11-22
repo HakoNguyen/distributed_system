@@ -43,4 +43,22 @@ def test_stats_endpoint_exposes_broker_state(replica_client):
 
     assert stats["broker_ok"] is False
     assert stats["broker_lost_at"] is not None
-    assert {"lag", "broker_checked_at"} <= stats.keys()
+    assert {"lag", "broker_checked_at", "brokers_up"} <= stats.keys()
+
+
+def test_brokers_up_recorded_even_when_check_fails(db):
+    """PT-11: hỏi được metadata mà kiểm broker vẫn lỗi (watermark timeout) thì vẫn ghi broker nào còn sống."""
+    replica.record_broker_check(True, 0, [1, 2, 3])
+    replica.record_broker_check(False, None, [1])
+
+    row = one_row("sink_stats")
+    assert row["broker_ok"] is False
+    assert row["brokers_up"] == [1]
+
+
+def test_brokers_up_cleared_when_metadata_unreachable(db):
+    """PT-11: không hỏi được metadata thì brokers_up = NULL, không giữ số cũ (không tô xanh broker đã chết)."""
+    replica.record_broker_check(True, 0, [1, 2, 3])
+    replica.record_broker_check(False, None, None)
+
+    assert one_row("sink_stats")["brokers_up"] is None

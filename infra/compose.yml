@@ -180,7 +180,8 @@ services:
     command:
       - |
         rf=$$(echo "$$BROKER_SEEDS" | tr ',' '\n' | grep -c .)
-        until out=$$(rpk topic create inventory.movement -p 3 -r $$rf -c write.caching=false -X brokers=$$KAFKA_BROKERS 2>&1) &&
+        # LogAppendTime: timestamp thông điệp = giờ broker leader ghi (sink lưu event_log.kafka_ts để truy vết)
+        until out=$$(rpk topic create inventory.movement -p 3 -r $$rf -c write.caching=false -c message.timestamp.type=LogAppendTime -X brokers=$$KAFKA_BROKERS 2>&1) &&
               echo "$$out" | grep -qE 'inventory.movement +(OK|TOPIC_ALREADY_EXISTS)'; do
           echo "Chờ cụm broker: $$out"; sleep 3
         done

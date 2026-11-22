@@ -16,7 +16,8 @@ from common.models import Heartbeat, SnapshotCell
 # ---------------------------------------------------------------------------
 # 1. Áp sự kiện (sink gọi)
 # ---------------------------------------------------------------------------
-def apply_event(e: dict, partition: int | None = None, offset: int | None = None) -> str:
+def apply_event(e: dict, partition: int | None = None, offset: int | None = None,
+                kafka_ts: datetime | None = None) -> str:
     """Áp một sự kiện vào CSDL trung tâm. Trả 'new' hoặc 'duplicate'.
 
     Chịu được hai chuyện chắc chắn xảy ra trong hệ phân tán:
@@ -28,11 +29,11 @@ def apply_event(e: dict, partition: int | None = None, offset: int | None = None
         inserted = conn.execute(
             """INSERT INTO event_log (branch_id, movement_id, product_id, move_type,
                                       qty_delta, qty_after, node_time,
-                                      kafka_partition, kafka_offset)
-               VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
+                                      kafka_partition, kafka_offset, kafka_ts)
+               VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
                ON CONFLICT (branch_id, movement_id) DO NOTHING""",
             (e["branch_id"], e["movement_id"], e["product_id"], e["move_type"],
-             e["qty_delta"], e["qty_after"], e["node_time"], partition, offset),
+             e["qty_delta"], e["qty_after"], e["node_time"], partition, offset, kafka_ts),
         ).rowcount
 
         if inserted == 0:  # lớp chống trùng thứ nhất
@@ -216,7 +217,7 @@ def query_inventory(conn):
     """Tồn toàn chuỗi. Người xem thấy MỘT bảng, không cần biết số đến từ máy nào."""
     rows = conn.execute(
         """SELECT p.product_id, p.name, p.unit, p.reorder_point,
-                  s.branch_id, s.qty_on_hand, s.updated_at, s.source
+                  s.branch_id, s.qty_on_hand, s.updated_at, s.source, s.last_movement
            FROM product p
            LEFT JOIN inventory_snapshot s USING (product_id)
            ORDER BY p.product_id, s.branch_id"""
@@ -233,6 +234,7 @@ def query_inventory(conn):
                 "below_reorder": r["qty_on_hand"] < r["reorder_point"],
                 "updated_at": r["updated_at"],
                 "source": r["source"],  # 'reconcile' -> dashboard gắn nhãn "qua đối soát"
+                "last_movement": r["last_movement"],  # phiên bản của ô, để dashboard đọc đơn điệu
             }
             p["total"] += r["qty_on_hand"]
     return list(products.values())
@@ -283,23 +285,52 @@ def query_digest(conn):
 def query_stats(conn):
     return conn.execute(
         """SELECT processed, duplicates, last_event_at,
-                  broker_ok, broker_lost_at, lag, broker_checked_at
+                  broker_ok, broker_lost_at, lag, broker_checked_at, brokers_up
            FROM sink_stats"""
     ).fetchone()
+
+
+def query_trace(conn, branch_id: int, movement_id: int, product_id: int) -> dict:
+    """Bản sao này biết sự kiện (branch_id, movement_id) bằng đường nào (GET /api/trace). Chỉ đọc.
+
+    Ô vá bằng gossip hoặc đối soát không có dòng event_log, nên khi thiếu nhật ký thì suy ra từ ô snapshot:
+    ô đã tới movement_id thì sự kiện đã nằm trong số tồn (qua kênh ghi ô), chưa tới thì bản sao chưa biết.
+    """
+    event = conn.execute(
+        """SELECT move_type, qty_delta, qty_after, node_time, received_at,
+                  kafka_partition, kafka_offset, kafka_ts
+           FROM event_log WHERE branch_id = %s AND movement_id = %s""",
+        (branch_id, movement_id),
+    ).fetchone()
+    cell = conn.execute(
+        """SELECT qty_on_hand, last_movement, source, updated_at
+           FROM inventory_snapshot WHERE branch_id = %s AND product_id = %s""",
+        (branch_id, product_id),
+    ).fetchone()
+    if event:
+        via = "kafka"
+    elif cell is None or cell["last_movement"] < movement_id:
+        via = "missing"
+    else:  # sink chỉ ghi ô kèm dòng nhật ký, nên ô 'kafka' mà thiếu nhật ký nghĩa là sự kiện bị bỏ qua
+        via = "superseded" if cell["source"] == "kafka" else cell["source"]
+    return {"node": NODE_NAME, "branch_id": branch_id, "movement_id": movement_id,
+            "product_id": product_id, "event": event, "cell": cell, "via": via}
 
 
 # ---------------------------------------------------------------------------
 # 4. Trạng thái đường đọc Redpanda (sink gọi mỗi 5 giây, SAU khi đã hỏi Redpanda xong)
 # ---------------------------------------------------------------------------
-def record_broker_check(ok: bool, lag: int | None) -> None:
+def record_broker_check(ok: bool, lag: int | None, brokers_up: list[int] | None = None) -> None:
     """ok=False: giữ mốc mất broker đầu tiên của đợt này và giữ lag cũ.
-    ok=True: xoá mốc mất, ghi lag mới. Dashboard dựa vào đây để báo "Đồng bộ dừng từ HH:MM:SS"."""
+    ok=True: xoá mốc mất, ghi lag mới. Dashboard dựa vào đây để báo "Đồng bộ dừng từ HH:MM:SS".
+    brokers_up: broker còn sống theo metadata vừa hỏi; None = không hỏi được. Luôn ghi đè, không giữ số cũ."""
     with pool.connection() as conn:
         conn.execute(
             """UPDATE sink_stats
                SET broker_ok = %(ok)s,
                    broker_checked_at = now(),
                    broker_lost_at = CASE WHEN %(ok)s THEN NULL ELSE coalesce(broker_lost_at, now()) END,
-                   lag = coalesce(%(lag)s::bigint, lag)""",
-            {"ok": ok, "lag": lag},
+                   lag = coalesce(%(lag)s::bigint, lag),
+                   brokers_up = %(up)s""",
+            {"ok": ok, "lag": lag, "up": brokers_up},
         )

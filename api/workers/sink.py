@@ -10,8 +10,9 @@ import json
 import signal
 import sys
 import time
+from datetime import datetime, timezone
 
-from confluent_kafka import Consumer, KafkaError, KafkaException, TopicPartition
+from confluent_kafka import TIMESTAMP_NOT_AVAILABLE, Consumer, KafkaError, KafkaException, TopicPartition
 
 from common.config import BROKER_CHECK_EVERY_S, CONSUMER_GROUP, KAFKA_BROKERS, NODE_NAME, TOPIC
 from common.db import open_pool
@@ -20,14 +21,15 @@ from services.replica import apply_event, record_broker_check
 TAG = f"[sink {NODE_NAME}]"
 
 
-def broker_lag(consumer: Consumer) -> int:
+def broker_lag(consumer: Consumer, md) -> int:
     """Hỏi Redpanda: số sự kiện bản sao này chưa áp = Σ(high watermark − vị trí đã áp).
-    Ném lỗi nếu topic chưa có hoặc không hỏi được leader của mọi phân hoạch (mất broker, mất đa số).
+    `md` = metadata vừa hỏi (list_topics). Ném lỗi nếu topic chưa có hoặc không hỏi được leader của mọi
+    phân hoạch (mất broker, mất đa số).
 
     Vị trí đã áp lấy từ position() (consumer tự biết, sự kiện poll trả về đều đã ghi CSDL), không hỏi
     offset đã commit: lời hỏi đó phụ thuộc coordinator của group và hay timeout lúc một broker bị cắt
     (K7c) dù việc đọc vẫn chạy. Chỉ khi chưa có vị trí (mới khởi động) mới hỏi committed()."""
-    t = consumer.list_topics(TOPIC, timeout=3).topics.get(TOPIC)
+    t = md.topics.get(TOPIC)
     if t is None or t.error is not None:
         raise KafkaException(t.error if t else KafkaError(KafkaError.UNKNOWN_TOPIC_OR_PART))
     tps = [TopicPartition(TOPIC, p) for p in t.partitions]
@@ -48,15 +50,18 @@ def broker_lag(consumer: Consumer) -> int:
 
 def check_broker(consumer: Consumer, was_ok: bool | None) -> bool:
     """Gọi Redpanda trước (ngoài transaction), rồi mới ghi kết quả vào CSDL."""
+    up = None  # broker còn sống theo metadata (đã kiểm: broker dừng thì biến khỏi danh sách; ISR thì không)
     try:
-        lag, ok = broker_lag(consumer), True
+        md = consumer.list_topics(TOPIC, timeout=3)
+        up = sorted(md.brokers)
+        lag, ok = broker_lag(consumer, md), True
     except Exception as e:
         lag, ok = None, False
         if was_ok is not False:
             print(f"{TAG} Mất đường đọc Redpanda ({e}). Đồng bộ dừng; tự đọc tiếp khi có lại")
     if ok and was_ok is False:
         print(f"{TAG} Có lại đường đọc Redpanda, còn {lag} sự kiện chưa áp")
-    record_broker_check(ok, lag)
+    record_broker_check(ok, lag, up)
     return ok
 
 
@@ -104,7 +109,9 @@ def main() -> None:
                 continue
 
             e = json.loads(msg.value())
-            result = apply_event(e, msg.partition(), msg.offset())
+            ts_type, ts_ms = msg.timestamp()  # topic LogAppendTime: giờ broker leader ghi
+            kafka_ts = None if ts_type == TIMESTAMP_NOT_AVAILABLE else datetime.fromtimestamp(ts_ms / 1000, timezone.utc)
+            result = apply_event(e, msg.partition(), msg.offset(), kafka_ts)
             label = "mới" if result == "new" else "TRÙNG, bỏ qua"
             print(f"{TAG} cn{e['branch_id']} #{e['movement_id']} {e['move_type']} "
                   f"sp{e['product_id']} {e['qty_delta']:+d} -> {e['qty_after']}  ({label})")

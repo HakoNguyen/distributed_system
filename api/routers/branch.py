@@ -45,6 +45,12 @@ def snapshot():
     return branch.snapshot()
 
 
+@router.get("/api/movement/{movement_id}")
+def movement(movement_id: int):
+    """Dashboard truy vết một sự kiện: mốc ở chi nhánh và lúc relay gửi xong. Chỉ đọc."""
+    return branch.movement(movement_id)
+
+
 @router.get("/api/status")
 def status():
     """Trạng thái cho màn hình POS: outbox còn bao nhiêu, đường nối tới từng bản sao ra sao."""

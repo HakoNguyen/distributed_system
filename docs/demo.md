@@ -201,7 +201,23 @@ docker compose exec branch_api sh tre.sh on 300 100.64.0.1
 
 ## 5. Kịch bản K1–K9, K11, K12
 
-(K10 dành cho vòng 5.) Từ vòng 4 dashboard có **sơ đồ đồng bộ** (topology sống) ngay dưới các thẻ chi nhánh: hàng
+(K10 dành cho vòng 5.) Từ vòng 4 dashboard có **thanh bên** (luôn hiện) và **bốn tab**; tab đang mở nằm trong địa chỉ
+(`http://localhost/#ban-sao`) nên tải lại vẫn giữ. Các kịch bản bên dưới viết từ trước vòng 4 gọi tên chỗ cũ:
+
+| Chỗ cũ trong kịch bản | Từ vòng 4 nằm ở |
+|---|---|
+| "Dòng đầu dashboard": bản sao nào trả lời, vệt `A B C`, số đã áp / bản trùng | Thanh bên, mục "Bản sao đang trả lời" và hộp bộ đếm |
+| Dòng "Đồng bộ", "Gossip lần cuối" | Thanh bên, mục "Đồng bộ" |
+| Dải vàng đọc đơn điệu (K11) | Thanh bên, ngay dưới "Bản sao đang trả lời" (hiện ở mọi tab) |
+| Thẻ chi nhánh, sơ đồ đồng bộ | Tab **Tổng quan** (`#tong-quan`) |
+| Bảng tồn kho, nhãn "qua đối soát" | Tab **Tồn kho** (`#ton-kho`) |
+| Cột "Sự kiện vừa nhận", khung truy vết (K12) | Tab **Sự kiện & truy vết** (`#su-kien`): danh sách bên trái, truy vết bên phải |
+| Ô / bảng "Các bản sao trung tâm" (dấu vân tay, cột Gossip) | Tab **Bản sao** (`#ban-sao`); mở thẳng một bản sao thì tab này báo "chỉ có khi mở qua nginx" |
+
+Chấm màu cạnh tên tab ở thanh bên: Tổng quan đỏ khi có chi nhánh mất liên lạc, vàng khi đồng bộ dừng; Bản sao đỏ khi
+có bản sao không liên lạc được, vàng khi dấu vân tay lệch.
+
+Dashboard có **sơ đồ đồng bộ** (topology sống) ngay dưới các thẻ chi nhánh: hàng
 trên là CN1–CN3, giữa là cụm Redpanda với broker 1–3, dưới là bản sao A–C. Cạnh relay → cụm, cụm → sink (kênh 1),
 gossip giữa bản sao (kênh 2), đối soát bản sao → chi nhánh nét đứt vàng (kênh 3, chỉ hiện khi đang đối soát). Màu:
 xanh chạy, vàng tồn đọng hoặc đang đối soát, đỏ lỗi, xám nét đứt không biết hoặc không chạy; cạnh nhấp nháy khi có dữ
@@ -229,8 +245,8 @@ Bảng tóm tắt: **kịch bản nào chứng minh tính chất gì, nhìn ở 
 | K7c | Mất máy A (broker + nginx) | Rút mạng máy A | Dashboard máy B, C (cổng 8000) | B và C vẫn đồng bộ với nhau qua 2 broker còn lại; cắm lại thì 3 bản sao khớp |
 | K8 | Bản sao tự vá lẫn nhau (gossip) | Dừng sink B, bán, cho B bỏ qua các sự kiện đó | Bảng bản sao (cột Gossip); dashboard B | B lệch rồi khớp lại trong ≤ 20 giây, "vá N ô"; B mãi ít hơn A N sự kiện đã áp nhưng vẫn "Khớp từng ô" |
 | K9 | Đối soát với chi nhánh | Dừng cả 3 broker, bán ở CN2 | Dòng "Đồng bộ"; ô CN2 trên bảng tồn | Sau 15–25 giây kể từ "dừng từ", 3 bản sao cập nhật CN2, ô ghi "qua đối soát", 3 dấu vân tay khớp dù broker còn dừng |
-| K11 | Đọc đơn điệu | Dừng sink B, bán ở CN2, xem dashboard qua nginx | Dải vàng dưới đầu trang; vệt served-by; cột CN2 | Lần B trả lời: số CN2 **không lùi**, ô vàng trong vệt, "Bản sao B trễ N sự kiện ở CN2"; gossip vá B thì nhãn tự mất |
-| K12 | Truy vết sự kiện | Bấm một sự kiện ở cột "Sự kiện vừa nhận" | Khung "Truy vết CN2 #N" | Mốc chi nhánh ghi, broker ghi (phân hoạch, offset, timestamp Kafka), relay đánh dấu đã gửi, từng bản sao nhận qua Redpanda hay được vá bằng gossip/đối soát |
+| K11 | Đọc đơn điệu | Dừng sink B, bán ở CN2, xem dashboard qua nginx | Thanh bên (dải vàng, vệt served-by); tab Tồn kho, cột CN2 | Lần B trả lời: số CN2 **không lùi**, ô vàng trong vệt, "Bản sao B trễ N sự kiện ở CN2"; gossip vá B thì nhãn tự mất |
+| K12 | Truy vết sự kiện | Tab Sự kiện & truy vết, bấm một sự kiện | Khung truy vết bên phải | Mốc chi nhánh ghi, broker ghi (phân hoạch, offset, timestamp Kafka), relay đánh dấu đã gửi, từng bản sao nhận qua Redpanda hay được vá bằng gossip/đối soát |
 
 Trên sơ đồ đồng bộ khi chạy lại K1–K9 (22/11/2026, 3 node một máy, `make local-reset` sau vòng 4). Đã kiểm trên
 giao diện (Chrome headless, đọc trạng thái từng cạnh và chụp màn hình): K1, K2, K3, K4, K7a, K7b, K7c, K9. K5, K6
@@ -476,7 +492,7 @@ Mở sẵn: dashboard qua nginx `http://localhost/` (vệt served-by xen kẽ `A
 
 **Thấy:**
 - Sau 1–2 giây các ô CN2 đổi số (A hoặc C trả lời). Tới lượt B trả lời: số **giữ nguyên**, không lùi về số cũ; ô
-  của B trong vệt served-by tô vàng, dòng trên đầu ghi "(trễ, giữ số cũ)"; dải vàng "Bản sao B trễ 5 sự kiện ở CN2
+  của B trong vệt served-by ở thanh bên tô vàng, ghi "trễ hơn số đang hiện: giữ số cũ"; dải vàng ở thanh bên "Bản sao B trễ 5 sự kiện ở CN2
   (trả lời lúc HH:MM:SS). Đang giữ số mới nhất đã thấy, không để số lùi lại (đọc đơn điệu)". Bảng bản sao: B "Đang
   đuổi theo".
 - Tab `:8010` (chỉ B) vẫn hiện số cũ: đó là số thật của B, chỉ lớp đọc đơn điệu của tab qua nginx mới giữ số mới.
@@ -496,7 +512,7 @@ cũng thấy "Bản sao C trễ 8 ô ở CN2" vài giây, 0 lần lùi.
 
 Mở dashboard qua nginx (mở thẳng một bản sao thì chỉ có dòng của bản sao đó, không hỏi được chi nhánh).
 
-**Làm:** bán 1 đơn ở CN2, rồi bấm sự kiện đó ở cột "Sự kiện vừa nhận". "Truy vết lại" hỏi lại; "Đóng" ẩn khung.
+**Làm:** bán 1 đơn ở CN2, rồi mở tab **Sự kiện & truy vết** và bấm sự kiện đó ở danh sách bên trái (dòng đang chọn tô xanh nhạt). "Truy vết lại" hỏi lại; "Đóng" bỏ chọn.
 
 **Thấy** (khung "Truy vết CN2 #N", mỗi dòng một mốc, giờ đến mili giây):
 1. CN2 ghi biến động vào sổ cái và outbox (cùng transaction), giờ chi nhánh.

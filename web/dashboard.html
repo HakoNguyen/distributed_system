@@ -97,6 +97,9 @@
   td.low::before { content: ""; display: inline-block; width: .5rem; height: .5rem; border-radius: 50%; background: var(--alert); margin-right: .4rem; vertical-align: middle; }
   td.low { color: var(--alert); font-weight: 600; }
   td.flash { animation: flash 1.6s ease-out; }
+  td small.via { display: block; font-size: .7rem; font-weight: 600; color: var(--pending); font-style: normal; }
+  #replicas td.gossip { text-align: left; white-space: normal; color: var(--muted); font-size: .88rem; }
+  #replicas td.gossip b { color: var(--ink); }
   @keyframes flash { from { background: #FFE9A8; } to { background: transparent; } }
   tr:last-child td { border-bottom: 0; }
 
@@ -128,7 +131,7 @@
 <div id="nodes" aria-live="polite"></div>
 
 <section id="replicas" aria-live="polite">
-  <h3>Các bản sao trung tâm <span>mỗi máy giữ một bản, tự đồng bộ qua Redpanda</span></h3>
+  <h3>Các bản sao trung tâm <span>mỗi máy giữ một bản, đồng bộ qua Redpanda; gossip vá ô còn thiếu</span></h3>
   <div class="table-wrap"><table id="replica-table"></table></div>
 </section>
 
@@ -178,18 +181,37 @@ const clock = (ts) => new Date(ts).toLocaleTimeString("vi-VN", { hour12: false }
 function syncState(d) {
   if (d.broker_checked_at && Date.now() - Date.parse(d.broker_checked_at) > 15000)
     return { down: true, text: `Đồng bộ dừng: sink của bản sao này không chạy (kiểm lần cuối ${ago(d.broker_checked_at)})` };
-  if (d.broker_ok === false)
+  if (d.broker_ok === false) {
+    // Mất broker quá 15 giây: bản sao kéo snapshot thẳng từ chi nhánh (đối soát, vòng 3)
+    const rec = (d.sync_peers || []).filter((p) => p.channel === "reconcile" && p.last_ok_at &&
+                                                   Date.parse(p.last_ok_at) >= Date.parse(d.broker_lost_at));
+    const last = rec.reduce((m, p) => Math.max(m, Date.parse(p.last_ok_at)), 0);
     return { down: true, since: d.broker_lost_at,
-             text: `Đồng bộ dừng từ <b>${clock(d.broker_lost_at)}</b>: bản sao này không đọc được Redpanda. Chi nhánh vẫn bán, số dưới đây là số cũ` };
+             text: `Đồng bộ qua Redpanda dừng từ <b>${clock(d.broker_lost_at)}</b>: ` + (rec.length
+               ? `đang đối soát thẳng với chi nhánh (lần cuối ${clock(last)}); ô vá bằng đối soát ghi "qua đối soát"`
+               : `bản sao này không đọc được Redpanda. Chi nhánh vẫn bán; sau 15 giây sẽ đối soát thẳng với chi nhánh`) };
+  }
   if (d.broker_ok === true)
     return { down: false, text: `Đồng bộ qua Redpanda đang chạy, còn <b>${d.lag}</b> sự kiện chưa áp` };
   return { down: false, text: "Đồng bộ qua Redpanda: đang kiểm…" };
 }
 
-function renderSync(s) {
+// Gossip của một bản sao với các bản sao khác (sync_peers, channel gossip)
+function gossipSummary(d) {
+  const g = (d.sync_peers || []).filter((p) => p.channel === "gossip");
+  if (!g.length) return null;
+  return {
+    peers: g.map((p) => p.failing_since ? `${esc(p.peer)} lỗi từ ${clock(p.failing_since)}`
+                                        : `${esc(p.peer)} ${ago(p.last_ok_at)}`).join(", "),
+    patched: g.reduce((s, p) => s + Number(p.cells_patched), 0),
+  };
+}
+
+function renderSync(s, digest) {
   const el = document.getElementById("sync");
   el.className = s.down ? "down" : "";
-  el.innerHTML = s.text;
+  const g = gossipSummary(digest);
+  el.innerHTML = s.text + (g ? `<br>Gossip lần cuối: ${g.peers}; đã vá <b>${g.patched}</b> ô` : "");
 }
 
 function renderNodes(nodes, sync) {
@@ -238,8 +260,11 @@ function renderInventory(items, nodes) {
       const changed = !firstRender && prevQty.has(key) && prevQty.get(key) !== c.qty;
       prevQty.set(key, c.qty);
       const cls = [c.below_reorder ? "low" : "", alive.get(b) === false ? "stale" : "", changed ? "flash" : ""].join(" ");
-      const title = c.below_reorder ? `Dưới ngưỡng đặt lại (${p.reorder_point})` : "";
-      return `<td class="${cls}" title="${title}">${c.qty}</td>`;
+      const title = [c.below_reorder ? `Dưới ngưỡng đặt lại (${p.reorder_point})` : "",
+                     c.source === "reconcile" ? "Số đọc thẳng từ chi nhánh khi mất broker (đối soát)" : "",
+                     c.source === "gossip" ? "Số vá nhờ bản sao khác (gossip)" : ""].filter(Boolean).join(". ");
+      const via = c.source === "reconcile" ? `<small class="via">qua đối soát</small>` : "";
+      return `<td class="${cls}" title="${title}">${c.qty}${via}</td>`;
     }).join("");
     return `<tr><td class="id">${p.product_id}</td><td class="name">${esc(p.name)}</td>${cells}<td class="total">${p.total}</td></tr>`;
   }).join("");
@@ -308,16 +333,19 @@ async function renderReplicas() {
   const lead = alive.reduce((a, r) => (!a || r.d.processed > a.d.processed ? r : a), null);
 
   const head = `<tr><th class="name">Bản sao</th><th>Sự kiện đã áp</th><th>Tổng tồn</th>` +
-               `<th>Dấu vân tay dữ liệu</th><th class="name">So với bản sao dẫn đầu</th></tr>`;
+               `<th>Dấu vân tay dữ liệu</th><th class="name">So với bản sao dẫn đầu</th>` +
+               `<th class="name">Gossip</th></tr>`;
   const body = results.map(({ n, d }) => {
     if (!d) return `<tr><td class="name">Máy ${esc(n)}</td><td>–</td><td>–</td><td>–</td>` +
-                   `<td class="name gone">Không liên lạc được</td></tr>`;
+                   `<td class="name gone">Không liên lạc được</td><td class="gossip">–</td></tr>`;
+    const g = gossipSummary(d);
+    const gossip = `<td class="gossip">${g ? `vá <b>${g.patched}</b> ô; ${g.peers}` : "chưa trao đổi"}</td>`;
     const same = lead && d.fingerprint === lead.d.fingerprint;
     const gap = lead ? lead.d.processed - d.processed : 0;
     const verdict = same ? `<td class="name match">Khớp từng ô</td>`
                          : `<td class="name behind">Đang đuổi theo${gap > 0 ? `, thiếu ${gap} sự kiện` : ""}</td>`;
     return `<tr><td class="name">Máy ${esc(n)}</td><td>${d.processed}</td><td>${d.total_qty}</td>` +
-           `<td><code>${esc(d.fingerprint)}</code></td>${verdict}</tr>`;
+           `<td><code>${esc(d.fingerprint)}</code></td>${verdict}${gossip}</tr>`;
   }).join("");
   document.getElementById("replica-table").innerHTML = `<thead>${head}</thead><tbody>${body}</tbody>`;
 }
@@ -328,7 +356,7 @@ async function tick() {
     const o = await getJSON("api/overview");
     const sync = syncState(o.digest);
     renderNodes(o.nodes, sync); renderInventory(o.inventory, o.nodes); renderEvents(o.events);
-    renderStats(o.digest); renderSync(sync); renderServed(o.served_by);
+    renderStats(o.digest); renderSync(sync, o.digest); renderServed(o.served_by);
     err.style.display = "none";
   } catch (e) {
     err.textContent = `Không đọc được dữ liệu (${e.message}). Nếu đang mở qua nginx, mọi bản sao có thể đều đang mất liên lạc.`;

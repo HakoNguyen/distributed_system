@@ -115,28 +115,40 @@
   .empty { padding: 1.25rem; color: var(--muted); background: var(--card); border-radius: 14px; box-shadow: var(--shadow); }
 
   /* ---------- Sơ đồ topology sống ---------- */
-  #topology svg { width: 100%; max-height: 380px; display: block; }
-  #topology .legend { display: flex; flex-wrap: wrap; gap: .3rem 1.2rem; font-size: .82rem; color: var(--muted); margin-top: .4rem; }
-  #topology .legend i { display: inline-block; width: 1.4rem; height: 0; border-top: 3px solid; vertical-align: middle; margin-right: .3rem; }
-  .box rect { fill: #fff; stroke-width: 2; }
-  .box text { font: 600 13px var(--font); fill: var(--ink); text-anchor: middle; }
-  .box text.sub { font-weight: 400; font-size: 11px; fill: var(--muted); }
-  .box.ok rect { stroke: var(--ok); }
-  .box.warn rect { stroke: var(--pending); fill: var(--pending-bg); }
-  .box.bad rect { stroke: var(--alert); fill: var(--alert-bg); }
-  .box.off rect, .box.unknown rect { stroke: var(--unknown); stroke-dasharray: 4 3; }
-  .box.served rect { stroke-width: 4; }
-  .cluster { fill: #F7F9F8; stroke: var(--rule); stroke-width: 1.5; }
-  .cluster-label { font: 600 12px var(--font); fill: var(--muted); }
-  .raft { stroke: var(--rule); stroke-width: 2; stroke-dasharray: 2 4; }
-  .edge { fill: none; stroke-width: 4; stroke-linecap: round; }
+  #topology .topo-head { display: flex; align-items: baseline; justify-content: space-between; gap: 1rem; flex-wrap: wrap; }
+  #topology .topo-head span { color: var(--muted); font-size: .85rem; }
+  #topology svg { width: 100%; max-width: 860px; max-height: 340px; display: block; margin: .3rem auto 0; }
+  #topology .legend { display: flex; flex-wrap: wrap; justify-content: center; gap: .3rem 1.1rem; font-size: .8rem; color: var(--muted); }
+  #topology .legend i { display: inline-block; width: 1.2rem; height: 0; border-top: 3px solid; vertical-align: middle; margin-right: .3rem; }
+  .col-label { font: 600 11px var(--font); fill: var(--muted); text-anchor: middle; letter-spacing: .08em; text-transform: uppercase; }
+  .box rect.frame { fill: #fff; stroke-width: 2; }
+  .box text { font: 600 14px var(--font); fill: var(--ink); text-anchor: middle; }
+  .box text.sub { font-weight: 500; font-size: 11px; }
+  .box.ok rect.frame { stroke: var(--rule); }
+  .box.warn rect.frame { stroke: var(--pending); fill: var(--pending-bg); }
+  .box.warn text.sub { fill: var(--pending); }
+  .box.bad rect.frame { stroke: var(--alert); fill: var(--alert-bg); }
+  .box.bad text.sub { fill: var(--alert); }
+  .box.off rect.frame, .box.unknown rect.frame { stroke: var(--unknown); stroke-dasharray: 4 3; }
+  .box.off text, .box.unknown text { fill: var(--muted); }
+  .box.served rect.frame { stroke: var(--ink); stroke-width: 2.5; }
+  .cluster { fill: #F5F7F6; stroke: var(--rule); stroke-width: 1.5; }
+  .cluster-sub { font: 500 11px var(--font); fill: var(--muted); text-anchor: middle; }
+  .broker circle { stroke-width: 2; }
+  .broker text { font: 700 12px var(--font); text-anchor: middle; fill: #fff; }
+  .broker.ok circle { fill: var(--ok); stroke: var(--ok); }
+  .broker.warn circle { fill: var(--pending); stroke: var(--pending); }
+  .broker.bad circle { fill: var(--alert); stroke: var(--alert); }
+  .broker.unknown circle { fill: #fff; stroke: var(--unknown); stroke-dasharray: 3 3; }
+  .broker.unknown text { fill: var(--muted); }
+  .edge { fill: none; stroke-width: 3.5; stroke-linecap: round; }
   .edge.ok { stroke: var(--ok); }
   .edge.warn { stroke: var(--pending); }
   .edge.bad { stroke: var(--alert); }
-  .edge.off, .edge.unknown { stroke: var(--unknown); stroke-dasharray: 3 6; stroke-width: 3; }
-  .edge.rec { stroke-dasharray: 10 6; stroke-width: 2.5; opacity: .85; }
-  .edge.flow { stroke-dasharray: 12 8; animation: flow .7s linear 2; }
-  @keyframes flow { to { stroke-dashoffset: -40; } }
+  .edge.off, .edge.unknown { stroke: var(--unknown); stroke-dasharray: 3 6; stroke-width: 2.5; }
+  .edge.rec { stroke-dasharray: 8 6; stroke-width: 2; opacity: .9; }
+  .edge.flow { stroke-dasharray: 10 8; animation: flow .8s linear 2; }
+  @keyframes flow { to { stroke-dashoffset: -36; } }
 
   /* ---------- Bảng ---------- */
   .table-wrap { overflow-x: auto; }
@@ -261,15 +273,15 @@
     </div>
     <div id="nodes" aria-live="polite"></div>
     <div class="card" id="topology">
-      <h3>Sơ đồ đồng bộ</h3>
-      <p class="sub" id="topo-view"></p>
-      <svg id="topo-svg" viewBox="0 0 900 340" role="img" aria-labelledby="topo-desc"><desc id="topo-desc">Sơ đồ ba node, mỗi node có chi nhánh, broker và bản sao; màu cạnh là trạng thái từng kênh.</desc></svg>
+      <div class="topo-head"><h3>Sơ đồ đồng bộ</h3><span id="topo-view"></span></div>
+      <svg id="topo-svg" viewBox="0 0 820 320" role="img" aria-labelledby="topo-desc"><desc id="topo-desc">Luồng dữ liệu: ba chi nhánh gửi vào cụm Redpanda, cụm phát tới ba bản sao; các bản sao gossip với nhau.</desc></svg>
       <div class="legend">
-        <span><i style="border-color:var(--ok)"></i>đang chạy</span>
-        <span><i style="border-color:var(--pending)"></i>còn tồn đọng / đang đối soát</span>
+        <span><i style="border-color:var(--ok)"></i>chạy</span>
+        <span><i style="border-color:var(--pending)"></i>tồn đọng</span>
         <span><i style="border-color:var(--alert)"></i>lỗi</span>
-        <span><i style="border-color:var(--unknown);border-top-style:dashed"></i>không biết / không chạy</span>
-        <span>Kênh 1: relay → cụm → sink. Kênh 2: gossip giữa bản sao. Kênh 3 (nét đứt): đối soát bản sao → chi nhánh khi mất broker. Cạnh nhấp nháy: vừa có dữ liệu đi qua; di chuột lên cạnh để xem chi tiết.</span>
+        <span><i style="border-color:var(--unknown);border-top-style:dashed"></i>không rõ</span>
+        <span><i style="border-color:var(--pending);border-top-style:dashed"></i>đối soát</span>
+        <span>di chuột để xem chi tiết</span>
       </div>
     </div>
   </section>
@@ -702,13 +714,19 @@ function reconcileEdges(digests, now) {
   return out;
 }
 
+// Bố cục luồng trái → phải: chi nhánh dồn vào cụm Redpanda (log chung), cụm tách ra tới từng bản sao.
 const topoPrev = { processed: {}, patched: {}, rec: {}, moved: {} };
-const colX = (i) => 150 + 300 * i;
+const ROW = (i) => 70 + 90 * i;                       // hàng của CN1/A, CN2/B, CN3/C
+const CN = { x: 40, w: 130 }, RP = { x: 620, w: 130 }, CL = { x: 315, y: 45, w: 170, h: 230, mid: 160 };
 const maxMovementOf = (view, id) => view ? maxMovement(view, id) : 0;
 
-function svgBox(x, y, label, sub, s, title, extra = "") {
-  return `<g class="box ${s} ${extra}"><title>${esc(title)}</title><rect x="${x - 72}" y="${y - 22}" width="144" height="44" rx="8"/>` +
-         `<text x="${x}" y="${y - 3}">${esc(label)}</text><text class="sub" x="${x}" y="${y + 13}">${esc(sub)}</text></g>`;
+// Hộp: chỉ tên; dòng phụ chỉ hiện khi có chuyện. Chi tiết nằm ở tooltip.
+function svgBox(x, y, w, label, sub, s, title, color, extra = "") {
+  const h = 42, bar = color ? `<rect x="${x}" y="${y - h / 2}" width="6" height="${h}" rx="3" fill="${color}"/>` : "";
+  const text = sub ? `<text x="${x + w / 2}" y="${y - 2}">${esc(label)}</text><text class="sub" x="${x + w / 2}" y="${y + 13}">${esc(sub)}</text>`
+                   : `<text x="${x + w / 2}" y="${y + 5}">${esc(label)}</text>`;
+  return `<g class="box ${s} ${extra}"><title>${esc(title)}</title>` +
+         `<rect class="frame" x="${x}" y="${y - h / 2}" width="${w}" height="${h}" rx="10"/>${bar}${text}</g>`;
 }
 function svgEdge(d, st, flow, extra = "") {
   return `<g><title>${esc(st.text)}</title><path class="edge ${st.s} ${flow ? "flow" : ""} ${extra}" d="${d}"/></g>`;
@@ -721,62 +739,76 @@ function renderTopology(peers, view) {
   const digests = direct ? (view ? { [view.served_by]: view.digest } : {}) : peers.digests;
   const statuses = direct ? {} : peers.statuses;
   const nodesById = new Map((view?.nodes || []).map((n) => [n.branch_id, n]));
-  document.getElementById("topo-view").textContent = direct
-    ? `Mở thẳng bản sao ${view?.served_by ?? "?"}: chỉ có góc nhìn của bản sao này (mở qua nginx để thấy cả ba).`
-    : "Góc nhìn ghép từ mọi bản sao và chi nhánh hỏi được qua nginx.";
+  document.getElementById("topo-view").textContent = direct ? `Chỉ góc nhìn của bản sao ${view?.served_by ?? "?"} (mở qua nginx để thấy cả ba)` : "";
 
-  const parts = [];
-  const brokers = [1, 2, 3].map((id) => brokerState(digests, id, now));
-  const up = brokers.filter((b) => b.s === "ok" || b.s === "warn").length;
-  parts.push(`<rect class="cluster" x="40" y="96" width="820" height="104" rx="12"/>`,
-             `<text class="cluster-label" x="56" y="114">Cụm Redpanda (Raft, RF=3): ${brokers.some((b) => b.of) ? `${up}/3 broker` : "không hỏi được"}</text>`,
-             `<line class="raft" x1="${colX(0) + 72}" y1="156" x2="${colX(1) - 72}" y2="156"/>`,
-             `<line class="raft" x1="${colX(1) + 72}" y1="156" x2="${colX(2) - 72}" y2="156"/>`);
-
+  const inX = CL.x, outX = CL.x + CL.w, cnR = CN.x + CN.w;
+  const edges = [], boxes = [];
   NODES.forEach((x, i) => {
-    const id = i + 1, cx = colX(i);
-    // Kênh 1: relay → cụm, cụm → sink
+    const id = i + 1, y = ROW(i);
+    // Kênh 1: relay của chi nhánh dồn vào cụm; cụm tách ra tới sink của từng bản sao
     const node = nodesById.get(id);
     const relay = relayEdge(statuses[id], node);
     const moved = maxMovementOf(view, id);
-    parts.push(svgEdge(`M${cx},62 L${cx},96`, relay, moved > (topoPrev.moved[id] ?? moved)));
+    edges.push(svgEdge(`M${cnR},${y} C${cnR + 90},${y} ${inX - 70},${CL.mid} ${inX},${CL.mid}`, relay,
+                       moved > (topoPrev.moved[id] ?? moved)));
     topoPrev.moved[id] = moved;
     const d = digests[x];
     const sink = sinkEdge(d, now);
-    parts.push(svgEdge(`M${cx},200 L${cx},238`, sink, d && d.processed > (topoPrev.processed[x] ?? d.processed)));
+    edges.push(svgEdge(`M${outX},${CL.mid} C${outX + 70},${CL.mid} ${RP.x - 90},${y} ${RP.x},${y}`, sink,
+                       d && d.processed > (topoPrev.processed[x] ?? d.processed)));
     if (d) topoPrev.processed[x] = d.processed;
 
-    const cn = !node ? { s: "unknown", sub: "chưa có heartbeat" } : node.alive ? { s: "ok", sub: `outbox ${node.outbox_backlog}` }
-             : { s: "bad", sub: "mất liên lạc" };
-    parts.push(svgBox(cx, 40, `CN${id}`, cn.sub, cn.s, `Chi nhánh ${id}: ${cn.sub}. Relay: ${relay.text}`));
-    parts.push(svgBox(cx, 156, `Broker ${id}`, brokers[i].of ? `${brokers[i].seen}/${brokers[i].of} sink thấy` : "không biết",
-                      brokers[i].s, brokers[i].text));
-    const rp = d === undefined ? { s: "unknown", sub: "không biết" } : d === null ? { s: "bad", sub: "không liên lạc được" }
-             : { s: "ok", sub: `đã áp ${d.processed}, ${d.fingerprint}` };
-    parts.push(svgBox(cx, 260, `Bản sao ${x}`, rp.sub, rp.s, `Bản sao ${x}: ${rp.sub}. Sink: ${sink.text}`,
-                      view?.served_by === x ? "served" : ""));
+    const cn = !node ? { s: "unknown", sub: "" } : !node.alive ? { s: "bad", sub: "mất liên lạc" }
+             : relay.s === "bad" ? { s: "warn", sub: "gửi lỗi" }
+             : node.outbox_backlog > 0 ? { s: "warn", sub: `chờ ${node.outbox_backlog}` } : { s: "ok", sub: "" };
+    boxes.push(svgBox(CN.x, y, CN.w, `CN${id}`, cn.sub, cn.s,
+                      `Chi nhánh ${id}: ${node ? (node.alive ? `outbox ${node.outbox_backlog}` : "mất liên lạc") : "chưa có heartbeat"}. Relay: ${relay.text}`,
+                      color(id)));
+    const rp = d === undefined ? { s: "unknown", sub: "" } : d === null ? { s: "bad", sub: "không liên lạc" }
+             : sink.s === "off" ? { s: "warn", sub: "sink dừng" } : { s: "ok", sub: "" };
+    boxes.push(svgBox(RP.x, y, RP.w, `Bản sao ${x}`, rp.sub, rp.s,
+                      `Bản sao ${x}: ${d ? `đã áp ${d.processed}, dấu vân tay ${d.fingerprint}` : d === null ? "không liên lạc được" : "không biết"}. Sink: ${sink.text}`,
+                      null, view?.served_by === x ? "served" : ""));
   });
 
-  // Kênh 2: gossip giữa các bản sao
-  [["A", "B", `M${colX(0) + 72},260 L${colX(1) - 72},260`], ["B", "C", `M${colX(1) + 72},260 L${colX(2) - 72},260`],
-   ["A", "C", `M${colX(0)},282 Q${colX(1)},345 ${colX(2)},282`]].forEach(([x, y, path]) => {
+  // Kênh 2: gossip giữa các bản sao (cung ở mép phải)
+  const gx = RP.x + RP.w;
+  [["A", "B", `M${gx},${ROW(0)} C${gx + 32},${ROW(0)} ${gx + 32},${ROW(1)} ${gx},${ROW(1)}`],
+   ["B", "C", `M${gx},${ROW(1)} C${gx + 32},${ROW(1)} ${gx + 32},${ROW(2)} ${gx},${ROW(2)}`],
+   ["A", "C", `M${gx},${ROW(0) - 10} C${gx + 66},${ROW(0) - 10} ${gx + 66},${ROW(2) + 10} ${gx},${ROW(2) + 10}`]].forEach(([x, y, path]) => {
     const g = gossipEdge(digests, x, y, now);
     const key = x + y;
-    parts.push(svgEdge(path, g, g.patched > (topoPrev.patched[key] ?? g.patched)));
+    edges.push(svgEdge(path, g, g.patched > (topoPrev.patched[key] ?? g.patched)));
     topoPrev.patched[key] = g.patched;
   });
 
-  // Kênh 3: đối soát bản sao → chi nhánh, chỉ khi đang đối soát
+  // Kênh 3: đối soát bản sao → chi nhánh, chỉ khi đang đối soát: làn nét đứt đi vòng dưới cụm (bỏ qua Redpanda)
+  const lane = CL.y + CL.h + 25;
   for (const r of reconcileEdges(digests, now)) {
     const xi = NODES.indexOf(r.x), yi = r.id - 1;
     if (xi < 0 || yi < 0 || yi > 2) continue;
-    const key = r.x + r.id;
-    parts.push(svgEdge(`M${colX(xi) - 72},252 Q${Math.min(colX(xi), colX(yi)) - 140},150 ${colX(yi) - 72},48`, r,
+    const key = r.x + r.id, y1 = ROW(xi) + 14, y2 = ROW(yi) + 14;
+    edges.push(svgEdge(`M${RP.x},${y1} C${RP.x - 50},${y1} ${RP.x - 50},${lane} ${RP.x - 110},${lane} ` +
+                       `L${cnR + 110},${lane} C${cnR + 50},${lane} ${cnR + 50},${y2} ${cnR},${y2}`, r,
                        r.patched > (topoPrev.rec[key] ?? r.patched), "rec"));
     topoPrev.rec[key] = r.patched;
   }
+
+  // Cụm Redpanda: ba broker là ba chấm
+  const brokers = [1, 2, 3].map((id) => brokerState(digests, id, now));
+  const up = brokers.filter((b) => b.s === "ok" || b.s === "warn").length;
+  const known = brokers.some((b) => b.of);
+  const cluster = `<g><title>${esc(brokers.map((b) => b.text).join("; "))}</title>` +
+    `<rect class="cluster" x="${CL.x}" y="${CL.y}" width="${CL.w}" height="${CL.h}" rx="16"/>` +
+    brokers.map((b, i) => `<g class="broker ${b.s}"><circle cx="${CL.x + 45 + 40 * i}" cy="${CL.mid}" r="15"/>` +
+                          `<text x="${CL.x + 45 + 40 * i}" y="${CL.mid + 4}">${i + 1}</text></g>`).join("") +
+    `<text class="cluster-sub" x="${CL.x + CL.w / 2}" y="${CL.mid + 40}">${known ? `${up}/3 broker` : "không rõ"}</text></g>`;
+
+  const labels = [["Chi nhánh", CN.x + CN.w / 2], ["Redpanda", CL.x + CL.w / 2], ["Bản sao", RP.x + RP.w / 2]]
+    .map(([t, x]) => `<text class="col-label" x="${x}" y="22">${t}</text>`).join("");
   document.getElementById("topo-svg").innerHTML =
-    `<desc id="topo-desc">Sơ đồ ba node, mỗi node có chi nhánh, broker và bản sao; màu cạnh là trạng thái từng kênh.</desc>` + parts.join("");
+    `<desc id="topo-desc">Luồng dữ liệu: ba chi nhánh gửi vào cụm Redpanda, cụm phát tới ba bản sao; các bản sao gossip với nhau.</desc>` +
+    labels + edges.join("") + cluster + boxes.join("");
 }
 
 // ---------------------------------------------------------------------------

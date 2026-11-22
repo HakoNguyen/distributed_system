@@ -217,11 +217,14 @@ docker compose exec branch_api sh tre.sh on 300 100.64.0.1
 Chấm màu cạnh tên tab ở thanh bên: Tổng quan đỏ khi có chi nhánh mất liên lạc, vàng khi đồng bộ dừng; Bản sao đỏ khi
 có bản sao không liên lạc được, vàng khi dấu vân tay lệch.
 
-Dashboard có **sơ đồ đồng bộ** (topology sống) ngay dưới các thẻ chi nhánh: hàng
-trên là CN1–CN3, giữa là cụm Redpanda với broker 1–3, dưới là bản sao A–C. Cạnh relay → cụm, cụm → sink (kênh 1),
-gossip giữa bản sao (kênh 2), đối soát bản sao → chi nhánh nét đứt vàng (kênh 3, chỉ hiện khi đang đối soát). Màu:
-xanh chạy, vàng tồn đọng hoặc đang đối soát, đỏ lỗi, xám nét đứt không biết hoặc không chạy; cạnh nhấp nháy khi có dữ
-liệu đi qua; di chuột lên cạnh để xem chi tiết. Đây là hình trả lời câu hỏi "ReplicaA và ReplicaB trao đổi thông tin
+Tab Tổng quan có **sơ đồ đồng bộ** (topology sống) dưới các thẻ chi nhánh, vẽ luồng từ trái sang phải: cột trái
+CN1–CN3, giữa là khối Redpanda với ba chấm broker 1, 2, 3, cột phải bản sao A–C. Kênh 1: dòng của ba chi nhánh **dồn
+vào** khối Redpanda (một log chung) rồi **tách ra** tới từng bản sao. Kênh 2: cung gossip nối các bản sao ở mép phải.
+Kênh 3: đối soát, nét đứt vàng đi vòng dưới khối Redpanda từ bản sao về chi nhánh, chỉ hiện khi đang đối soát. Màu:
+xanh chạy, vàng tồn đọng, đỏ lỗi, xám nét đứt không rõ hoặc không chạy; nét chạy gạch khi vừa có dữ liệu đi qua. Hộp
+chỉ ghi tên, chỉ thêm một dòng ngắn khi có chuyện ("chờ 3", "gửi lỗi", "mất liên lạc", "sink dừng", "không liên
+lạc"); số liệu chi tiết nằm ở chú thích khi di chuột (chữ trong ngoặc kép ở bảng "Trên sơ đồ đồng bộ" bên dưới là
+chú thích đó). Đây là hình trả lời câu hỏi "ReplicaA và ReplicaB trao đổi thông tin
 bằng cơ chế gì" (`docs/plan.md` mục 3.2). Mở qua nginx thì sơ đồ ghép góc nhìn của mọi bản sao và chi nhánh; mở thẳng
 một bản sao thì chỉ có góc nhìn của bản sao đó.
 

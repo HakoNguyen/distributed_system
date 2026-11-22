@@ -20,6 +20,8 @@ Một chuỗi cửa hàng tiện lợi có nhiều chi nhánh ở nhiều thành
 | Chịu được độ trễ mạng | Bán tại chỗ, đồng bộ bất đồng bộ; đo RTT trực tiếp | K5 |
 | Chống trùng (idempotency) | Khoá `(branch_id, movement_id)` ở bản sao | K6 |
 | Chịu lỗi của broker | Cụm 3 broker Redpanda (Raft, RF=3, `acks=all` có fsync); đồng bộ dừng thì POS và dashboard báo rõ, quầy vẫn bán | K7a, K7b, K7c |
+| Bản sao tự vá lẫn nhau (anti-entropy) | Gossip: các bản sao so dấu vân tay, kéo snapshot, merge theo từng ô | K8 |
+| Phục hồi từ nguồn sự thật | Mất broker quá 15 giây thì bản sao đối soát thẳng với chi nhánh qua API | K9 |
 
 ## 3. Kiến trúc
 
@@ -61,10 +63,32 @@ nhóm **core**: `nginx`, `console`, `topic-init` (tạo topic một lần khi c�
 nhiều bản sao, mỗi bản tự dựng bảng tồn toàn chuỗi từ cùng một luồng sự kiện, thì nginx có chỗ để chuyển sang khi
 một máy chết, và ta có thứ để so xem dữ liệu giữa các máy có thật sự khớp không.
 
-**Hai bản sao trao đổi với nhau thế nào?** Hiện tại **gián tiếp**, qua log chung trên Redpanda: mỗi bản sao một
-consumer group riêng (`replica-A`, `replica-B`), cùng đọc một log có thứ tự trong từng phân hoạch, áp bằng một hàm
-tất định và lũy đẳng, nên ra cùng một trạng thái (nhân bản máy trạng thái). Hai bản sao không gọi nhau trực tiếp;
-việc so dấu vân tay do trình duyệt làm qua nginx. Kênh trực tiếp giữa các bản sao là vòng 3 trong `plan.md`.
+**Hai bản sao trao đổi với nhau thế nào?** Qua **ba kênh**, cùng một luật merge (PT-10):
+
+```
+ Kênh 1 (chính):    Chi nhánh ─outbox/relay─▶ Redpanda ─┬▶ sink A ▶ Bản sao A
+                                                         └▶ sink B ▶ Bản sao B
+ Kênh 2 (gossip):   Bản sao A ◀── HTTP: so dấu vân tay, kéo snapshot ──▶ Bản sao B   (mỗi 10 giây)
+ Kênh 3 (đối soát): Bản sao X ── HTTP GET /api/snapshot ──▶ Chi nhánh               (chỉ khi mất broker > 15 giây)
+```
+
+1. **Gián tiếp, qua log chung trên Redpanda** (đường chính): mỗi bản sao một consumer group riêng (`replica-A`,
+   `replica-B`), cùng đọc một log có thứ tự trong từng phân hoạch, áp bằng một hàm tất định và lũy đẳng, nên ra cùng
+   một trạng thái (nhân bản máy trạng thái).
+2. **Trực tiếp, gossip (anti-entropy kiểu kéo)**: mỗi bản sao có một luồng nền cho từng bản sao khác (`REPLICA_URLS`,
+   bỏ dòng của chính mình). Mỗi 10 giây gọi `GET /api/digest` của bên kia; dấu vân tay khác thì kéo cả snapshot
+   (`GET /api/snapshot`, 60 ô). Chỉ vá ô mà bản sao mình **vẫn thiếu sau 2 lần kiểm liên tiếp** (≥ 10 giây), để sink
+   có thời gian làm việc: sink chậm vài giây (K1) không bao giờ bị vá. Bản sao lỡ sự kiện (sink dừng, offset bị nhảy,
+   dữ liệu broker mất) được vá trong ≤ 20 giây (K8).
+3. **Đối soát với chi nhánh** (nguồn sự thật): khi sink báo mất broker quá 15 giây, bản sao kéo
+   `GET /api/snapshot` thẳng từ mọi chi nhánh còn heartbeat (địa chỉ `branch_url` chi nhánh tự báo trong heartbeat).
+   Chỉ đọc qua API, không ghi về (PT-07) (K7b, K9).
+
+Luật merge "`movement_id` lớn hơn thắng" áp cho **từng ô** (chi nhánh, mã hàng) là CRDT dạng trạng thái
+(LWW-register với phiên bản do chính chi nhánh cấp): giao hoán, kết hợp, lũy đẳng, nên thứ tự nhận, nhận trùng, đến
+từ kênh nào đều hội tụ. So theo từng ô chứ không theo từng chi nhánh, vì sự kiện của một chi nhánh nằm rải trên nhiều
+phân hoạch và một chi nhánh có thể đã bán tiếp mã khác sau khi bản sao lỡ sự kiện. Lời gọi mạng luôn xong trước khi
+mở transaction ghi.
 
 ### Biến môi trường
 
@@ -85,7 +109,8 @@ việc so dấu vân tay do trình duyệt làm qua nginx. Kênh trực tiếp g
 | `BRANCH_ID` | `.env` | `branch_api`, `relay` | Số chi nhánh `1`, `2`, `3` |
 | `BRANCH_NAME` | `.env` (tuỳ chọn) | `branch_api` | Tên hiển thị, mặc định `Chi nhánh <BRANCH_ID>` |
 | `KAFKA_BROKERS` | `.env`, giống nhau ở mọi file | `relay`, `sink`, `console`, `topic-init` | Cả ba broker, cổng `19092`, cùng host và thứ tự với `BROKER_SEEDS`: `100.64.0.1:19092,100.64.0.2:19092,100.64.0.3:19092`; một máy: `redpanda-a:19092,redpanda-b:19092,redpanda-c:19092` |
-| `REPLICA_URLS` | `.env` | `branch_api` | Bản sao nhận heartbeat: `A=http://replica_api:8000,B=http://100.64.0.2:8000,C=...`; một máy: `A=http://replica-a:8000,...` |
+| `REPLICA_URLS` | `.env` | `branch_api`, `replica_api` | Mọi bản sao: `A=http://replica_api:8000,B=http://100.64.0.2:8000,C=...`; một máy: `A=http://replica-a:8000,...`. Chi nhánh gửi heartbeat tới tất cả; bản sao gossip với các bản sao còn lại (bỏ dòng trùng `NODE_NAME`) |
+| `BRANCH_URL` | `.env`, riêng từng máy | `branch_api` | Địa chỉ POS của chính chi nhánh này, nhìn từ máy khác; gửi kèm heartbeat để bản sao đối soát khi mất broker. Máy thật: `http://100.64.0.2:8001` (IP overlay của chính máy, cổng host); một máy: `http://branch-b:8000` |
 
 | `ROLE` | `infra/compose.yml` | mọi tiến trình Python | `branch` hoặc `replica` |
 | `DATABASE_URL` | `infra/compose.yml` | mọi tiến trình Python | CSDL của chính tiến trình: `postgresql://app:app@branch_db:5432/kho` hoặc `@replica_db` |
@@ -111,7 +136,8 @@ alias trên mọi network, nên trên `minigo-wan` tên service trỏ về cả 
 Song song, `branch_api` gửi heartbeat tới **mọi** bản sao mỗi 5 giây (HTTP thẳng, không qua Redpanda), kèm số sự
 kiện còn trong outbox và RTT lần trước. Mỗi bản sao tự phán đoán chi nhánh nào còn sống. Vì heartbeat không qua
 broker, "chi nhánh còn sống" và "đồng bộ đang chạy" là hai trạng thái khác nhau: sink mỗi bản sao tự kiểm đường đọc
-Redpanda mỗi 5 giây (`sink_stats.broker_ok`, `lag`), dashboard hiện riêng "Đồng bộ dừng từ HH:MM:SS".
+Redpanda mỗi 5 giây (`sink_stats.broker_ok`, `lag`), dashboard hiện riêng "Đồng bộ dừng từ HH:MM:SS". Heartbeat mang
+kèm `branch_url`: mất broker quá 15 giây thì bản sao dùng địa chỉ này để đối soát thẳng với chi nhánh.
 
 ## 5. Mức nhất quán
 
@@ -129,16 +155,24 @@ Redpanda mỗi 5 giây (`sink_stats.broker_ok`, `lag`), dashboard hiện riêng 
   quầy ở mọi máy **vẫn bán**, và máy B, C vẫn đồng bộ với nhau qua 2 broker còn lại (K7c); xem thẳng dashboard
   `B:8000`, `C:8000`. Cắm lại thì tự phục hồi.
 - **Cụm broker chịu được mất 1 trong 3 broker** (K7a). Mất đa số (2/3) thì đồng bộ dừng cho tới khi có lại đa số;
-  quầy vẫn bán, outbox giữ sự kiện, POS và dashboard báo "đồng bộ dừng" (K7b). Trong lúc bầu leader mới (vài giây)
+  quầy vẫn bán, outbox giữ sự kiện, POS và dashboard báo "đồng bộ dừng"; sau 15 giây bản sao đối soát thẳng với
+  chi nhánh nên số tồn vẫn đúng, dashboard ghi "đang đối soát thẳng với chi nhánh" (K7b, K9). Trong lúc bầu leader mới (vài giây)
   dashboard có thể báo "đồng bộ dừng" ngắn rồi tự hết.
 - **Chỉ có 2 máy thật thì broker vẫn là điểm chết**: Redpanda chỉ nhận RF lẻ và cụm 2 broker không chịu được lỗi
   nào, nên chỉ máy A chạy broker, RF=1 (`docs/demo.md` mục 2).
-- **Mất dữ liệu broker** (xoá volume, hỏng đĩa trên đa số broker) thì sự kiện bản sao chưa kịp đọc mất hẳn khỏi
-  Redpanda; chưa có đường dựng lại từ sổ cái chi nhánh (vòng 3).
+- **Mất dữ liệu broker** (xoá volume, hỏng đĩa trên đa số broker): sự kiện bản sao chưa kịp đọc mất hẳn khỏi
+  Redpanda, nhưng **số tồn** vẫn được dựng lại: gossip lấy từ bản sao đã đọc kịp, đối soát lấy từ chi nhánh. Phần
+  không dựng lại được là **nhật ký** (`event_log`) của các sự kiện đó.
+- **Ô vá qua gossip hoặc đối soát không có dòng `event_log`**: ta chỉ biết số tồn mới nhất của ô, không biết các lượt
+  bán ở giữa. Hệ quả: danh sách "Sự kiện vừa nhận" thiếu các lượt đó cho tới khi sink nhận được (nếu còn trên
+  Redpanda); `processed` của bản sao đã lỡ sự kiện thấp hơn bản sao khác **mãi mãi** (K8), dù dấu vân tay khớp.
+- **Gossip chỉ kéo, so dấu vân tay 8 ký tự hex, kéo cả snapshot** (60 ô, không Merkle tree): đủ cho demo; hàng nghìn
+  mã hàng thì cần chia nhỏ theo chi nhánh hoặc cây băm. Một bản sao chết không làm treo gossip (mỗi bản sao khác một
+  luồng, timeout 2 giây).
+- **Đối soát chỉ bật khi mất broker quá 15 giây** và chỉ với chi nhánh còn heartbeat; chi nhánh mất liên lạc cả HTTP
+  thì không đối soát được. Sink chết (không còn kiểm broker) thì không đối soát; gossip lo phần vá.
 - **Dữ liệu mỗi chi nhánh chỉ có một bản chính**, ở chính máy chi nhánh. Bản sao trung tâm chỉ là bản tổng hợp để
   đọc. Máy B hỏng ổ cứng thì mất các lượt bán chưa kịp gửi đi.
-- **Bản sao bỏ lỡ sự kiện thì không có cơ chế tự vá**: nếu dữ liệu Redpanda mất trước khi một bản sao kịp đọc, dấu
-  vân tay lệch mãi.
 - **Nginx chỉ tự thử lại yêu cầu idempotent (GET).** Lệnh bán (POST) qua nginx mà thất bại thì không được thử lại
   tự động. POS tự bảo vệ bằng `request_id`.
 
@@ -170,8 +204,8 @@ dòng ở đây trước khi code.
 | PT-04 | Áp sự kiện lũy đẳng: khoá `(branch_id, movement_id)` | `apply_event` |
 | PT-05 | Chịu lệch thứ tự: snapshot chỉ ghi đè khi `movement_id` lớn hơn; không so thứ tự bằng đồng hồ | `apply_event` |
 | PT-06 | Sink ghi CSDL xong rồi mới commit offset | `api/workers/sink.py` |
-| PT-07 | Bản sao chỉ đọc: không ghi về chi nhánh, không gọi thẳng CSDL chi nhánh | `api/services/replica.py` |
+| PT-07 | Bản sao chỉ đọc: không ghi về chi nhánh, không gọi thẳng CSDL chi nhánh | `api/services/replica.py`; đối soát chỉ `GET /api/snapshot` (`api/workers/gossip.py`), chi nhánh trả bằng một câu `SELECT` (`snapshot` trong `api/services/branch.py`) |
 | PT-08 | Nginx chỉ tự thử lại yêu cầu idempotent; lệnh bán chống trừ hai lần bằng `request_id` | nginx, `_change_stock` |
 | PT-09 | Không bán lố tồn: trừ bằng một câu `UPDATE` có điều kiện `qty_on_hand + delta >= 0` | `_change_stock` |
-| PT-10 | Mọi kênh cập nhật snapshot (sink, gossip, đối soát) dùng chung một luật merge giao hoán, lũy đẳng theo từng ô | vòng 3 |
+| PT-10 | Mọi kênh cập nhật snapshot (sink, gossip, đối soát) dùng chung một luật merge giao hoán, lũy đẳng theo từng ô | `merge_cells` (`api/services/replica.py`), gọi từ `apply_event`, `merge_replica_snapshot`, `merge_branch_snapshot` |
 | PT-11 | Mất đa số broker không làm dừng bán; trạng thái "đồng bộ dừng" phải hiện trên POS và dashboard | `record_relay_result` (`relay_status`), `record_broker_check` (`sink_stats`), `web/pos.html`, `web/dashboard.html` |

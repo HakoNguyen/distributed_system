@@ -11,6 +11,8 @@ Tiến độ và thứ tự làm: [docs/plan.md](docs/plan.md).
 | Chịu lỗi, failover | Mỗi máy một bản sao trung tâm; nginx bỏ qua bản sao chết | K3 |
 | Tự phục hồi | Outbox giữ sự kiện, Redpanda giữ vị trí đọc, nginx tự thử lại | K4 |
 | Chịu lỗi broker | Cụm 3 broker Raft, RF=3; mất đa số thì POS, dashboard báo "đồng bộ dừng", quầy vẫn bán | K7a–K7c |
+| Bản sao tự vá lẫn nhau | Gossip: so dấu vân tay mỗi 10 giây, kéo snapshot, merge từng ô theo `movement_id` | K8 |
+| Phục hồi từ nguồn sự thật | Mất broker quá 15 giây thì bản sao đối soát thẳng với chi nhánh qua API | K9 |
 | Đồng bộ dữ liệu | Sự kiện đi qua Redpanda tới mọi bản sao; so bằng dấu vân tay | K1, K4 |
 | Chịu được độ trễ mạng | Bán tại chỗ, đồng bộ bất đồng bộ; đo RTT trực tiếp | K5 |
 
@@ -24,7 +26,7 @@ Mọi máy chạy cùng một file compose; máy nào chạy gì do file `.env` 
 | `branch_api` | 8001 | mọi máy | FastAPI `ROLE=branch`: màn hình POS, bán, nhập; gửi heartbeat |
 | `relay` | | mọi máy | Đẩy outbox lên cụm Redpanda, ghi trạng thái gửi cho POS |
 | `replica_db` | | mọi máy | PostgreSQL của bản sao: bảng tồn toàn chuỗi dựng từ sự kiện |
-| `replica_api` | 8000 | mọi máy | FastAPI `ROLE=replica`: dashboard, nhận heartbeat |
+| `replica_api` | 8000 | mọi máy | FastAPI `ROLE=replica`: dashboard, nhận heartbeat; gossip với bản sao khác, đối soát với chi nhánh khi mất broker |
 | `sink` | | mọi máy | Đọc Redpanda, áp sự kiện vào `replica_db`; kiểm broker mỗi 5 giây cho dashboard |
 | `redpanda` | 19092, 33145 | mọi máy | Một broker (tương thích Kafka); ba máy thành cụm 3 broker, topic RF=3 |
 | `topic-init` | | máy A | Tạo topic một lần khi cụm đủ broker, rồi thoát |
@@ -35,7 +37,7 @@ Mọi máy chạy cùng một file compose; máy nào chạy gì do file `.env` 
 docs/      đặc tả, CSDL, API, kịch bản demo, kế hoạch (nguồn sự thật)
 db/        SQL khởi tạo: product.sql (dùng chung), branch.sql, replica.sql
 common/    cấu hình, pool CSDL, model
-api/       main.py, routers/ (mỏng), services/ (SQL và quy tắc), workers/ (relay, sink, heartbeat)
+api/       main.py, routers/ (mỏng), services/ (SQL và quy tắc), workers/ (relay, sink, heartbeat, gossip)
 web/       pos.html, dashboard.html (HTML + JS thuần, không build)
 infra/     compose.yml, compose.local.yml (3 node một máy), compose.test.yml, nginx/, env/ (máy thật, local)
 tests/     pytest trên PostgreSQL thật, chạy trong container
@@ -77,7 +79,7 @@ Mỗi vòng trong [docs/plan.md](docs/plan.md) đi bốn bước bằng lệnh d
 | Lệnh | Việc làm |
 |---|---|
 | `make test` | pytest trong container, trên CSDL test riêng; chỉ cần Docker. Một thư mục: `make test T=tests/replica` |
-| `make config` | Kiểm tra file compose hợp lệ với env mẫu; với 3 node một máy: cổng không trùng, đủ alias, nginx đủ địa chỉ; cụm 3 broker ở mọi file env |
+| `make config` | Kiểm tra file compose hợp lệ với env mẫu; với 3 node một máy: cổng không trùng, đủ alias, nginx đủ địa chỉ; cụm 3 broker ở mọi file env; `REPLICA_URLS`, `BRANCH_URL` cho gossip và đối soát |
 | `make check` | `config` + `test`; chạy trước khi báo xong một vòng |
 
 Quy ước code và làm việc với AI: [CLAUDE.md](CLAUDE.md). Quy ước kiểm thử: [docs/tests.md](docs/tests.md).

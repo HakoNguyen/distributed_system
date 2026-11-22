@@ -18,10 +18,12 @@ services:
       default: { aliases: ["branch-${NODE_NAME}"] }
       wan: { aliases: ["branch-${NODE_NAME}"] }
 
+  # dns_opt: gossip gọi bản sao của node bị cut thì báo lỗi sau ~1 giây (xem relay, sink bên dưới)
   replica_api:
     networks:
       default: { aliases: ["replica-${NODE_NAME}"] }
       wan: { aliases: ["replica-${NODE_NAME}"] }
+    dns_opt: ["timeout:1", "attempts:1"]
 
   # Tên của container đã dừng (broker bị tắt ở K7) bị DNS của Docker Desktop hỏi ra ngoài, mất ~8 giây
   # mới báo "không có"; trong lúc đó thư viện Kafka treo lô đang gửi. Bỏ cuộc sau 1 giây (đo: còn ~2 giây).

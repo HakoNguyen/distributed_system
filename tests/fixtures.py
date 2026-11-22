@@ -19,6 +19,46 @@ def event(movement_id: int, qty_after: int, *, branch_id: int = 2, product_id: i
             "node_time": "2026-11-19T08:00:00+00:00"}
 
 
+def cell(branch_id: int, product_id: int, last_movement: int, qty: int) -> dict:
+    """Một ô snapshot đúng định dạng GET /api/snapshot của bản sao (docs/api.md mục 2)."""
+    return {"branch_id": branch_id, "product_id": product_id, "qty_on_hand": qty,
+            "last_movement": last_movement, "node_time": "2026-11-19T08:00:00+00:00"}
+
+
+def snapshot_rows() -> list[dict]:
+    with pool.connection() as conn:
+        return conn.execute(
+            """SELECT branch_id, product_id, qty_on_hand, last_movement, source
+               FROM inventory_snapshot ORDER BY branch_id, product_id"""
+        ).fetchall()
+
+
+def sink_state(ok: bool | None, lost_ago_s: int | None = None, checked_ago_s: int = 0) -> None:
+    """Đặt trạng thái đường đọc Redpanda như sink đã ghi, mốc tính lùi từ giờ CSDL."""
+    with pool.connection() as conn:
+        conn.execute(
+            """UPDATE sink_stats SET broker_ok = %s,
+                      broker_lost_at = now() - make_interval(secs => %s),
+                      broker_checked_at = now() - make_interval(secs => %s)""",
+            (ok, lost_ago_s, checked_ago_s),
+        )
+
+
+def node(branch_id: int, branch_url: str | None, seen_ago_s: int = 0) -> None:
+    """Một chi nhánh đã gửi heartbeat cách đây seen_ago_s giây."""
+    with pool.connection() as conn:
+        conn.execute(
+            """INSERT INTO node_status (branch_id, branch_name, last_seen, node_time, branch_url)
+               VALUES (%s, %s, now() - make_interval(secs => %s), now(), %s)""",
+            (branch_id, f"CN{branch_id}", seen_ago_s, branch_url),
+        )
+
+
+def one_peer(peer: str) -> dict | None:
+    with pool.connection() as conn:
+        return conn.execute("SELECT * FROM sync_peer WHERE peer = %s", (peer,)).fetchone()
+
+
 def count(table: str) -> int:
     with pool.connection() as conn:
         return conn.execute(f"SELECT count(*) AS n FROM {table}").fetchone()["n"]

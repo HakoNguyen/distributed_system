@@ -1,12 +1,14 @@
 # API và giao tiếp giữa các tiến trình
 
-Ba kênh giao tiếp:
+Các kênh giao tiếp:
 
 | Kênh | Từ → tới | Kiểu |
 |---|---|---|
 | HTTP qua nginx | Trình duyệt → bản sao, chi nhánh | Đồng bộ, yêu cầu–phản hồi |
 | Heartbeat HTTP | `branch_api` → `/api/heartbeat` của MỌI bản sao, mỗi 5 giây | Đồng bộ, không qua broker |
 | Sự kiện Redpanda | `relay` → topic `inventory.movement` → mỗi `sink` | Bất đồng bộ, bền, at-least-once |
+| Gossip HTTP | `replica_api` → `/api/digest`, `/api/snapshot` của các bản sao khác, mỗi 10 giây | Đồng bộ, chỉ kéo; timeout 2 giây |
+| Đối soát HTTP | `replica_api` → `/api/snapshot` của chi nhánh còn sống, chỉ khi mất broker quá 15 giây | Đồng bộ, chỉ đọc (PT-07); timeout 2 giây |
 
 Tài liệu tự sinh: `http://localhost:8001/docs` (chi nhánh), `http://localhost:8000/docs` (bản sao).
 
@@ -19,6 +21,7 @@ Tài liệu tự sinh: `http://localhost:8001/docs` (chi nhánh), `http://localh
 | GET | `/api/info` | `branch_id`, `branch_name`, tên các bản sao |
 | GET | `/api/inventory` | Tồn của chi nhánh, kèm `version` |
 | GET | `/api/status` | Số sự kiện chờ trong outbox, `sync_stuck`, `relay`, RTT và tình trạng tới từng bản sao |
+| GET | `/api/snapshot` | Tồn kèm biến động mới nhất từng mã, đọc trong một câu lệnh: `{branch_id, cells: [{product_id, qty_on_hand, last_movement, node_time}]}`. Bản sao gọi khi đối soát; chỉ đọc |
 | POST | `/api/sale` | Bán. Body: `{product_id, qty, version?, request_id?}` |
 | POST | `/api/receipt` | Nhập, cùng body |
 | POST | `/api/sale/random?count=20` | Bán nhanh `count` đơn ngẫu nhiên (dùng khi demo) |
@@ -43,14 +46,19 @@ Mọi phản hồi có header `X-Served-By: replica-<X>`.
 |---|---|---|
 | GET | `/` | Dashboard (`web/dashboard.html`) |
 | GET | `/health` | Kiểm tra sống |
-| POST | `/api/heartbeat` | Nhận heartbeat. Body: `{branch_id, branch_name, node_time_ms, outbox_backlog, rtt_ms}` |
+| POST | `/api/heartbeat` | Nhận heartbeat. Body: `{branch_id, branch_name, node_time_ms, outbox_backlog, rtt_ms, branch_url}` (`branch_url` phải bắt đầu bằng `http://` hoặc `https://`) |
 | GET | `/api/overview` | Mọi thứ dashboard cần trong một lần gọi: `served_by`, `nodes`, `inventory`, `events`, `digest` |
-| GET | `/api/digest` | Dấu vân tay, tổng tồn, `last_movement_by_branch`, bộ đếm và trạng thái broker của sink |
+| GET | `/api/digest` | Dấu vân tay, tổng tồn, `last_movement_by_branch`, bộ đếm và trạng thái broker của sink, `sync_peers` |
+| GET | `/api/snapshot` | Mọi ô của bảng tổng hợp, để bản sao khác gossip: `{node, cells: [{branch_id, product_id, qty_on_hand, last_movement, node_time}]}` |
 | GET | `/api/nodes`, `/api/inventory`, `/api/events?limit=30`, `/api/stats` | Từng phần của overview, để gọi bằng tay |
 
 `/api/stats` (và `digest` trong `/api/digest`, `/api/overview`): `processed`, `duplicates`, `last_event_at`,
 `broker_ok`, `broker_lost_at`, `lag`, `broker_checked_at` (cột `sink_stats`, `docs/db.md` mục 3). `broker_ok = false`
 thì dashboard hiện "Đồng bộ dừng từ HH:MM:SS"; chi nhánh vẫn "còn sống" nếu heartbeat còn tới.
+
+`sync_peers` (trong digest): các dòng `sync_peer` (`peer`, `channel`, `last_ok_at`, `failing_since`, `last_error`,
+`cells_patched`), cho cột "Gossip" và dòng đồng bộ trên dashboard. `/api/inventory` (và `inventory` trong overview):
+mỗi ô `by_branch[b]` có thêm `source` (`kafka`, `gossip`, `reconcile`); `reconcile` hiện nhãn "qua đối soát".
 
 ## 3. Sự kiện trên Redpanda
 

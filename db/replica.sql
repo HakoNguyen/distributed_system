@@ -12,7 +12,8 @@ CREATE TABLE node_status (
     last_seen      TIMESTAMPTZ NOT NULL,  -- giờ CỦA TRUNG TÂM lúc nhận heartbeat
     node_time      TIMESTAMPTZ NOT NULL,  -- giờ CỦA CHI NHÁNH ghi trong heartbeat
     outbox_backlog INT         NOT NULL DEFAULT 0, -- số sự kiện chi nhánh chưa gửi được
-    rtt_ms         INT                             -- thời gian một vòng heartbeat, đo ở chi nhánh
+    rtt_ms         INT,                            -- thời gian một vòng heartbeat, đo ở chi nhánh
+    branch_url     TEXT                            -- địa chỉ POS chi nhánh tự báo; đối soát gọi <branch_url>/api/snapshot
 );
 
 -- Bảng tổng hợp tồn kho toàn chuỗi. Mỗi dòng = một mã hàng ở một chi nhánh.
@@ -23,6 +24,9 @@ CREATE TABLE inventory_snapshot (
     last_movement BIGINT      NOT NULL,  -- movement_id mới nhất đã áp vào dòng này
     node_time     TIMESTAMPTZ,           -- giờ chi nhánh ghi nhận biến động đó
     updated_at    TIMESTAMPTZ NOT NULL DEFAULT now(),  -- giờ trung tâm cập nhật
+    -- Kênh đã ghi giá trị hiện tại của ô: kafka (sink), gossip (bản sao khác), reconcile (đối soát với
+    -- chi nhánh). Không nằm trong dấu vân tay: cùng số mà khác nguồn vẫn là khớp.
+    source        TEXT        NOT NULL DEFAULT 'kafka' CHECK (source IN ('kafka', 'gossip', 'reconcile')),
     PRIMARY KEY (branch_id, product_id)
 );
 
@@ -56,3 +60,14 @@ CREATE TABLE sink_stats (
     broker_checked_at TIMESTAMPTZ   -- lần kiểm gần nhất; cũ quá nghĩa là chính sink đã dừng
 );
 INSERT INTO sink_stats (id) VALUES (1);
+
+-- Lần trao đổi trực tiếp cuối với từng nơi (vòng 3): bản sao khác (gossip, peer = 'A') hoặc chi nhánh
+-- (đối soát khi mất broker, peer = 'CN2'). Dòng tạo ở lần trao đổi đầu tiên.
+CREATE TABLE sync_peer (
+    peer          TEXT        PRIMARY KEY,
+    channel       TEXT        NOT NULL CHECK (channel IN ('gossip', 'reconcile')),
+    last_ok_at    TIMESTAMPTZ,                     -- lần cuối gọi được và merge xong
+    failing_since TIMESTAMPTZ,                     -- lỗi đầu tiên của đợt lỗi hiện tại; NULL = đang gọi được
+    last_error    TEXT,
+    cells_patched BIGINT      NOT NULL DEFAULT 0   -- tổng số ô đã vá nhờ nơi này (chỉ ô thật sự thiếu)
+);

@@ -10,7 +10,9 @@
 - `env/may-a.env`, `may-b.env`, `may-c.env`: mẫu `.env` cho từng máy thật, chép thành `.env` ở gốc repo. Có dòng
   `COMPOSE_FILE=infra/compose.yml` nên `docker compose ...` gõ ở gốc repo chạy được không cần `-f`.
   Khối `BROKER_SEEDS`, `KAFKA_BROKERS`, `REPLICA_A/B/C`, `BRANCH_A/B/C` phải GIỐNG NHAU ở mọi file; `BROKER_HOST` là
-  địa chỉ của CHÍNH máy đó; `REPLICA_B` là địa chỉ máy B, không phải máy A. Compose kiểm `${VAR:?}` cả ở service thuộc profile đang tắt, nên máy B, C cũng phải có đủ khối này.
+  địa chỉ của CHÍNH máy đó; `REPLICA_B` là địa chỉ máy B, không phải máy A. `BRANCH_URL` (vòng 3) cũng riêng từng
+  máy: `http://<IP overlay chính máy đó>:8001`, chi nhánh gửi kèm heartbeat để bản sao đối soát. `REPLICA_URLS` cấp
+  cho cả `branch_api` (heartbeat) lẫn `replica_api` (gossip, bỏ dòng trùng `NODE_NAME`). Compose kiểm `${VAR:?}` cả ở service thuộc profile đang tắt, nên máy B, C cũng phải có đủ khối này.
 - `nginx/default.conf.template`: ảnh nginx tự thay `${REPLICA_A}`... `${BRANCH_C}` (địa chỉ `host:port`) lúc khởi
   động. Template luôn có 3 node; chỉ có 2 máy thật thì xem `docs/demo.md` mục 2. Nginx phân giải tên một lần lúc
   khởi động.
@@ -19,7 +21,8 @@
   (subnet `10.210.0.0/24`) và gọi nhau bằng alias riêng `branch-<x>`, `replica-<x>`, `redpanda-<x>`, KHÔNG bằng tên
   service (trên `minigo-wan` tên service trỏ về cả ba node). `make cut/heal N=<x>` gỡ / nối lại node đó với
   `minigo-wan`, giữ đúng IP và alias (nginx nhớ IP; broker giữ kết nối RPC gắn với IP cũ). Broker không publish cổng
-  (`ports: !reset []`); relay, sink có `dns_opt` để tên broker đã tắt báo lỗi sau ~2 giây thay vì ~8 giây.
+  (`ports: !reset []`); relay, sink, `replica_api` có `dns_opt` để tên của container đã tắt hoặc node bị cut báo lỗi
+  sau ~1–2 giây thay vì ~8 giây (`replica_api`: luồng gossip). `BRANCH_URL` một máy là `http://branch-<x>:8000`.
   `make config` chạy `scripts/net.sh check` để kiểm cổng, alias, địa chỉ nginx và cấu hình cụm broker ở cả 6 file env.
 - `compose.test.yml`: `test_db` (Postgres trên tmpfs) và `tests` (ảnh `test` của `api/Dockerfile`, mount repo vào
   `/repo`). Dùng qua `make test`.

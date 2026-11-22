@@ -7,7 +7,7 @@ import time
 
 import httpx
 
-from common.config import BRANCH_ID, BRANCH_NAME, HEARTBEAT_EVERY_S, REPLICAS
+from common.config import BRANCH_ID, BRANCH_NAME, BRANCH_URL, HEARTBEAT_EVERY_S, REPLICAS
 from services.branch import outbox_backlog
 
 # Trạng thái đường nối tới từng bản sao, hiện lên màn hình POS (GET /api/status).
@@ -33,6 +33,8 @@ def heartbeat_loop(name: str, url: str) -> None:
                     "outbox_backlog": backlog,
                     # RTT đo được ở lần trước, gửi kèm để trung tâm hiển thị
                     "rtt_ms": link["rtt_ms"],
+                    # Địa chỉ POS để bản sao đối soát khi mất broker (vòng 3)
+                    "branch_url": BRANCH_URL,
                 },
             ).raise_for_status()
             # RTT = thời gian một vòng đi và về của heartbeat. Bật Clumsy / tc

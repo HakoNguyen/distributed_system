@@ -65,6 +65,13 @@ check() {
         bad "$env: REPLICA_URLS thiếu $X=http://replica-$x:8000"
     done
 
+    # 3a. Kênh trực tiếp (vòng 3): bản sao gossip với bản sao khác qua REPLICA_URLS; chi nhánh tự báo địa chỉ
+    #     POS (BRANCH_URL) trong heartbeat; tên node bị cut báo lỗi sau ~1 giây thay vì ~8 giây
+    echo "$cfg" | grep -q "^replica_api  *REPLICA_URLS: " || bad "node $n: replica_api thiếu REPLICA_URLS (gossip)"
+    echo "$cfg" | grep -q "^branch_api  *BRANCH_URL: http://branch-$n:8000\$" ||
+      bad "node $n: branch_api phải có BRANCH_URL=http://branch-$n:8000"
+    echo "$cfg" | grep -q "^replica_api  *- timeout:1\$" || bad "node $n: replica_api thiếu dns_opt timeout:1"
+
     # 3b. Mỗi node một broker (vòng 2): alias riêng trên default và wan, mã broker = BRANCH_ID,
     #     không publish cổng ra host (3 broker cùng máy sẽ đụng cổng 19092, 33145)
     c=$(echo "$cfg" | grep -ic "^redpanda .*- redpanda-$n\$" || true)
@@ -124,6 +131,9 @@ cluster() {
     [ "$(echo "$seeds" | tr ',' '\n' | grep -c .)" -eq 3 ] && [ "$kh" = "$sh_" ] ||
       bad "$env: BROKER_SEEDS phải là 3 địa chỉ <host>:33145, cùng host và thứ tự với KAFKA_BROKERS"
     [ -n "$host" ] && echo "$kh" | grep -qx "$host" || bad "$env: BROKER_HOST ($host) không có trong KAFKA_BROKERS"
+    # Máy thật: BRANCH_URL là IP overlay của chính máy (cùng BROKER_HOST), cổng POS 8001 (vòng 3)
+    [ "$1" != may ] || [ "$(val BRANCH_URL)" = "http://$host:8001" ] ||
+      bad "$env: BRANCH_URL phải là http://$host:8001 (IP overlay của chính máy này, cổng POS)"
     [ -z "$ref" ] && ref="$kb|$seeds"
     [ "$kb|$seeds" = "$ref" ] || bad "$env: KAFKA_BROKERS, BROKER_SEEDS phải giống nhau ở 3 file $1-*.env"
     own="$own $host"

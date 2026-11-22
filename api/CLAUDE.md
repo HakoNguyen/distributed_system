@@ -7,7 +7,8 @@ Một image, bốn tiến trình (`infra/compose.yml`). Mục cần đọc: `doc
 - `routers/<role>.py`: mỏng, gọi một hàm trong `services/<role>.py`.
 - `services/branch.py`: tồn, sổ cái, outbox. `services/replica.py`: `apply_event`, heartbeat, truy vấn dashboard.
 - `workers/relay.py` (`python -m workers.relay`), `workers/sink.py` (`python -m workers.sink`) chạy thành container
-  riêng; `workers/heartbeat.py` là luồng nền trong `branch_api`.
+  riêng; `workers/heartbeat.py` là luồng nền trong `branch_api`; `workers/gossip.py` (gossip với bản sao khác, đối
+  soát với chi nhánh khi mất broker) là luồng nền trong `replica_api`. Luật merge snapshot duy nhất: `merge_cells`.
 - Trong container, `api/` nằm ở `/app`, cạnh `common/`, `web/`, `tre.sh`. Import theo dạng
   `from common.config import ...`, `from services import branch`.
 

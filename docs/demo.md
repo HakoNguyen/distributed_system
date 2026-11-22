@@ -1,8 +1,8 @@
 # Kịch bản demo
 
-Dựng hệ thống trên 2–3 máy thật, rồi đi qua K1–K7 để chứng minh từng tính chất ở `spec.md` mục 2.
+Dựng hệ thống trên 2–3 máy thật, rồi đi qua K1–K9 để chứng minh từng tính chất ở `spec.md` mục 2.
 Nên dựng đủ trên hai máy **sớm**, ít nhất hai ngày trước hôm demo, và chạy đủ K1 đến K5 ít nhất hai lần.
-Chỉ có một máy: mô phỏng 3 máy, xem mục 3, phần "Chạy trên một máy"; K1–K7 chạy như nhau.
+Chỉ có một máy: mô phỏng 3 máy, xem mục 3, phần "Chạy trên một máy"; K1–K9 chạy như nhau.
 
 ## 1. Nối các máy bằng mạng overlay
 
@@ -47,7 +47,7 @@ Trên Linux có ufw: `sudo ufw allow 80,8000,8001,19092,33145/tcp`. macOS thư�
 
 ## 2. Điền file env
 
-Mỗi máy có một file mẫu trong `infra/env/`. Mở **cả ba** file `infra/env/may-a.env`, `may-b.env`, `may-c.env`, thay các IP mẫu `100.64.0.1`, `100.64.0.2`, `100.64.0.3` bằng IP overlay thật. Chúng xuất hiện ở các dòng `BROKER_SEEDS`, `KAFKA_BROKERS`, `REPLICA_A/B/C`, `BRANCH_A/B/C`, `REPLICA_URLS`, `BROKER_HOST`. Khối `BROKER_SEEDS`, `KAFKA_BROKERS`, `REPLICA_*`, `BRANCH_*` phải giống nhau ở mọi file; `BROKER_HOST` là IP overlay của **chính máy đó** (broker tự giới thiệu địa chỉ này cho máy khác).
+Mỗi máy có một file mẫu trong `infra/env/`. Mở **cả ba** file `infra/env/may-a.env`, `may-b.env`, `may-c.env`, thay các IP mẫu `100.64.0.1`, `100.64.0.2`, `100.64.0.3` bằng IP overlay thật. Chúng xuất hiện ở các dòng `BROKER_SEEDS`, `KAFKA_BROKERS`, `REPLICA_A/B/C`, `BRANCH_A/B/C`, `REPLICA_URLS`, `BROKER_HOST`, `BRANCH_URL`. Khối `BROKER_SEEDS`, `KAFKA_BROKERS`, `REPLICA_A/B/C`, `BRANCH_A/B/C` phải giống nhau ở mọi file; `BROKER_HOST` là IP overlay của **chính máy đó** (broker tự giới thiệu địa chỉ này cho máy khác); `BRANCH_URL` là `http://<IP overlay chính máy đó>:8001` (chi nhánh gửi kèm heartbeat để bản sao mọi máy đối soát khi mất broker).
 
 `REPLICA_B`, `BRANCH_B`... là địa chỉ đầy đủ `host:port` mà nginx (máy A) dùng để gọi bản sao và POS của từng máy: `100.64.0.2:8000` là bản sao máy B, `100.64.0.2:8001` là POS CN2 (cổng host).
 
@@ -117,7 +117,7 @@ make local-reset     # xoá dữ liệu 3 node rồi dựng lại
 | B | http://localhost:8011 (CN2) | http://localhost:8010 | |
 | C | http://localhost:8021 (CN3) | http://localhost:8020 | |
 
-K1–K7 ở mục 5 giữ nguyên, chỉ đổi thao tác:
+K1–K9 ở mục 5 giữ nguyên, chỉ đổi thao tác:
 
 | Kịch bản | Máy thật | Một máy |
 |---|---|---|
@@ -129,6 +129,9 @@ K1–K7 ở mục 5 giữ nguyên, chỉ đổi thao tác:
 | K7a dừng 1/3 broker | `docker compose stop redpanda` trên một máy | `docker stop minigo-b-redpanda-1`; bật lại: `docker start minigo-b-redpanda-1` |
 | K7b dừng 2/3 broker | `docker compose stop redpanda` trên máy B và C | `docker stop minigo-b-redpanda-1 minigo-c-redpanda-1`; bật lại: `docker start ...` |
 | K7c rút mạng máy A | Tắt Wi-Fi máy A | `make cut N=a`, `make heal N=a` |
+| K8 bản sao B lỡ sự kiện | `docker compose stop sink` (máy B), bán, `docker compose exec redpanda rpk group seek replica-B --to end`, `docker compose start sink` | `docker stop minigo-b-sink-1`, bán ở `localhost:8011`, `docker exec minigo-a-redpanda-1 rpk group seek replica-B --to end`, `docker start minigo-b-sink-1` |
+| K9 dừng cả 3 broker | `docker compose stop redpanda` trên cả 3 máy | `docker stop minigo-a-redpanda-1 minigo-b-redpanda-1 minigo-c-redpanda-1`; bật lại: `docker start ...` |
+| Xem gossip, đối soát | `curl localhost:8000/api/digest` (trường `sync_peers`) | `curl localhost:8010/api/digest`; log: `docker logs minigo-b-replica_api-1 \| grep gossip` |
 | Xem cụm broker | `docker compose exec redpanda rpk cluster health` | `docker exec minigo-a-redpanda-1 rpk cluster health`, `... rpk topic describe inventory.movement -p` |
 | Xem container, log | `make ps`, `make logs S=relay` | `docker ps --filter name=minigo-b`, `docker logs -f minigo-b-relay-1` |
 
@@ -196,7 +199,7 @@ docker compose exec branch_api sh tre.sh on 300 100.64.0.1
 # bỏ:                ... sh tre.sh off
 ```
 
-## 5. Kịch bản K1–K7
+## 5. Kịch bản K1–K9
 
 Bố trí màn hình khi thuyết trình:
 - **Máy A** chiếu lên: dashboard qua nginx `http://localhost/`.
@@ -216,6 +219,8 @@ Bảng tóm tắt: **kịch bản nào chứng minh tính chất gì, nhìn ở 
 | K7a | Chịu lỗi broker | Dừng 1/3 broker, bán tiếp | Dashboard; Console | Đồng bộ tiếp sau vài giây, leader chuyển sang broker khác; không mất sự kiện |
 | K7b | Mất đa số broker | Dừng 2/3 broker, bán tiếp, rồi bật lại | POS; dòng "Đồng bộ" trên dashboard | POS "Gửi lên Redpanda: lỗi từ HH:MM:SS", outbox tăng; dashboard "Đồng bộ dừng từ HH:MM:SS", chi nhánh vẫn "còn sống"; bật lại thì tự đồng bộ bù |
 | K7c | Mất máy A (broker + nginx) | Rút mạng máy A | Dashboard máy B, C (cổng 8000) | B và C vẫn đồng bộ với nhau qua 2 broker còn lại; cắm lại thì 3 bản sao khớp |
+| K8 | Bản sao tự vá lẫn nhau (gossip) | Dừng sink B, bán, cho B bỏ qua các sự kiện đó | Bảng bản sao (cột Gossip); dashboard B | B lệch rồi khớp lại trong ≤ 20 giây, "vá N ô"; B mãi ít hơn A N sự kiện đã áp nhưng vẫn "Khớp từng ô" |
+| K9 | Đối soát với chi nhánh | Dừng cả 3 broker, bán ở CN2 | Dòng "Đồng bộ"; ô CN2 trên bảng tồn | Sau 15–25 giây kể từ "dừng từ", 3 bản sao cập nhật CN2, ô ghi "qua đối soát", 3 dấu vân tay khớp dù broker còn dừng |
 
 Chi tiết từng kịch bản:
 
@@ -255,7 +260,7 @@ Chi tiết từng kịch bản:
 
 **Thấy trên máy B:**
 - POS **vẫn bán được**. Dải trạng thái chuyển đỏ "Chưa gửi được lên trung tâm từ … giây", số sự kiện chờ trong outbox tăng dần. Chip "Bản sao máy A: mất liên lạc".
-- Tab `localhost:8000` (bản sao B) vẫn mở được nhưng số đứng yên. Điều thú vị là **bản sao B thấy CN2 còn sống còn CN1 mất liên lạc**, ngược hẳn với bản sao A.
+- Tab `localhost:8000` (bản sao B) vẫn mở được. Điều thú vị là **bản sao B thấy CN2 còn sống còn CN1 mất liên lạc**, ngược hẳn với bản sao A. B cũng mất broker (broker máy B một mình là thiểu số), nên sau khoảng 15 giây B **đối soát thẳng với CN2** (cùng máy): cột CN2 trên dashboard B có số mới kèm nhãn "qua đối soát", trong khi CN1, CN3 đứng ở số cũ. Dashboard A lúc này vẫn thấy CN2 số cũ: hai bên mạng bị chia cắt có hai góc nhìn khác nhau.
 
 **Nói:**
 - Lỗi cục bộ: một máy chết, phần còn lại vẫn chạy, và người dùng qua nginx gần như không nhận ra.
@@ -344,13 +349,18 @@ metadata rồi tự chuyển sang leader mới. Không ai phải làm gì.
 
 **Thấy:**
 - POS vẫn bán bình thường. Dải trạng thái đỏ "Gửi lên Redpanda: lỗi từ HH:MM:SS", số sự kiện chờ trong outbox tăng.
-- Dashboard: dòng "Đồng bộ dừng từ HH:MM:SS: bản sao này không đọc được Redpanda". Thẻ chi nhánh ghi
-  "Còn sống, đồng bộ dừng": heartbeat (HTTP thẳng) vẫn tới, chỉ đồng bộ (qua broker) dừng. Hai trạng thái được tách.
-- Bật lại: trong khoảng 15 giây outbox về 0, dải đỏ biến mất, dashboard hết "Đồng bộ dừng", 3 dấu vân tay khớp.
+- Dashboard: dòng "Đồng bộ qua Redpanda dừng từ HH:MM:SS: bản sao này không đọc được Redpanda … sau 15 giây sẽ đối
+  soát thẳng với chi nhánh". Thẻ chi nhánh ghi "Còn sống, đồng bộ dừng": heartbeat (HTTP thẳng) vẫn tới, chỉ đồng bộ
+  (qua broker) dừng. Hai trạng thái được tách.
+- Khoảng 15–25 giây sau mốc "dừng từ": dòng đó đổi thành "**đang đối soát thẳng với chi nhánh** (lần cuối
+  HH:MM:SS)"; các ô vừa bán cập nhật kèm nhãn "qua đối soát", 3 dấu vân tay khớp **ngay trong lúc broker còn dừng**
+  (chi tiết ở K9).
+- Bật lại: outbox về 0 trong khoảng 10 giây, dải đỏ biến mất; sink đọc tiếp sau đó, sự kiện "Đến muộn" hiện ra,
+  dashboard hết "Đồng bộ dừng", dấu vân tay không đổi (số đã đúng từ lúc đối soát).
 
 **Nói:** Redpanda là đường nhanh, không phải nguồn sự thật. Nguồn sự thật là sổ cái từng chi nhánh: broker chết thì
 chỉ chậm, không mất. Outbox giữ sự kiện, relay chỉ đánh dấu đã gửi khi cụm xác nhận (PT-03), sink chỉ commit sau khi
-ghi CSDL (PT-06).
+ghi CSDL (PT-06). Trong lúc chờ, bản sao đọc thẳng nguồn sự thật qua API (đối soát).
 
 #### K7c. Mất cả máy A (broker 1 và nginx)
 
@@ -366,6 +376,65 @@ ghi CSDL (PT-06).
 Đo ngày 19/11/2026 (3 node một máy): K7a outbox về 0 trong ≤ 4–16 giây, không mất sự kiện; K7b đồng bộ bù xong
 khoảng 15 giây sau khi bật lại; K7c B và C khớp nhau sau 8–16 giây, sau `heal` 3 bản sao khớp trong 3–38 giây.
 
+Đo lại ngày 22/11/2026 (vòng 3, có gossip và đối soát): K7a outbox về 0 sau ~14 giây, 3 bản sao khớp sau ~18 giây,
+sổ cái = `event_log`; K7b 3 bản sao đối soát xong 11–18 giây sau mốc mất broker và khớp trong lúc broker còn dừng; bật
+lại thì outbox về 0 sau 11 giây nhưng **sink đọc tiếp sau ~55 giây** (vòng 2 đo ~15 giây; vòng 3 không sửa sink, chưa
+rõ nguyên nhân), dấu vân tay không đổi trong suốt thời gian đó; K7c B, C khớp sau 13 giây, A (bị cô lập) tự đối soát
+CN1, sau `heal` 3 bản sao khớp trong 5 giây.
+
+### K8. Bản sao tự vá lẫn nhau: gossip
+
+Mở sẵn: dashboard qua nginx (bảng "Các bản sao trung tâm", cột **Gossip**), dashboard B (`localhost:8010` một máy;
+dòng "Gossip lần cuối …" dưới dòng đồng bộ).
+
+**Làm:**
+1. Dừng sink B: `docker stop minigo-b-sink-1` (máy thật: `docker compose stop sink` trên máy B).
+2. Bán vài đơn ở CN2 và CN1: `curl -X POST "localhost:8011/api/sale/random?count=5"`, `curl -X POST "localhost:8001/api/sale/random?count=3"`.
+3. Chờ, không làm gì. Đo bằng vòng lặp in dấu vân tay hai bên mỗi 2 giây:
+   ```bash
+   for i in $(seq 15); do date +%T; for p in 8000 8010; do curl -s localhost:$p/api/digest | grep -o '"fingerprint":"[^"]*"'; done; sleep 2; done
+   ```
+4. Cho B bỏ qua hẳn các sự kiện đó trên Redpanda, rồi bật sink:
+   `docker exec minigo-a-redpanda-1 rpk group seek replica-B --to end`, `docker start minigo-b-sink-1`.
+
+**Thấy:**
+- Sau 1–2 giây A, C đổi dấu vân tay, B đứng ở số cũ (bảng bản sao: "Đang đuổi theo"); dashboard B báo sink không chạy.
+- Trong **≤ 20 giây** kể từ lúc A cập nhật, B khớp lại ("Khớp từng ô"), cột Gossip của B: "vá N ô; A … giây trước".
+  N = số ô vừa bán. Log: `docker logs minigo-b-replica_api-1 | grep gossip` → "Vá N ô nhờ bản sao A".
+- Sau bước 4: dấu vân tay B vẫn khớp; "Sự kiện đã áp" của B **mãi ít hơn A đúng số sự kiện đã bỏ qua** (gossip chỉ vá
+  số tồn, không bịa dòng nhật ký, `docs/db.md` mục 3). Bán tiếp thì B nhận qua Redpanda như thường, khoảng cách giữ nguyên.
+
+**Nói:** Ngoài log chung, các bản sao nói chuyện trực tiếp: mỗi 10 giây so dấu vân tay, lệch thì kéo snapshot của
+bên kia và merge từng ô theo luật "`movement_id` lớn hơn thắng". Luật này giao hoán, lũy đẳng (CRDT dạng trạng thái),
+nên merge bao nhiêu lần, từ ai, theo thứ tự nào cũng hội tụ. Chỉ vá ô thiếu ở 2 lần kiểm liên tiếp, để kênh chính
+(Redpanda) có thời gian làm việc: bán bình thường (K1) thì "vá 0 ô".
+
+Vì sao "≤ 20 giây": gossip chạy mỗi 10 giây; lần kiểm đầu thấy lệch chỉ ghi nhớ, lần sau (10 giây sau) mới vá.
+
+### K9. Đối soát với chi nhánh khi mất cả cụm broker
+
+**Làm:** Dừng cả 3 broker (`docker stop minigo-a-redpanda-1 minigo-b-redpanda-1 minigo-c-redpanda-1`; máy thật:
+`docker compose stop redpanda` trên cả ba máy). Bán 5 đơn ở CN2. Chờ khoảng 30 giây. Rồi bật lại cả 3 broker.
+
+**Thấy:**
+- Sau 4–7 giây: dashboard "Đồng bộ qua Redpanda dừng từ HH:MM:SS … sau 15 giây sẽ đối soát thẳng với chi nhánh".
+- 15–25 giây sau mốc đó (sink kiểm 5 giây một lần, đối soát cũng vậy): "đang đối soát thẳng với chi nhánh (lần cuối HH:MM:SS)"; ô CN2 vừa bán đổi số kèm nhãn
+  **"qua đối soát"**; 3 bản sao cùng dấu vân tay dù broker vẫn dừng. `sync_peers` có dòng `CN2`, `reconcile`.
+- Bật lại broker: outbox về 0, sink đọc tiếp, sự kiện "Đến muộn" hiện ra, "Sự kiện đã áp" tăng đúng 5, dấu vân tay
+  không đổi. Nhãn "qua đối soát" còn tới khi ô đó có lượt bán mới đi qua Redpanda.
+
+**Nói:** Đây là tầng "phục hồi" của câu hỏi Redpanda: broker chỉ là đường nhanh, nguồn sự thật là sổ cái chi nhánh.
+Mất cả cụm broker, bản sao đọc thẳng snapshot của chi nhánh qua API (chỉ đọc, không ghi về, không gọi thẳng CSDL chi
+nhánh: PT-07) và merge bằng đúng luật của sink và gossip (PT-10). Chi nhánh trả tồn và `movement_id` mới nhất trong
+**một câu lệnh**, nên hai con số nhất quán với nhau.
+
+Đo ngày 22/11/2026 (3 node một máy):
+- K8: B lệch lúc A cập nhật, khớp lại sau 13 giây, "vá 8 ô" (bán 5 + 3 đơn, 8 ô khác nhau); sau `seek --to end`
+  "Sự kiện đã áp" B = 286 so với A = 294.
+- K9: mốc mất broker 12:18:50; A, C đối soát xong lúc 12:19:08 (+18 giây), B lúc 12:19:12 (+22 giây); 3 dấu vân tay
+  khớp trong lúc broker dừng. Bật lại: outbox về 0 sau 5 giây, sink đọc tiếp sau ~55 giây (như K7b), +5 sự kiện, dấu
+  vân tay không đổi.
+
 ## 6. Câu hỏi thường gặp khi bảo vệ
 
 | Câu hỏi | Từ khoá | Trả lời ngắn |
@@ -375,8 +444,9 @@ khoảng 15 giây sau khi bật lại; K7c B và C khớp nhau sau 8–16 giây,
 | Gửi lặp hai lần có trừ tồn hai lần không? | Lũy đẳng | Bản sao dùng khoá `(branch_id, movement_id)`; thấy rồi thì bỏ qua. Chi nhánh dùng `request_id`. |
 | Sao người dùng không cần biết IP từng máy? | Trong suốt vị trí | Nginx là cổng vào duy nhất, tự chọn bản sao và chia tải. |
 | Trung tâm sập thì cửa hàng có sập không? | Tách rời qua broker | Chi nhánh và trung tâm nói chuyện qua Redpanda, không cần chạy cùng lúc. |
-| Redpanda gặp sự cố thì xử lý thế nào? | Phòng, chống, phục hồi | **Phòng**: cụm 3 broker, RF=3, mất 1 broker tự bầu leader mới (K7a). **Chống**: mất đa số thì quầy vẫn bán, outbox giữ sự kiện, POS và dashboard báo "đồng bộ dừng từ HH:MM:SS" (K7b). **Phục hồi**: có lại đa số thì relay gửi bù, sink đọc tiếp từ offset, không ai làm gì (K7b, K7c). Redpanda là đường nhanh, không phải nguồn sự thật: nguồn sự thật là sổ cái chi nhánh. Mất hẳn dữ liệu broker: vòng 3 (`plan.md` mục 3.1). |
-| ReplicaA và ReplicaB trao đổi thông tin bằng cơ chế gì? | Nhân bản máy trạng thái qua log chung | Hiện gián tiếp: cùng đọc một log trên Redpanda (mỗi bên một consumer group), áp lũy đẳng nên ra cùng trạng thái. Hai bên chưa gọi nhau trực tiếp; kênh trực tiếp (gossip): `plan.md` mục 3.2. |
+| Redpanda gặp sự cố thì xử lý thế nào? | Phòng, chống, phục hồi | **Phòng**: cụm 3 broker, RF=3, mất 1 broker tự bầu leader mới (K7a). **Chống**: mất đa số thì quầy vẫn bán, outbox giữ sự kiện, POS và dashboard báo "đồng bộ dừng từ HH:MM:SS" (K7b). Mất đa số quá 15 giây thì bản sao **đối soát thẳng với chi nhánh** qua API (chỉ đọc), số tồn vẫn đúng (K9). **Phục hồi**: có lại đa số thì relay gửi bù, sink đọc tiếp từ offset, không ai làm gì (K7b, K7c). Mất hẳn dữ liệu broker: số tồn dựng lại từ bản sao khác (gossip, K8) hoặc từ chi nhánh (đối soát, K9); chỉ mất nhật ký các sự kiện chưa kịp đọc. Redpanda là đường nhanh, không phải nguồn sự thật: nguồn sự thật là sổ cái chi nhánh. |
+| ReplicaA và ReplicaB trao đổi thông tin bằng cơ chế gì? | Nhân bản máy trạng thái qua log chung; gossip (anti-entropy); CRDT theo từng ô | Ba kênh, một luật merge. (1) Gián tiếp: cùng đọc một log trên Redpanda (mỗi bên một consumer group), áp lũy đẳng nên ra cùng trạng thái. (2) Trực tiếp: mỗi 10 giây gọi `/api/digest` của nhau; dấu vân tay lệch ở 2 lần kiểm liên tiếp thì kéo `/api/snapshot` và vá ô còn thiếu (K8). (3) Mất broker thì mỗi bên đọc thẳng chi nhánh (K9). Luật "`movement_id` lớn hơn thắng" theo từng ô giao hoán, lũy đẳng, nên đến từ kênh nào, theo thứ tự nào cũng hội tụ (PT-10). |
+| Gossip có làm sai số khi sink đang chạy bình thường không? | Lũy đẳng, chờ kênh chính | Không: chỉ vá ô thiếu ở 2 lần kiểm cách nhau 10 giây, và chỉ ghi đè khi `movement_id` mới hơn. Bán liên tục (K1) thì "vá 0 ô". Sự kiện tới sau khi ô đã được vá vẫn vào nhật ký nhưng không đổi số. |
 
 ## 7. Bảng nghiệm thu chạy liên máy
 
@@ -390,6 +460,8 @@ khoảng 15 giây sau khi bật lại; K7c B và C khớp nhau sau 8–16 giây,
 | Độ trễ mạng (RTT) | Bật Clumsy trễ 300ms: RTT ≥ 500ms nhưng POS vẫn "xử lý tại chỗ" < 20ms | Chip RTT trên POS B, thẻ CN2 |
 | Chống trùng (Idempotency) | Phát lại toàn bộ sự kiện: số bản trùng tăng vọt, dấu vân tay không đổi | Tab `http://localhost:8000` |
 | Chịu lỗi broker (cần 3 máy) | Dừng 1/3 broker: không mất sự kiện, dấu vân tay khớp. Dừng 2/3 rồi bật lại: POS và dashboard báo "đồng bộ dừng", sau đó tự khớp không thao tác tay | POS, dòng "Đồng bộ" trên dashboard, Console |
+| Gossip giữa bản sao (K8) | Bản sao lỡ sự kiện khớp lại trong ≤ 20 giây, cột Gossip "vá N ô"; bán bình thường thì "vá 0 ô" | Bảng bản sao qua nginx, dashboard B |
+| Đối soát với chi nhánh (K9) | Dừng cả 3 broker, bán: sau 15–25 giây 3 bản sao khớp, ô ghi "qua đối soát" | Dòng "Đồng bộ", bảng tồn |
 
 ## 8. Lỗi hay gặp
 
@@ -408,6 +480,7 @@ khoảng 15 giây sau khi bật lại; K7c B và C khớp nhau sau 8–16 giây,
 | Nginx lỗi khởi động, báo `Chưa đặt REPLICA_C` | File `.env` cũ, chưa có khối `REPLICA_*`, `BRANCH_*` | Chép lại từ `infra/env/may-<x>.env` |
 | Một máy: nginx báo `host not found in upstream` | Node B hoặc C chưa chạy, hoặc đang bị `make cut` | `make heal N=<x>` hoặc `make local-up`, rồi `docker restart minigo-a-nginx-1` |
 | Một máy: `make heal` báo `Address already in use` | Có container mới lấy IP cũ của node đang bị rút mạng | `make local-reset` |
+| Cột Gossip ghi "lỗi từ …" với một bản sao; mất broker mà không thấy "đang đối soát" | Bản sao không gọi được bản sao kia (`REPLICA_URLS`, cổng 8000) hoặc chi nhánh (`BRANCH_URL`, cổng 8001) | `curl http://<IP>:8000/api/digest`, `curl http://<IP>:8001/api/snapshot` từ máy đó; kiểm `BRANCH_URL` = IP overlay của chính máy chi nhánh; xem `sync_peers` trong `/api/digest` (trường `last_error`) |
 | Sửa `db/*.sql` không thấy tác dụng | Script khởi tạo chỉ chạy khi volume trống | `make reset` trên **mọi máy** |
 
 **Làm lại từ đầu:** chạy `make reset` trên **tất cả** các máy (cụm broker chờ đủ 3 máy rồi mới lập).

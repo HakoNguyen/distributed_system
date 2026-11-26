@@ -201,7 +201,7 @@ docker compose exec branch_api sh tre.sh on 300 100.64.0.1
 
 ## 5. Kịch bản K1–K9, K11, K12
 
-(K10 dành cho vòng 5.) Từ vòng 4 hai màn hình được làm lại theo thao tác nghiệp vụ. Dashboard trụ sở có thanh bên
+(K10 dành cho vòng 7.) Từ vòng 4 hai màn hình được làm lại theo thao tác nghiệp vụ. Dashboard trụ sở có thanh bên
 (menu, bản sao đang trả lời, trạng thái đồng bộ tóm tắt) và bốn tab; tab đang mở nằm trong địa chỉ
 (`http://localhost/#he-thong`) nên tải lại vẫn giữ. Hai tab đầu cho người quản lý, tab Hệ thống cho phần kỹ thuật.
 POS là màn hình quầy dạng phiếu. Các kịch bản bên dưới viết từ trước vòng 4 gọi tên chỗ cũ:

@@ -5,7 +5,7 @@ Mục tiêu trước mắt: xử lý hai câu hỏi của thầy (mục 3), trê
 
 ## 1. Tiến độ
 
-**Vòng tiếp theo: vòng 5** (sau khi vòng 4 được merge). Mỗi lần chỉ làm một vòng, đúng thứ tự: vòng sau dựa trên hạ tầng của vòng trước.
+**Vòng tiếp theo: vòng 5.** Mỗi lần chỉ làm một vòng, đúng thứ tự: vòng sau dựa trên hạ tầng của vòng trước.
 
 | Vòng | Phạm vi | Nhánh | Việc | Quy tắc | Kịch bản | Trạng thái |
 |---|---|---|---|---|---|---|
@@ -13,9 +13,11 @@ Mục tiêu trước mắt: xử lý hai câu hỏi của thầy (mục 3), trê
 | 1 | `infra` | `infra/local-multi-node` | Mô phỏng 3 máy trên một máy, `make cut/heal` | — | K1–K6 trên 3 node | xong, đã merge (PR #2) |
 | 2 | `infra`, `branch`, `replica`, `web` | `broker/redpanda-cluster` | Cụm 3 broker; trạng thái đồng bộ trên POS và dashboard | PT-03, PT-06, PT-11 | K7a, K7b, K7c | xong, đã merge (PR #3); 16 test, K1–K7c đạt trên 3 node một máy |
 | 3 | `replica`, `branch`, `web` | `replica/gossip-reconcile` | Gossip giữa bản sao; đối soát với chi nhánh | PT-04, PT-05, PT-07, PT-10 | K8, K9 | xong, đã merge (PR #4); 43 test, K1–K9 đạt trên 3 node một máy |
-| 4 | `web`, `replica`, `branch` | `web/sync-dashboard` | Topology sống, đọc đơn điệu, truy vết sự kiện, POS | — | chạy tay K1–K9; K11, K12 | đã code (22/11/2026); `make check` xanh (58 test), selftest giao diện 20/20; K1–K9, K11, K12 đạt trên 3 node một máy; chờ commit |
-| 5 | `infra`, `docs` | `infra/production-local` | Standby đồng bộ cho CSDL chi nhánh; vệ sinh vận hành; giám sát (tuỳ chọn); kiến trúc mục tiêu production trên giấy | PT-12 | K10a, K10b | chưa làm |
-| 6 | `replica`, `scripts`, `docs` | `chore/hardening` | `dead_letter`, `scripts/chaos-check.sh`, chốt tài liệu | PT-06 | `chaos-check.sh` | chưa làm |
+| 4 | `web`, `replica`, `branch` | `web/sync-dashboard` | Topology sống, đọc đơn điệu, truy vết sự kiện, POS | — | chạy tay K1–K9; K11, K12 | xong, đã merge (PR #5); 58 test, selftest dashboard 22/22, POS 5/5; K1–K9, K11, K12 đạt trên 3 node một máy |
+| 5 | `infra`, `replica`, `web` | `ha/entry-failure-detector` | HA cổng vào (nginx ở mọi node, client tự chuyển); bộ phát hiện lỗi có trạng thái, kết luận theo đa số bản sao | PT-13 | K13, K14 | chưa làm |
+| 6 | `branch`, `replica`, `web` | `ha/hinted-handoff` | Chi nhánh sập vẫn bán: ghi hộ ở bản sao, chi nhánh phục hồi ở RECOVERING rồi kéo về áp theo thứ tự | PT-14 | K15 | chưa làm |
+| 7 | `infra`, `docs` | `infra/production-local` | Standby đồng bộ cho CSDL chi nhánh; vệ sinh vận hành; giám sát (tuỳ chọn); kiến trúc mục tiêu production trên giấy | PT-12 | K10a, K10b | chưa làm |
+| 8 | `replica`, `scripts`, `docs` | `chore/hardening` | `dead_letter`, `scripts/chaos-check.sh` có đo thời gian gián đoạn, chốt tài liệu | PT-06 | `chaos-check.sh` | chưa làm |
 
 Xong một vòng thì sửa cột "Trạng thái" ở bảng này, dòng "Vòng tiếp theo" ở trên, và các bảng trạng thái trong
 [tests.md](tests.md).
@@ -185,7 +187,70 @@ HTML + JS thuần như hiện tại. Panel "Đồng bộ" đã có từ vòng 2�
 Test viết trước: endpoint mới phục vụ truy vết (nếu có) theo quy ước pytest; phần hiển thị kiểm bằng chạy tay.
 Xong khi: chạy tay K1–K9 nhìn đúng trên giao diện.
 
-### Vòng 5 – Production local (`infra/production-local`)
+### Vòng 5 – HA cổng vào và bộ phát hiện lỗi (`ha/entry-failure-detector`)
+
+Bỏ điểm chết duy nhất ở cổng vào và làm cho việc kết luận "chi nhánh chết" đáng tin hơn. Vòng 6 (ghi hộ) dựa vào
+kết luận này. Tham khảo repo cùng môn `4ustintr/BTL_Distributed_Application` (Health Monitor, trạng thái
+ONLINE/OFFLINE/RECOVERING, demo `docker pause` so với `docker kill`). MiniGo khác ở chỗ không có HQ điều phối, nên
+kết luận được rút ra từ đa số bản sao ngang hàng.
+
+| Việc | File |
+|---|---|
+| **A. Cổng vào không còn điểm chết:** nginx chạy ở cả 3 node, cấu hình giống nhau (upstream đủ 3 bản sao, `/cnX/` đủ 3 chi nhánh). Dashboard và POS biết danh sách cổng vào; một cổng không trả lời thì tự chuyển sang cổng kế tiếp (failover phía client, cùng ý với `bootstrap.servers` của Kafka) | `infra/compose.yml`, `infra/compose.local.yml`, `infra/env/*`, `infra/nginx/`, `web/*.html` |
+| **C. Bộ phát hiện lỗi có trạng thái:** mỗi bản sao tự đánh giá từng chi nhánh theo tuổi heartbeat: ONLINE → SUSPECT → OFFLINE (hai ngưỡng); gửi đánh giá của mình qua gossip; chỉ kết luận OFFLINE khi **đa số bản sao** (2/3) cùng thấy OFFLINE. RECOVERING do chi nhánh tự báo (dùng ở vòng 6) | `api/services/replica.py`, `api/workers/gossip.py`, `db/replica.sql`, `common/models.py` |
+| Dashboard: hiện trạng thái theo đa số và đánh giá riêng của từng bản sao (thấy rõ các bản sao có thể nhìn khác nhau); cổng vào đang dùng | `web/dashboard.html` |
+| Lệnh demo: dừng hoặc tạm dừng (`docker pause`) một chi nhánh, một nginx | `Makefile`, `scripts/` |
+
+Quy tắc mới, ghi vào `docs/spec.md` mục 8 ở `/test-first`: **PT-13** một chi nhánh chỉ bị coi là OFFLINE khi đa số
+bản sao cùng thấy OFFLINE; một bản sao mất liên lạc riêng lẻ chỉ đổi góc nhìn của chính nó.
+
+Test viết trước: hàm thuần tính trạng thái từ tuổi heartbeat (đúng hai ngưỡng); hàm kết luận theo đa số từ đánh giá
+của các bản sao (2/3 OFFLINE thì OFFLINE, 1/3 thì không; thiếu đánh giá của bản sao đã chết thì tính thế nào); `make
+config` kiểm nginx có ở mọi node và danh sách cổng vào giống nhau. Logic chọn cổng vào ở JS kiểm bằng selftest
+trong trình duyệt như vòng 4.
+
+Kịch bản mới:
+- **K13** – mất cổng vào: dashboard đang mở qua nginx A; dừng nginx A (hoặc `make cut N=a`). Dashboard tự chuyển sang
+  cổng của node khác, vẫn làm mới được; POS mở qua cổng vào cũng vậy.
+- **K14** – chậm hay chết: `docker pause` chi nhánh B (chậm, vẫn sống) rồi `docker kill` (chết). Cả hai đều đi qua
+  SUSPECT rồi OFFLINE: timeout không phân biệt được chậm với chết. Biến thể: chỉ cắt đường giữa chi nhánh B và một bản
+  sao, bản sao đó thấy OFFLINE nhưng kết luận đa số vẫn là ONLINE.
+
+Xong khi: K13, K14 đạt; K1–K12 vẫn đạt; `make check` xanh.
+
+### Vòng 6 – Chi nhánh sập vẫn bán: ghi hộ (`ha/hinted-handoff`)
+
+Hiện chi nhánh chỉ "cô lập lỗi": server chi nhánh chết thì quầy dừng. Vòng này cho quầy bán tiếp bằng **ghi hộ**
+(hinted handoff, store-and-forward như Amazon Dynamo; tương tự `pending_txn` và Replay Worker của repo tham khảo).
+Đổi lại phải chấp nhận khả năng bán quá tồn, phát hiện lúc áp lại (chọn A trong CAP).
+
+| Việc | File |
+|---|---|
+| POS mở được khi server chi nhánh sập: trang POS do nginx (hoặc bản sao) phục vụ, không chỉ do `branch_api` | `infra/nginx/`, `web/pos.html` |
+| POS gọi chi nhánh lỗi và kết luận đa số là OFFLINE (vòng 5) thì gửi lượt bán lên bản sao (ghi hộ), kèm `request_id`. Bản sao kiểm "tồn tạm tính" = snapshot trừ các lượt ghi hộ chưa áp, lưu vào bảng ghi hộ | `api/routers/replica.py`, `api/services/replica.py`, `db/replica.sql`, `web/pos.html` |
+| Chi nhánh khởi động lại ở **RECOVERING**: chưa nhận bán mới; **tự kéo** ghi hộ từ các bản sao (PT-07 giữ nguyên: bản sao không ghi vào CSDL chi nhánh), áp theo thứ tự qua đúng đường bán hàng (`change_stock`, `request_id` chống trùng, PT-08); lượt không đủ tồn ghi REJECTED; xong thì báo bản sao đánh dấu đã áp, chuyển ONLINE | `api/services/branch.py`, `api/workers/` (mới), `db/branch.sql`, `api/main.py` |
+| POS hiện rõ đang "ghi hộ qua trung tâm" hay "đang phục hồi"; dashboard hiện số lượt ghi hộ chờ áp, đã áp, bị từ chối | `web/pos.html`, `web/dashboard.html` |
+
+Quy tắc mới, ghi vào `docs/spec.md` mục 8 ở `/test-first`: **PT-14** mỗi lượt ghi hộ được áp vào chi nhánh đúng một
+lần, theo thứ tự ghi hộ, trước khi chi nhánh nhận lượt bán mới; lượt không áp được thì REJECTED và hiện ra, không mất
+lặng lẽ.
+
+Test viết trước: ghi hộ bị từ chối khi tồn tạm tính không đủ; ghi hộ trùng `request_id` chỉ lưu một lần; áp ghi hộ
+hai lần chỉ trừ tồn một lần; áp đúng thứ tự; lượt vượt tồn thật thành REJECTED; ở RECOVERING lượt bán mới bị từ chối
+với mã lỗi rõ ràng; gom ghi hộ từ nhiều bản sao không trùng không sót.
+
+Kịch bản mới:
+- **K15** – chi nhánh sập vẫn bán: dừng `branch_api` và `branch_db` của B; đa số bản sao kết luận OFFLINE; POS B chuyển
+  sang ghi hộ, bán 5 đơn. Bật lại B: RECOVERING, áp đủ 5 lượt, gửi lại lần hai không trừ thêm, rồi ONLINE; 3 dấu vân
+  tay khớp. Biến thể: một lượt ghi hộ vượt tồn thật thì REJECTED và hiện trên POS, dashboard.
+
+Giới hạn phải ghi vào `docs/spec.md` mục 6: phân vùng mạng làm POS không gọi được chi nhánh trong khi chi nhánh vẫn
+sống (và vẫn bán ở quầy khác) thì hai nơi cùng ghi; có thể bán quá tồn, chỉ phát hiện lúc áp lại. PT-13 làm giảm khả
+năng này nhưng không loại bỏ. Cách triệt để (lease kèm fencing token) ghi vào "kiến trúc mục tiêu production".
+
+Xong khi: K15 đạt cả biến thể REJECTED; K1–K14 vẫn đạt; `make check` xanh.
+
+### Vòng 7 – Production local (`infra/production-local`)
 
 Đưa các thực hành production vào chạy trên một máy, chỉ dùng phần mềm mã nguồn mở, không cloud, không dịch vụ trả
 phí. Mỗi phần gắn với một ý lý thuyết. Giới hạn cần nói rõ: một máy vẫn là một miền lỗi. Vòng này cải thiện độ bền
@@ -218,11 +283,14 @@ Kịch bản mới:
 Xong khi: K10a không mất lượt bán nào đã báo thành công; K10b đo được và ghi số độ trễ hai chế độ vào
 `docs/demo.md`; K1–K9 vẫn đạt; `make check` xanh.
 
-### Vòng 6 – Dọn và chốt (`chore/hardening`)
+### Vòng 8 – Dọn và chốt (`chore/hardening`)
 
 - Sink: thông điệp hỏng (JSON lỗi, thiếu trường) hiện làm sink chết rồi khởi động lại mãi. Ghi vào bảng
   `dead_letter`, commit qua. Test: thông điệp hỏng vào `dead_letter`, sink không ném lỗi.
-- `scripts/chaos-check.sh`: tự chạy cut/heal, K7b, K8, K10a rồi so dấu vân tay 3 bản sao, in ĐẠT / KHÔNG ĐẠT.
+- `scripts/chaos-check.sh`: tự chạy cut/heal, K7b, K8, K10a, K13, K15 rồi so dấu vân tay 3 bản sao, in ĐẠT / KHÔNG ĐẠT.
+  Đo và in thời gian gián đoạn (bao lâu không bán được, không xem được dashboard) và thời gian phục hồi (tới khi 3 dấu
+  vân tay khớp) của từng kịch bản, để trả lời "có HA không" bằng số (học theo `scripts/measure` của repo tham khảo
+  cùng môn `4ustintr/BTL_Distributed_Application`).
 - Cập nhật `docs/spec.md` (ba kênh, cụm broker, giới hạn mới), `db.md`, `api.md`, `demo.md`.
 
 ## 6. Giả định còn mở
@@ -254,11 +322,19 @@ Xong khi: K10a không mất lượt bán nào đã báo thành công; K10b đo �
   mất đa số thì sau ~2 giây không hỏi được metadata (sơ đồ ghi "không hỏi được", không biết broker nào còn); node bị
   cô lập (K3, K7c) vẫn hỏi được broker thiểu số của nó nhưng nhận danh sách cũ, nên dashboard bỏ `brokers_up` của sink
   có `broker_ok = false`; vài chục giây sau khi một broker dừng, các sink có thể thấy danh sách khác nhau.
-- Vòng 5: chuỗi kết nối nhiều host của libpq (`target_session_attrs=read-write`) đủ để `psycopg_pool` tự nối sang
-  primary mới sau promote mà không đổi code; kiểm ở `/plan-task` vòng 5.
-- Vòng 5: promote bằng tay (`make promote`), không dùng Patroni hay repmgr. Tự động failover CSDL ghi vào "kiến trúc
+- Vòng 5: trang mở từ cổng vào A gọi cổng vào B là khác origin; cần CORS ở nginx hoặc cách khác. Kiểm ở `/plan-task`
+  vòng 5. Cổng host của nginx ở từng node (chế độ một máy) cũng chọn ở đó.
+- Vòng 5: ngưỡng SUSPECT, OFFLINE (theo chu kỳ heartbeat 5 giây) và cách tính đa số khi một bản sao đã chết (đa số
+  trên tổng số bản sao hay trên số bản sao còn trả lời) chọn ở `/plan-task` vòng 5.
+- Vòng 6: ghi hộ rải trên nhiều bản sao (nginx chia lần lượt) hay dồn về một bản sao; chi nhánh gom từ mọi bản sao
+  thế nào khi một bản sao đang chết. Chọn ở `/plan-task` vòng 6.
+- Vòng 6: RECOVERING mà không gọi được bản sao nào thì làm gì (chờ, hay hết thời hạn thì tự ONLINE kèm cảnh báo như
+  repo tham khảo).
+- Vòng 7: chuỗi kết nối nhiều host của libpq (`target_session_attrs=read-write`) đủ để `psycopg_pool` tự nối sang
+  primary mới sau promote mà không đổi code; kiểm ở `/plan-task` vòng 7.
+- Vòng 7: promote bằng tay (`make promote`), không dùng Patroni hay repmgr. Tự động failover CSDL ghi vào "kiến trúc
   mục tiêu production".
-- Vòng 5: chế độ mặc định của nhân bản (đồng bộ hay bất đồng bộ) chọn ở `/plan-task`. Mặc định đồng bộ thì mất
+- Vòng 7: chế độ mặc định của nhân bản (đồng bộ hay bất đồng bộ) chọn ở `/plan-task`. Mặc định đồng bộ thì mất
   standby là quầy treo, trái tinh thần PT-01 (quầy luôn bán được); mặc định bất đồng bộ thì giữ PT-01 nhưng RPO > 0.
 
 ## 7. Để sau, không làm
@@ -269,8 +345,8 @@ Xong khi: K10a không mất lượt bán nào đã báo thành công; K10b đo �
 - Chạy lại toàn bộ trên 2–3 máy thật khi có máy: chỉ đổi file env, code giữ nguyên.
 
 Không làm:
-- Nginx vẫn là điểm chết duy nhất của cổng vào; keepalived/VIP không chạy qua Docker Desktop trên Windows. Nói rõ
-  khi bảo vệ.
+- keepalived/VIP cho nginx: không chạy qua Docker Desktop trên Windows. Vòng 5 bỏ điểm chết ở cổng vào bằng nginx ở
+  mọi node và client tự chuyển cổng, thay cho VIP.
 - Nút gây lỗi trên giao diện web: cần mount docker socket vào container, mở lỗ bảo mật. Dùng `make cut/heal`.
 - Debezium, Kubernetes, Merkle tree, mTLS: nặng, không trả lời thêm câu hỏi nào; chỉ ghi vào "kiến trúc mục tiêu
-  production" (vòng 5). Prometheus/Grafana chuyển thành phần tuỳ chọn của vòng 5.
+  production" (vòng 7). Prometheus/Grafana chuyển thành phần tuỳ chọn của vòng 7.

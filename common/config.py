@@ -45,8 +45,15 @@ NODE_NAME = os.environ.get("NODE_NAME", "?")
 # Mỗi bản sao một consumer group riêng -> mỗi bản sao nhận ĐỦ mọi sự kiện
 # và tự dựng bảng tổng hợp của riêng nó.
 CONSUMER_GROUP = f"replica-{NODE_NAME}"
-# Quá bấy nhiêu giây không nhận heartbeat thì coi chi nhánh là mất liên lạc
+# Bộ phát hiện lỗi (vòng 5, PT-13), theo tuổi heartbeat (nhịp 5 giây): dưới SUSPECT_AFTER_S là ONLINE,
+# từ đó tới dưới NODE_TIMEOUT_S là SUSPECT, từ NODE_TIMEOUT_S là OFFLINE (= mất liên lạc như trước vòng 5).
+SUSPECT_AFTER_S = 8
 NODE_TIMEOUT_S = 15
+# Kéo góc nhìn của bản sao khác (GET /api/views) mỗi bấy nhiêu giây; góc nhìn nhận cũ hơn VIEW_STALE_S thì bỏ
+VIEWS_EVERY_S = 5
+VIEW_STALE_S = 15
+# Mọi bản sao cấu hình (kể cả chính mình): đa số tính trên tổng số này, không trên số bản sao còn trả lời
+REPLICA_NAMES = [name for name, _ in REPLICAS]
 # Sink tự kiểm đường đọc Redpanda (broker_ok, lag trong sink_stats) mỗi bấy nhiêu giây
 BROKER_CHECK_EVERY_S = 5
 

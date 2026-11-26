@@ -8,9 +8,10 @@ from datetime import datetime, timezone
 
 from psycopg.types.json import Jsonb
 
-from common.config import NODE_NAME, NODE_TIMEOUT_S, RECONCILE_AFTER_S, SINK_STALE_S
+from common.config import (NODE_NAME, NODE_TIMEOUT_S, RECONCILE_AFTER_S, REPLICA_NAMES, SINK_STALE_S,
+                           SUSPECT_AFTER_S, VIEW_STALE_S)
 from common.db import pool
-from common.models import Heartbeat, SnapshotCell
+from common.models import BranchView, Heartbeat, SnapshotCell
 
 
 # ---------------------------------------------------------------------------
@@ -191,15 +192,53 @@ def record_heartbeat(hb: Heartbeat) -> None:
 
 
 # ---------------------------------------------------------------------------
+# 2b. Bộ phát hiện lỗi (vòng 5, PT-13): trạng thái theo tuổi heartbeat, kết luận theo đa số bản sao
+# ---------------------------------------------------------------------------
+def branch_state(age_s: float) -> str:
+    """Tuổi heartbeat (giây) -> ONLINE / SUSPECT / OFFLINE. Timeout không phân biệt được chậm với chết (K14)."""
+    if age_s < SUSPECT_AFTER_S:
+        return "ONLINE"
+    return "SUSPECT" if age_s < NODE_TIMEOUT_S else "OFFLINE"
+
+
+def majority_state(states: list[str | None], total: int) -> str:
+    """Kết luận từ góc nhìn của các bản sao (None = thiếu hoặc cũ). Đa số tính trên TỔNG số bản sao cấu hình, không
+    trên số còn trả lời: bản sao bị cô lập (1/1 còn trả lời) không được tự kết luận chi nhánh khác đã chết."""
+    quorum = total // 2 + 1
+    for s in ("OFFLINE", "ONLINE"):
+        if states.count(s) >= quorum:
+            return s
+    return "SUSPECT"
+
+
+def record_peer_view(peer: str, payload: dict) -> None:
+    """Lưu góc nhìn bản sao `peer` vừa trả qua GET /api/views (view_loop gọi mạng xong rồi mới gọi hàm này).
+    Kiểm mọi dòng trước khi ghi: một dòng hỏng thì không ghi dòng nào. Ghi trong MỘT transaction."""
+    if payload.get("node") != peer:
+        raise ValueError(f"gọi bản sao {peer} mà nhận góc nhìn của {payload.get('node')}")
+    views = [BranchView.model_validate(b) for b in payload["branches"]]
+    with pool.connection() as conn, conn.transaction(), conn.cursor() as cur:
+        cur.executemany(
+            """INSERT INTO peer_view (peer, branch_id, state, seconds_since_seen, received_at)
+               VALUES (%s, %s, %s, %s, now())
+               ON CONFLICT (peer, branch_id) DO UPDATE
+               SET state = EXCLUDED.state, seconds_since_seen = EXCLUDED.seconds_since_seen, received_at = now()""",
+            [(peer, v.branch_id, v.state, v.seconds_since_seen) for v in views],
+        )
+
+
+# ---------------------------------------------------------------------------
 # 3. Truy vấn cho dashboard. Mọi hàm nhận `conn` để /api/overview gom vào một kết nối.
 # ---------------------------------------------------------------------------
 def query_nodes(conn):
-    """Chi nhánh nào còn sống THEO BẢN SAO NÀY. Mỗi bản sao tự phán đoán theo
-    heartbeat nó nhận được, nên lúc mạng bị chia cắt, hai bản sao có thể thấy khác nhau."""
-    return conn.execute(
+    """Chi nhánh nào còn sống. Mỗi bản sao tự phán đoán theo heartbeat nó nhận được (`state`, `alive`), nên lúc mạng
+    bị chia cắt, hai bản sao có thể thấy khác nhau; `views` ghép góc nhìn của mọi bản sao, `verdict` là kết luận theo
+    đa số (PT-13)."""
+    rows = conn.execute(
         """SELECT n.branch_id, n.branch_name, n.outbox_backlog, n.rtt_ms, n.last_seen,
                   n.last_seen > now() - make_interval(secs => %s)      AS alive,
                   round(extract(epoch FROM now() - n.last_seen))::int  AS seconds_since_seen,
+                  extract(epoch FROM now() - n.last_seen)::float       AS age_s,
                   -- giờ chi nhánh trừ giờ bản sao lúc nhận heartbeat.
                   -- Gồm cả lệch đồng hồ lẫn thời gian gói tin đi trên mạng.
                   round(extract(epoch FROM n.node_time - n.last_seen) * 1000)::int AS clock_offset_ms,
@@ -211,6 +250,28 @@ def query_nodes(conn):
            ORDER BY n.branch_id""",
         (NODE_TIMEOUT_S,),
     ).fetchall()
+    # Góc nhìn của bản sao khác còn mới (cùng đồng hồ replica_db: đo thời gian chờ, không so thứ tự sự kiện)
+    peers = {(r["peer"], r["branch_id"]): r["state"] for r in conn.execute(
+        "SELECT peer, branch_id, state FROM peer_view WHERE received_at > now() - make_interval(secs => %s)",
+        (VIEW_STALE_S,),
+    ).fetchall()}
+    names = REPLICA_NAMES or [NODE_NAME]
+    for n in rows:
+        n["state"] = branch_state(n.pop("age_s"))
+        n["views"] = {name: n["state"] if name == NODE_NAME else peers.get((name, n["branch_id"])) for name in names}
+        n["verdict"] = majority_state(list(n["views"].values()), len(names))
+    return rows
+
+
+def query_views(conn) -> dict:
+    """Góc nhìn của CHÍNH bản sao này về từng chi nhánh, cho bản sao khác kéo (GET /api/views, PT-13). Chỉ đọc."""
+    rows = conn.execute(
+        """SELECT branch_id, extract(epoch FROM now() - last_seen)::float AS age_s
+           FROM node_status ORDER BY branch_id"""
+    ).fetchall()
+    return {"node": NODE_NAME, "branches": [
+        {"branch_id": r["branch_id"], "state": branch_state(r["age_s"]),
+         "seconds_since_seen": max(0, round(r["age_s"]))} for r in rows]}
 
 
 def query_inventory(conn):

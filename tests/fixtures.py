@@ -84,3 +84,20 @@ def one_row(table: str) -> dict:
     """Dòng duy nhất của bảng một dòng (relay_status, sink_stats)."""
     with pool.connection() as conn:
         return conn.execute(f"SELECT * FROM {table}").fetchone()
+
+
+def peer_view(peer: str, branch_id: int, state: str, received_ago_s: float = 0) -> None:
+    """Góc nhìn của bản sao `peer` về chi nhánh, nhận cách đây received_ago_s giây (giờ CSDL)."""
+    with pool.connection() as conn:
+        conn.execute(
+            """INSERT INTO peer_view (peer, branch_id, state, seconds_since_seen, received_at)
+               VALUES (%s, %s, %s, 0, now() - make_interval(secs => %s))""",
+            (peer, branch_id, state, received_ago_s),
+        )
+
+
+def peer_view_rows() -> list[dict]:
+    with pool.connection() as conn:
+        return conn.execute(
+            "SELECT peer, branch_id, state, seconds_since_seen FROM peer_view ORDER BY peer, branch_id"
+        ).fetchall()

@@ -50,6 +50,7 @@ Không giữ bản chính của tồn kho; chỉ giữ bảng tổng hợp dựn
 | `event_log` | Mọi sự kiện đã nhận | Khoá chính `(branch_id, movement_id)` = cơ chế chống trùng |
 | `sink_stats` | Bộ đếm của sink: đã áp, bản trùng đã bỏ qua; trạng thái đường đọc Redpanda | Đúng một dòng (`id = 1`) |
 | `sync_peer` | Lần trao đổi trực tiếp cuối với từng nơi: bản sao khác (gossip) hoặc chi nhánh (đối soát) | Một dòng một nơi, tạo ở lần trao đổi đầu |
+| `peer_view` | Góc nhìn của bản sao KHÁC về từng chi nhánh (vòng 5, PT-13), kéo qua `GET /api/views` | Khoá chính `(peer, branch_id)`; `state` ∈ ONLINE, SUSPECT, OFFLINE; góc nhìn của chính bản sao này không lưu, tính từ `node_status` |
 
 Cột từng bảng:
 
@@ -58,6 +59,7 @@ Cột từng bảng:
 | `node_status` | `branch_id` (khoá chính), `branch_name`, `last_seen` (giờ trung tâm lúc nhận), `node_time` (giờ chi nhánh), `outbox_backlog`, `rtt_ms`, `branch_url` (địa chỉ POS chi nhánh tự báo trong heartbeat, dùng để đối soát) |
 | `inventory_snapshot` | `branch_id`, `product_id` (khoá chính kép), `qty_on_hand`, `last_movement`, `node_time` (giờ chi nhánh của biến động đó), `updated_at` (giờ trung tâm cập nhật), `source` (kênh đã ghi giá trị hiện tại: `kafka`, `gossip`, `reconcile`; không nằm trong dấu vân tay) |
 | `sync_peer` | `peer` (khoá chính: tên bản sao `A`, hoặc `CN2` cho chi nhánh), `channel` (`gossip` hoặc `reconcile`), `last_ok_at` (lần cuối gọi được và merge xong), `failing_since` (lỗi đầu tiên của đợt lỗi hiện tại; NULL = đang gọi được), `last_error`, `cells_patched` (tổng số ô đã vá nhờ nơi này) |
+| `peer_view` | `peer` (tên bản sao khác `A`), `branch_id` (khoá chính kép), `state` (`ONLINE`, `SUSPECT`, `OFFLINE`, theo đánh giá của `peer`), `seconds_since_seen` (tuổi heartbeat theo đồng hồ của `peer`, chỉ để hiển thị), `received_at` (giờ bản sao NÀY nhận góc nhìn; cũ quá 15 giây thì bỏ) |
 | `event_log` | `branch_id`, `movement_id` (khoá chính kép), `product_id`, `move_type`, `qty_delta`, `qty_after`, `node_time` (giờ chi nhánh tạo sự kiện), `received_at` (giờ trung tâm nhận), `kafka_partition`, `kafka_offset` (vị trí trên Redpanda, để truy vết), `kafka_ts` (timestamp Kafka của thông điệp: topic đặt `LogAppendTime` nên là giờ broker leader ghi; NULL nếu không có) |
 | `sink_stats` | `id` (luôn 1), `processed`, `duplicates`, `last_event_at`, `broker_ok` (NULL = chưa kiểm), `broker_lost_at` (mốc mất broker đầu tiên của đợt hiện tại; NULL = đang đọc được), `lag` (số sự kiện trên Redpanda chưa áp, đo lần được gần nhất), `broker_checked_at` (lần kiểm gần nhất; cũ quá nghĩa là sink đã dừng), `brokers_up` (`INT[]`, mã broker sink thấy còn sống ở lần kiểm gần nhất, theo metadata; NULL = không hỏi được) |
 
@@ -82,6 +84,19 @@ Quy tắc ghi của kênh trực tiếp (vòng 3; `workers/gossip.py` gọi mạ
   `last_seen` mới hơn 15 giây, có `branch_url`.
 - Gọi lỗi (`record_peer_error`): `failing_since` giữ mốc lỗi đầu tiên, `last_error` lỗi mới, `last_ok_at` giữ nguyên.
 - Dữ liệu nhận từ node khác được kiểm bằng model `SnapshotCell` trước khi ghi; sai thì không ghi gì.
+
+**Bộ phát hiện lỗi** (vòng 5, PT-13; ngưỡng ở `docs/spec.md` mục 4):
+- `branch_state(age_s)`: hàm thuần, tuổi heartbeat → `ONLINE` / `SUSPECT` / `OFFLINE`. Tuổi tính bằng `now()` của
+  `replica_db` trừ `node_status.last_seen` (cùng một đồng hồ; đo thời gian chờ, không so thứ tự sự kiện, PT-05).
+- `query_views(conn)`: góc nhìn của chính bản sao này, mỗi chi nhánh trong `node_status` một dòng; chỉ đọc.
+- `record_peer_view(peer, payload)`: `workers/gossip.py: view_loop` gọi `GET /api/views` của bản sao `peer` xong rồi
+  mới gọi hàm này. Kiểm từng dòng bằng model `BranchView` trước khi ghi (sai thì không ghi gì), rồi upsert mọi dòng của
+  `peer` trong MỘT transaction, `received_at = now()`. Gọi lỗi thì không ghi gì: góc nhìn tự cũ đi.
+- `majority_state(states, total)`: hàm thuần. `states` = góc nhìn của mọi bản sao (của mình và các `peer_view` còn mới,
+  `None` = thiếu hoặc cũ), `total` = số bản sao cấu hình (`REPLICA_URLS`). Đủ `total // 2 + 1` góc nhìn `OFFLINE` thì
+  `OFFLINE`, đủ chừng đó `ONLINE` thì `ONLINE`, còn lại `SUSPECT`.
+- `query_nodes`: thêm `state` (góc nhìn của mình), `views` (`{tên bản sao: state hoặc null}`, đủ mọi bản sao cấu hình),
+  `verdict` (kết luận đa số). `alive` giữ nguyên nghĩa: góc nhìn của mình không phải `OFFLINE`.
 
 **Ô được vá không có dòng `event_log`**: gossip và đối soát chỉ mang số tồn mới nhất của ô, không mang các lượt
 bán ở giữa, nên không bịa dòng nhật ký. Hệ quả: `query_events` (danh sách sự kiện trên dashboard) thiếu các lượt đó

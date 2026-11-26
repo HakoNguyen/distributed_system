@@ -3,9 +3,9 @@
 Đọc file này ở đầu mọi phiên làm việc. Các quy tắc dưới đây là bắt buộc.
 
 ## Dự án
-Demo hệ thống kho phân tán cho môn Các hệ thống phân tán. Mỗi node chạy một chi nhánh, một bản sao trung tâm và một
-broker Redpanda (ba broker thành một cụm); node A chạy thêm Redpanda Console, nginx, `topic-init`. Chạy bằng Docker Compose, trên 2–3 máy thật hoặc mô phỏng nhiều
-node trên một máy.
+Demo hệ thống kho phân tán cho môn Các hệ thống phân tán. Mỗi node chạy một chi nhánh, một bản sao trung tâm, một
+nginx (cổng vào, vòng 5) và một broker Redpanda (ba broker thành một cụm); node A chạy thêm Redpanda Console,
+`topic-init`. Chạy bằng Docker Compose, trên 2–3 máy thật hoặc mô phỏng nhiều node trên một máy.
 
 ## Bắt đầu từ đâu
 - `docs/plan.md` mục 1 cho biết vòng đang làm. Mỗi lần chỉ làm **một** vòng, đúng thứ tự.
@@ -48,6 +48,8 @@ node trên một máy.
 - **PT-07** Bản sao chỉ đọc: không ghi ngược về chi nhánh, không gọi thẳng CSDL chi nhánh.
 - **PT-08** Nginx chỉ tự thử lại yêu cầu idempotent; lệnh bán dựa vào `request_id` để chống trừ hai lần.
 - **PT-09** Không bán lố tồn: trừ bằng một câu `UPDATE` có điều kiện.
+- **PT-13** Chi nhánh chỉ bị coi là OFFLINE khi đa số bản sao (trên tổng số cấu hình) cùng thấy OFFLINE
+  (`majority_state`); một bản sao mất liên lạc riêng lẻ chỉ đổi góc nhìn của chính nó.
 - **Không gọi HTTP bên trong transaction CSDL**: lấy dữ liệu từ node khác về trước, rồi mới mở transaction để ghi.
 
 ## Cách làm

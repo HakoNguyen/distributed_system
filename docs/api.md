@@ -4,11 +4,12 @@ Các kênh giao tiếp:
 
 | Kênh | Từ → tới | Kiểu |
 |---|---|---|
-| HTTP qua nginx | Trình duyệt → bản sao, chi nhánh | Đồng bộ, yêu cầu–phản hồi |
+| HTTP qua nginx | Trình duyệt → nginx của một node bất kỳ (cổng vào, vòng 5) → bản sao, chi nhánh | Đồng bộ, yêu cầu–phản hồi; cổng không trả lời thì trang tự gọi cổng kế tiếp (`GATEWAYS`) |
 | Heartbeat HTTP | `branch_api` → `/api/heartbeat` của MỌI bản sao, mỗi 5 giây | Đồng bộ, không qua broker |
 | Sự kiện Redpanda | `relay` → topic `inventory.movement` → mỗi `sink` | Bất đồng bộ, bền, at-least-once |
 | Gossip HTTP | `replica_api` → `/api/digest`, `/api/snapshot` của các bản sao khác, mỗi 10 giây | Đồng bộ, chỉ kéo; timeout 2 giây |
 | Đối soát HTTP | `replica_api` → `/api/snapshot` của chi nhánh còn sống, chỉ khi mất broker quá 15 giây | Đồng bộ, chỉ đọc (PT-07); timeout 2 giây |
+| Góc nhìn HTTP | `replica_api` → `/api/views` của các bản sao khác, mỗi 5 giây (vòng 5, PT-13) | Đồng bộ, chỉ kéo; timeout 2 giây |
 
 Tài liệu tự sinh: `http://localhost:8001/docs` (chi nhánh), `http://localhost:8000/docs` (bản sao).
 
@@ -52,6 +53,7 @@ Mọi phản hồi có header `X-Served-By: replica-<X>`.
 | GET | `/api/overview` | Mọi thứ dashboard cần trong một lần gọi: `served_by`, `nodes`, `inventory`, `events`, `digest` |
 | GET | `/api/digest` | Dấu vân tay, tổng tồn, `last_movement_by_branch`, bộ đếm và trạng thái broker của sink, `sync_peers` |
 | GET | `/api/snapshot` | Mọi ô của bảng tổng hợp, để bản sao khác gossip: `{node, cells: [{branch_id, product_id, qty_on_hand, last_movement, node_time}]}` |
+| GET | `/api/views` | Góc nhìn của bản sao này về từng chi nhánh, để bản sao khác kết luận theo đa số (vòng 5, PT-13): `{node, branches: [{branch_id, state, seconds_since_seen}]}`, `state` ∈ `ONLINE`, `SUSPECT`, `OFFLINE` (ngưỡng ở `docs/spec.md` mục 4). Chỉ đọc |
 | GET | `/api/trace?branch_id=2&movement_id=57&product_id=3` | Bản sao này biết sự kiện đó thế nào, để truy vết (vòng 4); xem dưới |
 | GET | `/api/nodes`, `/api/inventory`, `/api/events?limit=30`, `/api/stats` | Từng phần của overview, để gọi bằng tay |
 
@@ -66,6 +68,11 @@ từ broker thiểu số của nó (`docs/spec.md` mục 6).
 `cells_patched`), cho cột "Gossip" và dòng đồng bộ trên dashboard. `/api/inventory` (và `inventory` trong overview):
 mỗi ô `by_branch[b]` có thêm `source` (`kafka`, `gossip`, `reconcile`; `reconcile` hiện chấm cam, chú thích "số đọc thẳng từ chi nhánh (đối soát)") và
 `last_movement` (phiên bản của ô, để dashboard đọc đơn điệu).
+
+`/api/nodes` (và `nodes` trong overview): mỗi chi nhánh có `alive` (góc nhìn của bản sao này không phải OFFLINE, như
+trước vòng 5), `state` (góc nhìn của bản sao này), `views` (`{"A": "ONLINE", "B": null, "C": "OFFLINE"}`: góc nhìn của
+từng bản sao cấu hình; `null` = chưa có hoặc cũ quá 15 giây) và `verdict` (kết luận theo đa số, PT-13). Dashboard tô
+trạng thái chi nhánh theo `verdict`.
 
 `/api/trace` trả `{node, branch_id, movement_id, product_id, event, cell, via}`:
 - `event`: dòng `event_log` của sự kiện (`move_type`, `qty_delta`, `qty_after`, `node_time`, `received_at`,
@@ -107,11 +114,18 @@ mốc (chi nhánh, broker, bản sao) theo ba đồng hồ khác nhau: chỉ đ�
   `lag = Σ(high watermark − offset đã commit)`; hỏi lỗi hoặc quá hạn thì coi là mất broker. Cùng lần hỏi đó sink
   ghi các broker còn sống theo metadata vào `sink_stats.brokers_up` (vòng 4).
 
-## 4. Đường đi qua nginx (máy A, `infra/nginx/default.conf.template`)
+## 4. Đường đi qua nginx (mọi máy, `infra/nginx/default.conf.template`)
+
+Từ vòng 5 mỗi máy chạy một nginx (cổng vào), cấu hình giống hệt nhau: vào cổng nào cũng tới được mọi bản sao và mọi
+chi nhánh. Tên upstream được phân giải động (`resolve`, `resolver 127.0.0.11`, cần nginx ≥ 1.27.3), nên nginx khởi
+động được cả khi node khác chưa chạy hoặc đang bị rút mạng (tên chưa có thì đường đó trả 502). Mọi phản hồi có
+`Access-Control-Allow-Origin: *`; `OPTIONS` trả 204 (cho phép `GET`, `POST`, header `Content-Type`), để trang mở từ
+cổng này gọi được cổng khác khi chuyển cổng. Không dùng cookie hay xác thực.
 
 | Đường dẫn | Tới | Ghi chú |
 |---|---|---|
 | `/` và mọi đường dẫn khác | upstream `replicas` (round-robin A, B, C) | Bản sao lỗi bị gạch 10 giây; GET tự thử bản kế tiếp, tối đa 3 lần |
 | `/lb/replicas.json` | nginx trả thẳng | Danh sách tên bản sao cho bảng so sánh |
+| `/lb/gateways.json` | nginx trả thẳng | Một chuỗi JSON, các cổng vào trong `GATEWAYS` cách nhau dấu phẩy: `"http://localhost,http://localhost:8012,http://localhost:8022"`. Dashboard và POS đọc một lần lúc mở trang |
 | `/replica/<X>/...` | đúng bản sao X | Để dashboard so dấu vân tay từng bản |
 | `/cn1/`, `/cn2/`, `/cn3/` | POS của chi nhánh tương ứng | Chi nhánh mất liên lạc thì trả trang 503 báo rõ |

@@ -7,7 +7,7 @@ Tiến độ và thứ tự làm: [docs/plan.md](docs/plan.md).
 
 | Tính chất | Cơ chế | Kịch bản |
 |---|---|---|
-| Trong suốt vị trí | Nginx là cổng vào duy nhất, chia yêu cầu cho các bản sao | K2 |
+| Trong suốt vị trí | Nginx là cổng vào, chia yêu cầu cho các bản sao; vào máy nào cũng thấy cả hệ | K2 |
 | Chịu lỗi, failover | Mỗi máy một bản sao trung tâm; nginx bỏ qua bản sao chết | K3 |
 | Tự phục hồi | Outbox giữ sự kiện, Redpanda giữ vị trí đọc, nginx tự thử lại | K4 |
 | Chịu lỗi broker | Cụm 3 broker Raft, RF=3; mất đa số thì POS, dashboard báo "đồng bộ dừng", quầy vẫn bán | K7a–K7c |
@@ -17,6 +17,8 @@ Tiến độ và thứ tự làm: [docs/plan.md](docs/plan.md).
 | Chịu được độ trễ mạng | Bán tại chỗ, đồng bộ bất đồng bộ; đo RTT trực tiếp | K5 |
 | Đọc đơn điệu (monotonic reads) | Dashboard chỉ nhận phản hồi mà mọi ô có `movement_id` không cũ hơn số đang hiện; bản sao trễ thì giữ số cũ và gắn nhãn | K11 |
 | Truy vết sự kiện | Bấm một sự kiện: mốc ở chi nhánh, ở broker (timestamp Kafka), ở từng bản sao (qua Redpanda hay vá bằng gossip, đối soát) | K12 |
+| Cổng vào không có điểm chết | Nginx ở mọi máy, cấu hình giống nhau; trang đang mở tự chuyển sang cổng khác khi cổng đang dùng chết (như `bootstrap.servers` của Kafka) | K13 |
+| Phát hiện lỗi theo đa số | Mỗi bản sao tự đánh giá chi nhánh ONLINE → SUSPECT → OFFLINE theo tuổi heartbeat; chỉ kết luận OFFLINE khi 2/3 bản sao cùng thấy (PT-13) | K14 |
 
 Dashboard có **sơ đồ topology sống**: 3 node, mỗi node chi nhánh, broker, bản sao; cạnh relay → cụm, cụm → sink,
 gossip giữa bản sao, đối soát bản sao → chi nhánh, đổi màu theo trạng thái và nhấp nháy khi có dữ liệu đi qua.
@@ -36,7 +38,7 @@ Mọi máy chạy cùng một file compose; máy nào chạy gì do file `.env` 
 | `redpanda` | 19092, 33145 | mọi máy | Một broker (tương thích Kafka); ba máy thành cụm 3 broker, topic RF=3 |
 | `topic-init` | | máy A | Tạo topic một lần khi cụm đủ broker, rồi thoát |
 | `console` | 8080 | máy A | Redpanda Console: xem topic, từng sự kiện |
-| `nginx` | 80 | máy A | Cổng vào duy nhất, chia tải các bản sao |
+| `nginx` | 80 | mọi máy | Cổng vào (một máy: A 80, B 8012, C 8022), chia tải các bản sao, tới POS mọi chi nhánh |
 
 ```
 docs/      đặc tả, CSDL, API, kịch bản demo, kế hoạch (nguồn sự thật)
@@ -57,7 +59,8 @@ Cần Docker Desktop và một mạng overlay (Tailscale hoặc ZeroTier) nối 
 1. Trên mỗi máy, chép file env của máy đó thành `.env` ở gốc repo, rồi điền IP overlay thật:
    `cp infra/env/may-a.env .env` (máy B: `may-b.env`, máy C: `may-c.env`).
 2. Trên cả ba máy: `make up` (cụm broker lập khi đủ ba máy). Đã chạy bản một broker trước đó thì `make reset`.
-3. Trên máy A mở http://localhost/ (dashboard qua nginx), http://localhost:8001 (POS CN1).
+3. Trên máy bất kỳ mở http://localhost/ (dashboard qua cổng vào của máy đó), http://localhost:8001 (POS CN1 trên máy A).
+   Lên từ bản trước vòng 5: `make reset` một lần trên mọi máy (bảng mới `peer_view`).
 
 | Lệnh | Việc làm |
 |---|---|
@@ -67,11 +70,11 @@ Cần Docker Desktop và một mạng overlay (Tailscale hoặc ZeroTier) nối 
 | `make ps`, `make logs S=relay` | Trạng thái, log |
 
 **Chỉ có một máy:** `make local-up` dựng 3 node (A, B, C) trên cùng máy, nối nhau qua docker network `minigo-wan`
-thay cho mạng overlay; không cần `.env`. Mở http://localhost/ (nginx), POS CN1/CN2/CN3 ở cổng 8001/8011/8021,
+thay cho mạng overlay; không cần `.env`. Mở http://localhost/ (cổng vào A; B, C ở 8012, 8022), POS CN1/CN2/CN3 ở cổng 8001/8011/8021,
 dashboard bản sao A/B/C ở 8000/8010/8020. `make cut N=b` rút mạng node B, `make heal N=b` cắm lại;
 `make local-down`, `make local-reset` (bắt buộc một lần khi lên từ bản một broker, và khi lên vòng 4: thêm cột
-`event_log.kafka_ts`, `sink_stats.brokers_up`, topic `LogAppendTime`). Dừng một broker cho K7:
-`docker stop minigo-b-redpanda-1`. Chi tiết: [docs/demo.md](docs/demo.md) mục 3, phần "Chạy trên một máy".
+`event_log.kafka_ts`, `sink_stats.brokers_up`, topic `LogAppendTime`; và khi lên vòng 5: bảng `peer_view`, mạng `minigo-wan` có IP cố định). Dừng một broker cho K7:
+`docker stop minigo-b-redpanda-1`; K13, K14: `make pause|unpause|kill|start N=<x> S=<service>`. Chi tiết: [docs/demo.md](docs/demo.md) mục 3, phần "Chạy trên một máy".
 
 Không có `make` thì dùng thẳng `docker compose up -d --build`: file `.env` đã chỉ tới `infra/compose.yml`
 qua biến `COMPOSE_FILE`, nên mọi lệnh `docker compose ...` gõ từ gốc repo đều chạy được.
@@ -85,7 +88,7 @@ Mỗi vòng trong [docs/plan.md](docs/plan.md) đi bốn bước bằng lệnh d
 | Lệnh | Việc làm |
 |---|---|
 | `make test` | pytest trong container, trên CSDL test riêng; chỉ cần Docker. Một thư mục: `make test T=tests/replica` |
-| `make config` | Kiểm tra file compose hợp lệ với env mẫu; với 3 node một máy: cổng không trùng, đủ alias, nginx đủ địa chỉ; cụm 3 broker ở mọi file env; `REPLICA_URLS`, `BRANCH_URL` cho gossip và đối soát |
+| `make config` | Kiểm tra file compose hợp lệ với env mẫu; với 3 node một máy: cổng không trùng, đủ alias, nginx đủ địa chỉ; cụm 3 broker ở mọi file env; `REPLICA_URLS`, `BRANCH_URL` cho gossip và đối soát; nginx ở mọi node, `GATEWAYS`, IP cố định trên `minigo-wan` |
 | `make check` | `config` + `test`; chạy trước khi báo xong một vòng |
 
 Quy ước code và làm việc với AI: [CLAUDE.md](CLAUDE.md). Quy ước kiểm thử: [docs/tests.md](docs/tests.md).

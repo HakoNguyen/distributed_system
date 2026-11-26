@@ -31,25 +31,21 @@ Từ máy B: `ping <IP overlay máy A>`. Có trả lời thì mạng overlay đ�
 
 | Máy | Cổng cần mở | Ai gọi vào |
 |---|---|---|
-| A | 80 (nginx), 8000, 8001, 19092, 33145 (Redpanda) | trình duyệt, chi nhánh và broker các máy khác |
-| B, C | 8000 (bản sao), 8001 (POS), 19092, 33145 (Redpanda) | nginx ở máy A, heartbeat, relay, sink và broker máy khác |
+| A, B, C | 80 (nginx, cổng vào ở mọi máy từ vòng 5), 8000 (bản sao), 8001 (POS), 19092, 33145 (Redpanda) | trình duyệt, nginx mọi máy, heartbeat, relay, sink và broker máy khác |
 
-Trên Windows, mở PowerShell bằng quyền Administrator:
+Trên Windows, mở PowerShell bằng quyền Administrator (mọi máy):
 
 ```powershell
-# Máy A
 New-NetFirewallRule -DisplayName "MiniGo" -Direction Inbound -Protocol TCP -LocalPort 80,8000,8001,19092,33145 -Action Allow
-# Máy B, C
-New-NetFirewallRule -DisplayName "MiniGo" -Direction Inbound -Protocol TCP -LocalPort 8000,8001,19092,33145 -Action Allow
 ```
 
 Trên Linux có ufw: `sudo ufw allow 80,8000,8001,19092,33145/tcp`. macOS thường tự hỏi, bấm Allow.
 
 ## 2. Điền file env
 
-Mỗi máy có một file mẫu trong `infra/env/`. Mở **cả ba** file `infra/env/may-a.env`, `may-b.env`, `may-c.env`, thay các IP mẫu `100.64.0.1`, `100.64.0.2`, `100.64.0.3` bằng IP overlay thật. Chúng xuất hiện ở các dòng `BROKER_SEEDS`, `KAFKA_BROKERS`, `REPLICA_A/B/C`, `BRANCH_A/B/C`, `REPLICA_URLS`, `BROKER_HOST`, `BRANCH_URL`. Khối `BROKER_SEEDS`, `KAFKA_BROKERS`, `REPLICA_A/B/C`, `BRANCH_A/B/C` phải giống nhau ở mọi file; `BROKER_HOST` là IP overlay của **chính máy đó** (broker tự giới thiệu địa chỉ này cho máy khác); `BRANCH_URL` là `http://<IP overlay chính máy đó>:8001` (chi nhánh gửi kèm heartbeat để bản sao mọi máy đối soát khi mất broker).
+Mỗi máy có một file mẫu trong `infra/env/`. Mở **cả ba** file `infra/env/may-a.env`, `may-b.env`, `may-c.env`, thay các IP mẫu `100.64.0.1`, `100.64.0.2`, `100.64.0.3` bằng IP overlay thật. Chúng xuất hiện ở các dòng `BROKER_SEEDS`, `KAFKA_BROKERS`, `REPLICA_A/B/C`, `BRANCH_A/B/C`, `GATEWAYS`, `REPLICA_URLS`, `BROKER_HOST`, `BRANCH_URL`. Khối `BROKER_SEEDS`, `KAFKA_BROKERS`, `REPLICA_A/B/C`, `BRANCH_A/B/C`, `GATEWAYS` phải giống nhau ở mọi file; `BROKER_HOST` là IP overlay của **chính máy đó** (broker tự giới thiệu địa chỉ này cho máy khác); `BRANCH_URL` là `http://<IP overlay chính máy đó>:8001` (chi nhánh gửi kèm heartbeat để bản sao mọi máy đối soát khi mất broker).
 
-`REPLICA_B`, `BRANCH_B`... là địa chỉ đầy đủ `host:port` mà nginx (máy A) dùng để gọi bản sao và POS của từng máy: `100.64.0.2:8000` là bản sao máy B, `100.64.0.2:8001` là POS CN2 (cổng host).
+`REPLICA_B`, `BRANCH_B`... là địa chỉ đầy đủ `host:port` mà nginx (chạy ở mọi máy) dùng để gọi bản sao và POS của từng máy: `100.64.0.2:8000` là bản sao máy B, `100.64.0.2:8001` là POS CN2 (cổng host). Cả máy của chính nginx cũng ghi bằng IP overlay (`REPLICA_A=100.64.0.1:8000`), vì cùng một khối chạy ở cả ba máy (giả định chưa kiểm: container gọi được IP overlay của chính máy mình, `docs/plan.md` mục 6). `GATEWAYS` là các địa chỉ trình duyệt dùng để mở cổng vào (`http://100.64.0.1,...`).
 
 **Chỉ có 2 máy thật?** Cụm broker cần đủ mọi seed mới lập được, và Redpanda không nhận RF=2, nên với 2 máy chỉ máy A chạy broker (như trước vòng 2, broker vẫn là điểm chết; K7 cần 3 máy hoặc chế độ một máy). Sửa ở **cả hai** file `may-a.env`, `may-b.env`: `BROKER_SEEDS=<IP A>:33145`, `KAFKA_BROKERS=<IP A>:19092`; ở `may-b.env` thêm `#` trước `COMPOSE_PROFILES=broker`. `topic-init` tự lấy RF = số seed = 1. Phần còn lại vẫn chạy, nhưng dòng C trên bảng bản sao ghi "Không liên lạc được", `/cn3/` báo mất liên lạc, và thỉnh thoảng một request qua nginx chậm khoảng 1 giây (mỗi worker nginx tự thử lại máy C sau 10 giây). Muốn gọn: trong `infra/nginx/default.conf.template` thêm `#` trước dòng `server ${REPLICA_C}` và bỏ `"C"` ở `/lb/replicas.json`.
 
@@ -77,7 +73,9 @@ make up        # hoặc: docker compose up -d --build
 docker compose ps -a
 ```
 
-Máy A phải thấy **9 container chạy** (redpanda, console, nginx, và 6 container của chi nhánh và bản sao) cộng `topic-init` đã `Exited (0)`; máy B, C mỗi máy **7 container** (thêm redpanda). Nếu thiếu redpanda, console, nginx, kiểm tra dòng `COMPOSE_PROFILES` trong `.env` (`core,broker` ở máy A, `broker` ở máy B, C).
+Máy A phải thấy **9 container chạy** (redpanda, console, nginx, và 6 container của chi nhánh và bản sao) cộng `topic-init` đã `Exited (0)`; máy B, C mỗi máy **8 container** (thêm redpanda, nginx). Nếu thiếu redpanda, console, kiểm tra dòng `COMPOSE_PROFILES` trong `.env` (`core,broker` ở máy A, `broker` ở máy B, C); nginx chạy ở mọi máy, không phụ thuộc profile.
+
+**Nâng từ bản trước vòng 5:** schema bản sao có thêm bảng `peer_view`, nên chạy `make reset` một lần trên **mọi** máy (một máy: `make local-reset`, lệnh này cũng dựng lại mạng `minigo-wan` có vùng IP động riêng). Dữ liệu demo bị xoá.
 
 Cụm broker chỉ lập khi **đủ 3 broker** (mọi địa chỉ trong `BROKER_SEEDS`); trước đó relay, sink báo lỗi và tự thử lại, `docker compose logs topic-init` ghi "Chờ cụm broker". Kiểm tra: `docker compose exec redpanda rpk cluster health` phải có `Healthy: true`, `All nodes: [1 2 3]`.
 
@@ -100,22 +98,28 @@ Trên dashboard qua nginx, sau khoảng 10 giây phải có đủ hai thẻ CN1,
 Mỗi "máy" là một compose project (`minigo-a`, `minigo-b`, `minigo-c`) chạy cùng `infra/compose.yml`, ghép thêm
 `infra/compose.local.yml`, env ở `infra/env/local-<x>.env` (không cần `.env`). "Mạng overlay" là docker network
 chung `minigo-wan`. "Rút mạng máy B" là gỡ mọi container của B khỏi `minigo-wan`: B vẫn chạy đủ bên trong (CSDL,
-POS, bản sao, broker), chỉ mất liên lạc với node khác, đúng như rút dây mạng. RAM: 23 container (3 broker, mỗi broker `--memory=512M`) đo được khoảng 1,23 GB (19/11/2026).
+POS, bản sao, broker), chỉ mất liên lạc với node khác, đúng như rút dây mạng. RAM: 23 container (3 broker, mỗi broker `--memory=512M`) đo được khoảng 1,23 GB (19/11/2026); vòng 5 thêm 2 nginx (25 container).
 Đã chạy bản một broker (vòng 1)? Chạy `make local-reset` một lần: volume broker cũ là cụm một node.
+**Nâng từ bản trước vòng 5:** chạy `make local-reset` một lần (bảng mới `peer_view`; mạng `minigo-wan` tạo lại có
+vùng IP động riêng). `make local-up` trên mạng cũ sẽ dừng và nhắc việc này.
 
 ```bash
-make local-up        # tạo minigo-wan, dựng node C, B rồi A (23 container, cộng topic-init chạy một lần)
+make local-up        # tạo minigo-wan, dựng node C, B rồi A (25 container, cộng topic-init chạy một lần)
 make cut N=b         # rút mạng node B
 make heal N=b        # cắm lại, đúng IP và alias cũ
 make local-down      # dừng 3 node, giữ dữ liệu
 make local-reset     # xoá dữ liệu 3 node rồi dựng lại
+make pause N=b S=branch_api    # "chậm": tạm dừng một container (unpause để chạy tiếp)
+make kill N=a S=nginx          # "chết": giết một container (start để bật lại)
 ```
 
-| Node | POS | Dashboard bản sao | Riêng node A |
-|---|---|---|---|
-| A | http://localhost:8001 (CN1) | http://localhost:8000 | nginx http://localhost/, Console http://localhost:8080 |
-| B | http://localhost:8011 (CN2) | http://localhost:8010 | |
-| C | http://localhost:8021 (CN3) | http://localhost:8020 | |
+| Node | POS | Dashboard bản sao | Cổng vào (nginx) | Riêng node A |
+|---|---|---|---|---|
+| A | http://localhost:8001 (CN1) | http://localhost:8000 | http://localhost/ | Console http://localhost:8080 |
+| B | http://localhost:8011 (CN2) | http://localhost:8010 | http://localhost:8012/ | |
+| C | http://localhost:8021 (CN3) | http://localhost:8020 | http://localhost:8022/ | |
+
+Ba cổng vào giống hệt nhau: `localhost:8012/cn2/` cũng là POS CN2, `localhost:8022/` cũng là dashboard toàn chuỗi.
 
 K1–K9 ở mục 5 giữ nguyên, chỉ đổi thao tác:
 
@@ -131,6 +135,8 @@ K1–K9 ở mục 5 giữ nguyên, chỉ đổi thao tác:
 | K7c rút mạng máy A | Tắt Wi-Fi máy A | `make cut N=a`, `make heal N=a` |
 | K8 bản sao B lỡ sự kiện | `docker compose stop sink` (máy B), bán, `docker compose exec redpanda rpk group seek replica-B --to end`, `docker compose start sink` | `docker stop minigo-b-sink-1`, bán ở `localhost:8011`, `docker exec minigo-a-redpanda-1 rpk group seek replica-B --to end`, `docker start minigo-b-sink-1` |
 | K9 dừng cả 3 broker | `docker compose stop redpanda` trên cả 3 máy | `docker stop minigo-a-redpanda-1 minigo-b-redpanda-1 minigo-c-redpanda-1`; bật lại: `docker start ...` |
+| K13 mất cổng vào A | Rút mạng máy A, hoặc `docker compose stop nginx` trên máy A | `make kill N=a S=nginx` (chết) hoặc `make pause N=a S=nginx` (treo); bật lại `make start` / `make unpause`. **Không dùng `make cut N=a`**: cổng host không đi qua `minigo-wan`, trình duyệt cùng máy vẫn gọi được nginx A |
+| K14 chi nhánh B chậm / chết | `docker compose pause branch_api` / `docker compose kill branch_api` trên máy B | `make pause N=b S=branch_api` / `make kill N=b S=branch_api`; biến thể: `docker exec minigo-b-branch_api-1 sh tre.sh on 0 replica-a 100` (mất 100% gói tới riêng bản sao A), bỏ: `... sh tre.sh off` |
 | Xem gossip, đối soát | `curl localhost:8000/api/digest` (trường `sync_peers`) | `curl localhost:8010/api/digest`; log: `docker logs minigo-b-replica_api-1 \| grep gossip` |
 | Xem cụm broker | `docker compose exec redpanda rpk cluster health` | `docker exec minigo-a-redpanda-1 rpk cluster health`, `... rpk topic describe inventory.movement -p` |
 | Xem container, log | `make ps`, `make logs S=relay` | `docker ps --filter name=minigo-b`, `docker logs -f minigo-b-relay-1` |
@@ -140,18 +146,18 @@ network, nên trên `minigo-wan` tên `replica_api` trỏ về cả ba node. M�
 `replica-b`, `redpanda-a`), gắn trên cả mạng riêng của node lẫn `minigo-wan`: lúc B bị rút mạng, CN2 vẫn gửi
 heartbeat được cho bản sao B.
 
-**Vì sao `heal` phải nối lại đúng IP cũ?** Nginx phân giải tên `replica-b` một lần lúc khởi động rồi nhớ IP. Cắm
-lại mà IP đổi thì nginx gửi nhầm container. Broker cũng cần: kết nối RPC nó mở trước lúc rút mạng gắn với IP cũ,
-IP đổi thì broker đó không gọi được broker khác nữa (thử ở vòng 2: K7a sau đó hỏng). `make cut` ghi IP và alias vào `.cut-<x>` ở gốc repo, `make heal` đọc lại.
+**Vì sao `heal` phải nối lại đúng IP cũ?** Broker cần: kết nối RPC nó mở trước lúc rút mạng gắn với IP cũ, IP đổi
+thì broker đó không gọi được broker khác nữa (thử ở vòng 2: K7a sau đó hỏng). `make cut` ghi IP và alias vào
+`.cut-<x>` ở gốc repo, `make heal` đọc lại. Từ vòng 5, mọi container trên `minigo-wan` có **IP cố định**
+(`WAN_IP_PREFIX`: node A `10.210.0.11`–`.18`, B `.21`–`.28`, C `.31`–`.38`), còn IP động chỉ cấp trong
+`10.210.0.128/25`: không container nào lấy mất IP của container khác, nên dựng lại (`make local-up`) trong lúc một
+node bị rút mạng, hay bật lại broker sau `heal`, không còn lỗi `Address already in use` (đo 27/11/2026: cut B, dựng
+lại hẳn node A, C, heal B, dừng broker B, dựng lại node A, bật broker B: mọi container chạy, cụm `Healthy: true`).
+Nginx thì phân giải tên động (`resolve`), không còn nhớ IP.
 
 Giới hạn của bản mô phỏng:
-- Nginx (node A) chỉ khởi động được khi `replica-b`, `branch-c`... đều phân giải được, nên `make local-up` dựng C,
-  B trước A. Nếu nginx khởi động lại lúc một node đang bị rút mạng, nó báo `host not found in upstream`: `make heal`
-  rồi `docker restart minigo-a-nginx-1`.
-- Trong lúc B bị rút mạng, đừng dựng lại container nào khác (`make local-up`): container mới có thể lấy IP cũ của
-  B, `make heal` sẽ báo lỗi. Khi đó `make local-reset`.
-- Sau `heal`, nếu một container khác khởi động lại trong lúc broker đang tắt, nó có thể lấy IP đã ghim của broker;
-  `docker start` broker đó báo `Address already in use`. Khi đó `make local-reset`.
+- Cổng host của nginx không đi qua `minigo-wan`, nên `make cut N=a` không làm trình duyệt cùng máy mất cổng A (K13
+  dùng `make kill`/`make pause` nginx A). Nginx A bị cut vẫn trả lời, chỉ thấy bản sao A và CN1.
 - DNS của Docker Desktop mất ~8 giây mới báo "không có" tên của container đã dừng; relay, sink đặt
   `dns_opt: timeout:1, attempts:1` (`infra/compose.local.yml`) để không treo khi một broker tắt. Máy thật dùng IP.
 - Đo ngày 19/11/2026 (cụm 3 broker): sau `make heal N=b`, outbox CN2 về 0 trong 5–9 giây; 3 bản sao khớp sau
@@ -199,7 +205,7 @@ docker compose exec branch_api sh tre.sh on 300 100.64.0.1
 # bỏ:                ... sh tre.sh off
 ```
 
-## 5. Kịch bản K1–K9, K11, K12
+## 5. Kịch bản K1–K9, K11–K14
 
 (K10 dành cho vòng 7.) Từ vòng 4 hai màn hình được làm lại theo thao tác nghiệp vụ. Dashboard trụ sở có thanh bên
 (menu, bản sao đang trả lời, trạng thái đồng bộ tóm tắt) và bốn tab; tab đang mở nằm trong địa chỉ
@@ -256,6 +262,8 @@ Bảng tóm tắt: **kịch bản nào chứng minh tính chất gì, nhìn ở 
 | K9 | Đối soát với chi nhánh | Dừng cả 3 broker, bán ở CN2 | Dòng "Đồng bộ"; ô CN2 trên bảng tồn | Sau 15–25 giây kể từ "dừng từ", 3 bản sao cập nhật CN2, ô có chấm cam "đối soát", 3 dấu vân tay khớp dù broker còn dừng |
 | K11 | Đọc đơn điệu | Dừng sink B, bán ở CN2, xem dashboard qua nginx | Dải vàng đầu trang; vệt served-by ở thanh bên; tab Tồn kho, cột CN2 | Lần B trả lời: số CN2 **không lùi**, ô vàng trong vệt, "Bản sao B trễ N sự kiện ở CN2"; gossip vá B thì nhãn tự mất |
 | K12 | Truy vết sự kiện | Tab Sự kiện, bấm một sự kiện | Khung truy vết bên phải | Mốc chi nhánh ghi, broker ghi (phân hoạch, offset, timestamp Kafka), relay đánh dấu đã gửi, từng bản sao nhận qua Redpanda hay được vá bằng gossip/đối soát |
+| K13 | Mất cổng vào, client tự chuyển | Mở dashboard và POS qua cổng A, giết hoặc treo nginx A | Ô "Cổng vào" ở thanh bên; dòng "cập nhật" ở đầu trang; thông báo dưới phiếu POS | Trang tự chuyển sang cổng B, vẫn làm mới; lượt bán dở gửi lại qua cổng B không trừ hai lần |
+| K14 | Chậm hay chết, kết luận theo đa số | Pause rồi kill `branch_api` của B; biến thể chỉ cắt CN2 → bản sao A | Bảng chi nhánh (Tổng quan), dải sự cố; tab Hệ thống, bảng kỹ thuật chi nhánh cột "Góc nhìn từng bản sao", "Kết luận (đa số)" | Cả hai ca đi Nghi ngờ rồi Mất liên lạc; biến thể: góc nhìn A "mất", kết luận vẫn "sống" |
 
 Trên sơ đồ đồng bộ khi chạy lại K1–K9 (22/11/2026, 3 node một máy, `make local-reset` sau vòng 4). Đã kiểm trên
 giao diện (Chrome headless, đọc trạng thái từng cạnh và chụp màn hình): K1, K2, K3, K4, K7a, K7b, K7c, K9. K5, K6
@@ -300,7 +308,7 @@ Chi tiết từng kịch bản:
 - `curl -I` in ra hai dòng `X-Served-By: replica-A` và `X-Upstream: ...`, đổi qua lại giữa các lần chạy.
 - `/cn2/` mở màn hình POS của CN2, dù CN2 chạy trên máy B.
 
-**Nói:** Người dùng chỉ biết **một địa chỉ**. Họ không biết, và không cần biết, phía sau có mấy máy, máy nào đang trả lời, CN2 nằm ở đâu. Đó là tính trong suốt vị trí. Nginx ở đây vừa là **bộ cân bằng tải** vừa là cổng vào duy nhất.
+**Nói:** Người dùng chỉ biết **một địa chỉ**. Họ không biết, và không cần biết, phía sau có mấy máy, máy nào đang trả lời, CN2 nằm ở đâu. Đó là tính trong suốt vị trí. Nginx ở đây vừa là **bộ cân bằng tải** vừa là cổng vào. Từ vòng 5 mỗi máy có một nginx giống hệt nhau (`localhost:8012/`, `localhost:8022/` trên một máy), nên địa chỉ nào cũng được; cổng đang dùng chết thì trang tự chuyển (K13).
 
 ### K3. Chịu lỗi và chuyển đổi khi lỗi: rút mạng máy B
 
@@ -314,7 +322,7 @@ Chi tiết từng kịch bản:
 
 **Thấy trên máy B:**
 - POS **vẫn bán được**. Dải trạng thái chuyển đỏ "Chưa gửi được lên trung tâm từ … giây", số sự kiện chờ trong outbox tăng dần. Chip "Bản sao máy A: mất liên lạc".
-- Tab `localhost:8000` (bản sao B) vẫn mở được. Điều thú vị là **bản sao B thấy CN2 còn sống còn CN1 mất liên lạc**, ngược hẳn với bản sao A. B cũng mất broker (broker máy B một mình là thiểu số), nên sau khoảng 15 giây B **đối soát thẳng với CN2** (cùng máy): cột CN2 trên dashboard B có số mới kèm chấm cam "đối soát", trong khi CN1, CN3 đứng ở số cũ. Dashboard A lúc này vẫn thấy CN2 số cũ: hai bên mạng bị chia cắt có hai góc nhìn khác nhau.
+- Tab `localhost:8000` (bản sao B) vẫn mở được. Điều thú vị là **bản sao B thấy CN2 còn sống còn CN1, CN3 mất liên lạc**, ngược hẳn với bản sao A. Nhưng từ vòng 5 (PT-13), B không lấy được góc nhìn của A, C nên chỉ có 1/3 góc nhìn: thẻ CN1, CN3 trên dashboard B ghi **"Nghi ngờ, chưa đủ đa số"** (bảng kỹ thuật ở tab Hệ thống: góc nhìn B "mất", A, C "–"), không ghi "Mất liên lạc". Phía A, C (đa số) thì kết luận CN2 "Mất liên lạc (2/3 bản sao)". B cũng mất broker (broker máy B một mình là thiểu số), nên sau khoảng 15 giây B **đối soát thẳng với CN2** (cùng máy): cột CN2 trên dashboard B có số mới kèm chấm cam "đối soát", trong khi CN1, CN3 đứng ở số cũ. Dashboard A lúc này vẫn thấy CN2 số cũ: hai bên mạng bị chia cắt có hai góc nhìn khác nhau.
 
 **Nói:**
 - Lỗi cục bộ: một máy chết, phần còn lại vẫn chạy, và người dùng qua nginx gần như không nhận ra.
@@ -422,7 +430,9 @@ ghi CSDL (PT-06). Trong lúc chờ, bản sao đọc thẳng nguồn sự thật
 `localhost:8011`, `8021`). Mở thẳng dashboard máy B và C (cổng 8000; một máy `localhost:8010`, `8020`).
 
 **Thấy:**
-- Địa chỉ nginx không vào được (cổng vào duy nhất nằm ở máy A, xem `spec.md` mục 6).
+- Máy thật: địa chỉ nginx máy A không vào được; dashboard đang mở qua cổng A tự chuyển sang cổng B (K13), trang mới
+  thì mở `http://<IP máy B>/`. Một máy: cổng `localhost/` vẫn trả lời (cổng host không đi qua `minigo-wan`) nhưng
+  nginx A chỉ thấy bản sao A; dùng cổng `localhost:8012/` để xem phía B, C.
 - Sau 10–20 giây, dashboard B và C cùng dấu vân tay, cùng số sự kiện: hai máy còn lại vẫn đồng bộ qua 2 broker.
   Dashboard A đứng ở số cũ, báo "Đồng bộ dừng"; POS CN1 báo lỗi gửi nhưng vẫn bán.
 - Cắm lại (`make heal N=a`): CN1 gửi bù, 3 bản sao khớp mà không thao tác tay.
@@ -554,6 +564,72 @@ nhất của ô, không có nhật ký từng lượt. Ba loại mốc theo ba �
   13:54:05 (bật lại 13:53:56); bản sao nhận 13:54:50–57. Khoảng ~50 giây giữa broker ghi và sink đọc chính là độ chậm
   "sink đọc tiếp sau ~55 giây" ở `docs/plan.md` mục 6, giờ nhìn thấy được trên giao diện.
 
+### K13. Mất cổng vào: trang tự chuyển cổng
+
+Mở sẵn: dashboard qua cổng A `http://localhost/` (máy thật `http://<IP máy A>/`), thanh bên ô **Cổng vào** ghi
+"localhost (1/3)"; POS CN2 qua cổng A `http://localhost/cn2/`.
+
+**Làm:**
+1. `make kill N=a S=nginx` (máy thật: rút mạng máy A, hoặc `docker compose stop nginx` trên máy A).
+2. Trên POS: thêm một mặt hàng vào phiếu, **trước khi bấm Thanh toán** chạy `make start N=a S=nginx` rồi
+   `make pause N=a S=nginx` (cổng treo: nhận kết nối mà không trả lời), bấm **Thanh toán**, đợi thông báo, bấm
+   **Thanh toán** lần nữa. Cuối cùng `make unpause N=a S=nginx`.
+3. Mở tab mới `http://localhost/` khi nginx A đang chết.
+
+**Thấy:**
+- Dashboard: ngay lần làm mới kế tiếp, ô Cổng vào đổi thành "localhost:8012 (2/3), cổng localhost không trả lời, đã
+  chuyển"; dòng "cập nhật HH:MM:SS · bản sao X" vẫn chạy mỗi 2 giây, vệt served-by vẫn `A B C`, bảng bản sao đủ 3 dòng.
+  Cổng treo (pause) thì chậm hơn: chờ hết 4 giây rồi mới chuyển.
+- POS: lượt bán gửi vào cổng treo báo "Chưa rõ đã ghi chưa (mất kết nối)", dòng bị khoá, giữ `request_id`; trang đã
+  chuyển sang cổng 8012. Bấm lại thì "Đã bán 1 mặt hàng". Tồn giảm **đúng 1**, sổ cái có đúng một dòng với
+  `request_id` đó, kể cả khi yêu cầu kẹt trong nginx A được thả ra sau `unpause` (PT-08).
+- Tab mới mở `http://localhost/` báo không kết nối được: trang chưa mở thì không có danh sách cổng, phải tự gõ
+  `localhost:8012`.
+- Không tự quay về cổng A khi A sống lại (tránh chuyển qua chuyển lại); tải lại trang thì về cổng đã gõ.
+
+**Nói:** Giống `bootstrap.servers` của Kafka: client biết nhiều địa chỉ và tự thử lần lượt, không cần VIP hay
+keepalived (không chạy được trên Docker Desktop Windows). Ba nginx cấu hình giống hệt nhau nên cổng nào cũng thấy cả
+hệ. Giới hạn: chỉ trang ĐANG MỞ mới tự chuyển; production dùng một tên DNS trỏ nhiều địa chỉ (`docs/spec.md` mục 6).
+Một máy: không dùng `make cut N=a`, vì cổng host không đi qua `minigo-wan`, trình duyệt cùng máy vẫn tới nginx A.
+
+Đo ngày 27/11/2026 (3 node một máy, Edge headless điều khiển qua DevTools): kill nginx A thì chuyển sang 8012 sau
+2,7 giây, các lần làm mới sau đều được; pause thì chuyển sau ~6 giây (4 giây chờ + chu kỳ 2 giây). POS qua cổng treo:
+tồn mã 3 ở CN2 141 → 140, một dòng sổ cái cho `request_id`.
+
+### K14. Chậm hay chết: kết luận theo đa số bản sao
+
+Mở sẵn: dashboard qua cổng vào, tab **Hệ thống**, bảng kỹ thuật chi nhánh (cột "Góc nhìn từng bản sao", "Kết luận
+(đa số)"); tab Tổng quan (bảng chi nhánh, dải sự cố). Theo dõi bằng lệnh:
+`curl -s localhost:8000/api/nodes` (mỗi chi nhánh có `state`, `views`, `verdict`).
+
+**Làm:**
+1. `make pause N=b S=branch_api` (chậm: tiến trình còn đó nhưng không gửi heartbeat). Chờ 20 giây.
+   `make unpause N=b S=branch_api`.
+2. `make kill N=b S=branch_api` (chết). Chờ 20 giây. `make start N=b S=branch_api`.
+3. Biến thể: `docker exec minigo-b-branch_api-1 sh tre.sh on 0 replica-a 100` (mất 100% gói từ CN2 tới riêng bản
+   sao A). Chờ 20 giây. `... sh tre.sh off`.
+
+**Thấy:**
+- Bước 1 và 2 giống hệt nhau: góc nhìn từng bản sao "sống" → "nghi ngờ" (heartbeat cũ từ 8 giây) → "mất" (từ 15
+  giây); kết luận đa số đi theo, chậm hơn vài giây vì góc nhìn được kéo mỗi 5 giây. Thẻ CN2 "Nghi ngờ, chưa đủ đa
+  số" rồi "Mất liên lạc … (3/3 bản sao)", dải sự cố "CN2 mất liên lạc (3/3 bản sao)", ô "Chi nhánh hoạt động" 2/3.
+  Bật lại thì về "Hoạt động" trong vài giây. `docker kill` không bị `restart: unless-stopped` tự bật lại.
+- Biến thể: chỉ góc nhìn của A về CN2 đi "nghi ngờ" rồi "mất"; B, C vẫn "sống"; **kết luận vẫn "sống" ở cả ba bản
+  sao**, kể cả dashboard mở thẳng bản sao A (`localhost:8000`). POS CN2 có chip "Bản sao máy A: mất liên lạc".
+
+**Nói:** Timeout không phân biệt được chậm với chết (mô hình bất đồng bộ, không đặt được giới hạn trên cho độ trễ).
+Vì vậy mỗi bản sao chỉ **nghi ngờ** theo góc nhìn của mình, và hệ chỉ **kết luận** OFFLINE khi đa số bản sao, tính
+trên tổng số bản sao cấu hình, cùng thấy OFFLINE (PT-13): một đường mạng hỏng riêng lẻ không làm cả hệ coi chi nhánh
+là chết, và bản sao bị cô lập (K3) không tự kết luận được. MiniGo không có HQ điều phối như repo tham khảo cùng môn;
+kết luận rút ra từ các bản sao ngang hàng. Vòng 6 (ghi hộ) chỉ chạy khi kết luận này là OFFLINE.
+
+Đo ngày 27/11/2026 (3 node một máy, lấy mẫu `/api/nodes` mỗi giây, mốc 0 = lúc chạy lệnh): pause: góc nhìn SUSPECT ở
+giây 6–10, OFFLINE ở 13–17; kết luận SUSPECT ở 7–10, OFFLINE ở 13–17 (cả 3 bản sao đồng ý ở giây 17); unpause:
+ONLINE ở cả 3 sau ≤ 4 giây. kill: góc nhìn SUSPECT ở giây 3–7, OFFLINE ở 10; kết luận OFFLINE ở 11–14; container
+`Exited (137)`, không tự bật lại; start: ONLINE ở cả 3 sau ≤ 6 giây. Biến thể: A thấy SUSPECT ở giây 5, OFFLINE ở 11,
+B, C ghi nhận góc nhìn đó sau ≤ 5 giây; kết luận ONLINE suốt 30 giây ở cả 3; `tre.sh off` thì góc nhìn A về ONLINE
+sau ~6 giây.
+
 ## 6. Câu hỏi thường gặp khi bảo vệ
 
 | Câu hỏi | Từ khoá | Trả lời ngắn |
@@ -561,7 +637,8 @@ nhất của ô, không có nhật ký từng lượt. Ba loại mốc theo ba �
 | Mất mạng giữa chừng thì sao? | Lỗi cục bộ, outbox | Quầy vẫn bán: sự kiện ghi vào `outbox` cùng transaction với trừ tồn, relay gửi bù khi có mạng. |
 | Làm sao biết dữ liệu hai nơi giống nhau? | Nhất quán cuối, dấu vân tay | Có mạng lại thì tự đồng bộ bù; so mã băm toàn bộ snapshot giữa các bản sao. |
 | Gửi lặp hai lần có trừ tồn hai lần không? | Lũy đẳng | Bản sao dùng khoá `(branch_id, movement_id)`; thấy rồi thì bỏ qua. Chi nhánh dùng `request_id`. |
-| Sao người dùng không cần biết IP từng máy? | Trong suốt vị trí | Nginx là cổng vào duy nhất, tự chọn bản sao và chia tải. |
+| Sao người dùng không cần biết IP từng máy? | Trong suốt vị trí | Nginx là cổng vào, tự chọn bản sao và chia tải; ba nginx giống hệt nhau nên vào máy nào cũng thấy cả hệ. |
+| Hệ có HA không? Còn điểm chết duy nhất nào? | Sẵn sàng cao, failover phía client, bộ phát hiện lỗi, đa số (quorum) | Bỏ được ở các tầng: broker là cụm 3 (K7a), bản sao trung tâm có 3 và nginx chia tải (K3), **cổng vào** có 3 nginx, trang đang mở tự chuyển cổng như `bootstrap.servers` của Kafka (K13). Phát hiện chi nhánh chết bằng timeout nên không phân biệt chậm với chết (K14); để không kết luận sai khi chỉ một bản sao mất liên lạc, chỉ coi OFFLINE khi **đa số 2/3 bản sao** cùng thấy (PT-13), bản sao bị cô lập chỉ "nghi ngờ". Còn lại: dữ liệu mỗi chi nhánh chỉ một bản chính (server chi nhánh chết thì quầy dừng; vòng 6 ghi hộ, vòng 7 standby CSDL); trang mở mới khi cổng quen thuộc đã chết phải tự gõ cổng khác (production: DNS nhiều địa chỉ hoặc VIP). Một máy vẫn là một miền lỗi. |
 | Trung tâm sập thì cửa hàng có sập không? | Tách rời qua broker | Chi nhánh và trung tâm nói chuyện qua Redpanda, không cần chạy cùng lúc. |
 | Redpanda gặp sự cố thì xử lý thế nào? | Phòng, chống, phục hồi | **Phòng**: cụm 3 broker, RF=3, mất 1 broker tự bầu leader mới (K7a). **Chống**: mất đa số thì quầy vẫn bán, outbox giữ sự kiện, POS và dashboard báo "đồng bộ dừng từ HH:MM:SS" (K7b). Mất đa số quá 15 giây thì bản sao **đối soát thẳng với chi nhánh** qua API (chỉ đọc), số tồn vẫn đúng (K9). **Phục hồi**: có lại đa số thì relay gửi bù, sink đọc tiếp từ offset, không ai làm gì (K7b, K7c). Mất hẳn dữ liệu broker: số tồn dựng lại từ bản sao khác (gossip, K8) hoặc từ chi nhánh (đối soát, K9); chỉ mất nhật ký các sự kiện chưa kịp đọc. Redpanda là đường nhanh, không phải nguồn sự thật: nguồn sự thật là sổ cái chi nhánh. |
 | ReplicaA và ReplicaB trao đổi thông tin bằng cơ chế gì? | Nhân bản máy trạng thái qua log chung; gossip (anti-entropy); CRDT theo từng ô | Ba kênh, một luật merge. (1) Gián tiếp: cùng đọc một log trên Redpanda (mỗi bên một consumer group), áp lũy đẳng nên ra cùng trạng thái. (2) Trực tiếp: mỗi 10 giây gọi `/api/digest` của nhau; dấu vân tay lệch ở 2 lần kiểm liên tiếp thì kéo `/api/snapshot` và vá ô còn thiếu (K8). (3) Mất broker thì mỗi bên đọc thẳng chi nhánh (K9). Luật "`movement_id` lớn hơn thắng" theo từng ô giao hoán, lũy đẳng, nên đến từ kênh nào, theo thứ tự nào cũng hội tụ (PT-10). |
@@ -579,6 +656,8 @@ nhất của ô, không có nhật ký từng lượt. Ba loại mốc theo ba �
 | Đồng bộ dữ liệu real-time | Bán ở B, Dashboard A đổi trong ≤ 3s; A và B cùng dấu vân tay (Fingerprint) | Dashboard A |
 | Độ trễ mạng (RTT) | Bật Clumsy trễ 300ms: RTT ≥ 500ms nhưng POS vẫn "xử lý tại chỗ" < 20ms | Chip RTT trên POS B, thẻ CN2 |
 | Chống trùng (Idempotency) | Phát lại toàn bộ sự kiện: số bản trùng tăng vọt, dấu vân tay không đổi | Tab `http://localhost:8000` |
+| Cổng vào không còn điểm chết (K13) | Dashboard, POS đang mở qua máy A; tắt nginx (hoặc rút mạng) máy A: trang tự chuyển sang cổng máy B, vẫn làm mới, lượt bán gửi lại không trừ hai lần | Ô "Cổng vào" ở thanh bên, POS |
+| Phát hiện lỗi theo đa số (K14) | Dừng/tạm dừng chi nhánh B: 3 bản sao đi Nghi ngờ rồi Mất liên lạc; chỉ một bản sao mất liên lạc thì kết luận vẫn "sống" | Tab Hệ thống, bảng kỹ thuật chi nhánh |
 | Chịu lỗi broker (cần 3 máy) | Dừng 1/3 broker: không mất sự kiện, dấu vân tay khớp. Dừng 2/3 rồi bật lại: POS và dashboard báo "đồng bộ dừng", sau đó tự khớp không thao tác tay | POS, dòng "Đồng bộ" trên dashboard, Console |
 | Gossip giữa bản sao (K8) | Bản sao lỡ sự kiện khớp lại trong ≤ 20 giây, cột Gossip "vá N ô"; bán bình thường thì "vá 0 ô" | Bảng bản sao qua nginx, dashboard B |
 | Đối soát với chi nhánh (K9) | Dừng cả 3 broker, bán: sau 15–25 giây 3 bản sao khớp, ô có chấm cam "đối soát" | Dòng "Đồng bộ", bảng tồn |
@@ -593,13 +672,14 @@ nhất của ô, không có nhật ký từng lượt. Ba loại mốc theo ba �
 | Relay báo `Message timed out` | Không tới được broker leader | `ping` máy đó; mở cổng 19092; kiểm tra `KAFKA_BROKERS` |
 | Relay nối được rồi lỗi, log nhắc địa chỉ lạ | `BROKER_HOST` của một máy sai nên broker đó tự giới thiệu sai địa chỉ | `BROKER_HOST` = IP overlay của chính máy đó; sửa rồi `docker compose up -d` |
 | Redpanda lỗi khởi động sau khi lên vòng 2 | Volume broker cũ (một broker) | `make reset` trên mọi máy (một máy: `make local-reset`) |
-| Một máy: `docker start minigo-x-redpanda-1` báo `Address already in use` | Container khác lấy mất IP đã ghim sau `make heal` | `make local-reset` |
+| Một máy: `docker start minigo-x-redpanda-1` hoặc `make heal` báo `Address already in use` | Mạng `minigo-wan` tạo từ bản trước vòng 5 (chưa có IP cố định, vùng động riêng) | `make local-reset` một lần |
+| Một máy: `make local-up` báo "Mạng minigo-wan tạo từ bản trước vòng 5" | Mạng cũ chưa tách vùng IP động | `make local-reset` một lần (xoá dữ liệu demo) |
+| Dashboard ghi "Cổng vào: chỉ cổng này" dù mở qua nginx | Trang không đọc được `/lb/gateways.json` (nginx cũ, thiếu `GATEWAYS`) | Chép lại `.env` từ `infra/env/may-<x>.env`, `make up` |
 | Bảng bản sao dòng B luôn "Không liên lạc được" | Nginx không tới được `REPLICA_B` | Mở firewall máy B cổng 8000; từ máy A: `curl http://<IP máy B>:8000/health` |
 | Không có ô "Các bản sao trung tâm" | Đang mở dashboard trực tiếp ở cổng 8000, không qua nginx | Mở `http://localhost/` (cổng 80) |
 | Cổng 80 bị chiếm (Windows hay gặp) | IIS hoặc ứng dụng khác | Thêm `NGINX_PORT=8088` vào `.env`, mở `http://localhost:8088/` |
-| Nginx lỗi khởi động, báo `Chưa đặt REPLICA_C` | File `.env` cũ, chưa có khối `REPLICA_*`, `BRANCH_*` | Chép lại từ `infra/env/may-<x>.env` |
-| Một máy: nginx báo `host not found in upstream` | Node B hoặc C chưa chạy, hoặc đang bị `make cut` | `make heal N=<x>` hoặc `make local-up`, rồi `docker restart minigo-a-nginx-1` |
-| Một máy: `make heal` báo `Address already in use` | Có container mới lấy IP cũ của node đang bị rút mạng | `make local-reset` |
+| Nginx lỗi khởi động, báo `Chưa đặt REPLICA_C` hoặc `Chưa đặt GATEWAYS` | File `.env` cũ, chưa có khối `REPLICA_*`, `BRANCH_*`, `GATEWAYS` | Chép lại từ `infra/env/may-<x>.env` |
+| Log nginx có `replica-b could not be resolved` | Node B chưa chạy hoặc đang bị `make cut`; nginx vẫn chạy (phân giải động), đường tới B trả 502 | Không cần làm gì: node B có lại thì trong ≤ 5 giây nginx tự phân giải lại |
 | Cột Gossip ghi "lỗi từ …" với một bản sao; mất broker mà không thấy "đang đối soát" | Bản sao không gọi được bản sao kia (`REPLICA_URLS`, cổng 8000) hoặc chi nhánh (`BRANCH_URL`, cổng 8001) | `curl http://<IP>:8000/api/digest`, `curl http://<IP>:8001/api/snapshot` từ máy đó; kiểm `BRANCH_URL` = IP overlay của chính máy chi nhánh; xem `sync_peers` trong `/api/digest` (trường `last_error`) |
 | Sửa `db/*.sql` không thấy tác dụng | Script khởi tạo chỉ chạy khi volume trống | `make reset` trên **mọi máy** |
 
@@ -621,6 +701,8 @@ Lệnh make (chạy từ gốc repo, trong Git Bash hoặc shell Linux/macOS; đ
 | `make check` | `config` + `test`; chạy trước khi báo xong một vòng |
 | `make local-up`, `local-down`, `local-reset` | 3 node trên một máy (mục 3, phần "Chạy trên một máy") |
 | `make cut N=b`, `make heal N=b` | Một máy: rút / cắm lại mạng node B |
+| `make pause N=b S=branch_api`, `make unpause N=b S=branch_api` | Một máy: tạm dừng / chạy tiếp một container (`docker pause`: "chậm", vẫn sống), K13, K14 |
+| `make kill N=b S=branch_api`, `make start N=b S=branch_api` | Một máy: giết (`docker kill`: "chết") / bật lại một container, K13, K14 |
 
 Các lệnh `up`, `down`, `reset`, `ps`, `logs` đọc `.env` ở gốc repo; dùng file khác: `make up ENV_FILE=infra/env/may-b.env`.
 

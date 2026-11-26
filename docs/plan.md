@@ -5,7 +5,7 @@ Mục tiêu trước mắt: xử lý hai câu hỏi của thầy (mục 3), trê
 
 ## 1. Tiến độ
 
-**Vòng tiếp theo: vòng 5.** Mỗi lần chỉ làm một vòng, đúng thứ tự: vòng sau dựa trên hạ tầng của vòng trước.
+**Vòng tiếp theo: vòng 6.** Mỗi lần chỉ làm một vòng, đúng thứ tự: vòng sau dựa trên hạ tầng của vòng trước.
 
 | Vòng | Phạm vi | Nhánh | Việc | Quy tắc | Kịch bản | Trạng thái |
 |---|---|---|---|---|---|---|
@@ -14,8 +14,8 @@ Mục tiêu trước mắt: xử lý hai câu hỏi của thầy (mục 3), trê
 | 2 | `infra`, `branch`, `replica`, `web` | `broker/redpanda-cluster` | Cụm 3 broker; trạng thái đồng bộ trên POS và dashboard | PT-03, PT-06, PT-11 | K7a, K7b, K7c | xong, đã merge (PR #3); 16 test, K1–K7c đạt trên 3 node một máy |
 | 3 | `replica`, `branch`, `web` | `replica/gossip-reconcile` | Gossip giữa bản sao; đối soát với chi nhánh | PT-04, PT-05, PT-07, PT-10 | K8, K9 | xong, đã merge (PR #4); 43 test, K1–K9 đạt trên 3 node một máy |
 | 4 | `web`, `replica`, `branch` | `web/sync-dashboard` | Topology sống, đọc đơn điệu, truy vết sự kiện, POS | — | chạy tay K1–K9; K11, K12 | xong, đã merge (PR #5); 58 test, selftest dashboard 22/22, POS 5/5; K1–K9, K11, K12 đạt trên 3 node một máy |
-| 4b | `web` | `web/ui-polish` | Chỉnh giao diện trước vòng 5: tràn ngang trên điện thoại, cột giờ tab Sự kiện, dải sự cố hệ thống ở Tổng quan, bớt nhiễu, ghi máy A/B/C trên sơ đồ, trang không bị cache | — | chạy tay trên 3 node | đã code (26/11/2026), selftest 24/24, chờ commit |
-| 5 | `infra`, `replica`, `web` | `ha/entry-failure-detector` | HA cổng vào (nginx ở mọi node, client tự chuyển); bộ phát hiện lỗi có trạng thái, kết luận theo đa số bản sao | PT-13 | K13, K14 | chưa làm |
+| 4b | `web` | `web/ui-polish` | Chỉnh giao diện trước vòng 5: tràn ngang trên điện thoại, cột giờ tab Sự kiện, dải sự cố hệ thống ở Tổng quan, bớt nhiễu, ghi máy A/B/C trên sơ đồ, trang không bị cache | — | chạy tay trên 3 node | xong, đã merge (PR #7); selftest dashboard 24/24, POS 5/5; 58 test |
+| 5 | `infra`, `replica`, `web` | `ha/entry-failure-detector` | HA cổng vào (nginx ở mọi node, client tự chuyển); bộ phát hiện lỗi có trạng thái, kết luận theo đa số bản sao | PT-13 | K13, K14 | đã code (27/11/2026), chờ commit; 83 test, selftest dashboard 33/33, POS 10/10; K1–K14 đạt trên 3 node một máy; sửa hai lỗi hạ tầng (IP gắn cứng sau `heal`, `topic-init` lặp) |
 | 6 | `branch`, `replica`, `web` | `ha/hinted-handoff` | Chi nhánh sập vẫn bán: ghi hộ ở bản sao, chi nhánh phục hồi ở RECOVERING rồi kéo về áp theo thứ tự | PT-14 | K15 | chưa làm |
 | 7 | `infra`, `docs` | `infra/production-local` | Standby đồng bộ cho CSDL chi nhánh; vệ sinh vận hành; giám sát (tuỳ chọn); kiến trúc mục tiêu production trên giấy | PT-12 | K10a, K10b | chưa làm |
 | 8 | `replica`, `scripts`, `docs` | `chore/hardening` | `dead_letter`, `scripts/chaos-check.sh` có đo thời gian gián đoạn, chốt tài liệu | PT-06 | `chaos-check.sh` | chưa làm |
@@ -198,7 +198,7 @@ kết luận được rút ra từ đa số bản sao ngang hàng.
 | Việc | File |
 |---|---|
 | **A. Cổng vào không còn điểm chết:** nginx chạy ở cả 3 node, cấu hình giống nhau (upstream đủ 3 bản sao, `/cnX/` đủ 3 chi nhánh). Dashboard và POS biết danh sách cổng vào; một cổng không trả lời thì tự chuyển sang cổng kế tiếp (failover phía client, cùng ý với `bootstrap.servers` của Kafka) | `infra/compose.yml`, `infra/compose.local.yml`, `infra/env/*`, `infra/nginx/`, `web/*.html` |
-| **C. Bộ phát hiện lỗi có trạng thái:** mỗi bản sao tự đánh giá từng chi nhánh theo tuổi heartbeat: ONLINE → SUSPECT → OFFLINE (hai ngưỡng); gửi đánh giá của mình qua gossip; chỉ kết luận OFFLINE khi **đa số bản sao** (2/3) cùng thấy OFFLINE. RECOVERING do chi nhánh tự báo (dùng ở vòng 6) | `api/services/replica.py`, `api/workers/gossip.py`, `db/replica.sql`, `common/models.py` |
+| **C. Bộ phát hiện lỗi có trạng thái:** mỗi bản sao tự đánh giá từng chi nhánh theo tuổi heartbeat: ONLINE → SUSPECT → OFFLINE (hai ngưỡng); gửi đánh giá của mình qua gossip; chỉ kết luận OFFLINE khi **đa số bản sao** (2/3) cùng thấy OFFLINE. RECOVERING chỉ khai báo trong spec, làm hẳn ở vòng 6 | `api/services/replica.py`, `api/workers/gossip.py`, `db/replica.sql`, `common/models.py` |
 | Dashboard: hiện trạng thái theo đa số và đánh giá riêng của từng bản sao (thấy rõ các bản sao có thể nhìn khác nhau); cổng vào đang dùng | `web/dashboard.html` |
 | Lệnh demo: dừng hoặc tạm dừng (`docker pause`) một chi nhánh, một nginx | `Makefile`, `scripts/` |
 
@@ -265,6 +265,7 @@ dữ liệu và cách vận hành, không biến một máy thành hệ sẵn s�
 | Vệ sinh vận hành: mật khẩu CSDL ra `.env` (bỏ `app/app` viết cứng), healthcheck cho mọi service, giới hạn RAM/CPU, giới hạn kích thước log, `make backup N=<x>` (`pg_dump` vào `backups/`, thêm vào `.gitignore`) | `infra/compose.yml`, `infra/env/*`, `Makefile`, `.gitignore` |
 | Giám sát (tuỳ chọn, cắt được nếu thiếu thời gian): profile `observability` gồm Prometheus và Grafana, đọc metrics của Redpanda và Postgres (exporter); một dashboard Grafana dựng sẵn: consumer lag từng bản sao, leader từng phân hoạch | `infra/compose.yml`, `infra/observability/` (mới) |
 | "Kiến trúc mục tiêu production" trên giấy: sơ đồ và bảng đánh đổi (CDC thay relay, Kubernetes, LB kép, mTLS, nhiều vùng, Merkle tree) | `docs/spec.md` (mục mới) |
+| Nhặt từ vòng 5 vào "kiến trúc mục tiêu": cổng vào bằng một tên DNS trỏ nhiều địa chỉ (nhiều bản ghi A, hoặc VIP/anycast trước các nginx) để cả lần mở trang đầu cũng không phụ thuộc một máy; CORS liệt kê đúng origin thay cho `*` (`docs/spec.md` mục 6) | `docs/spec.md` (mục mới) |
 
 Quy tắc mới, ghi vào `docs/spec.md` mục 8 ở `/test-first`: **PT-12** ở chế độ đồng bộ, lượt bán chỉ báo thành công
 khi standby đã nhận WAL; mất primary không mất lượt bán nào đã báo thành công.
@@ -323,15 +324,23 @@ Xong khi: K10a không mất lượt bán nào đã báo thành công; K10b đo �
   mất đa số thì sau ~2 giây không hỏi được metadata (sơ đồ ghi "không hỏi được", không biết broker nào còn); node bị
   cô lập (K3, K7c) vẫn hỏi được broker thiểu số của nó nhưng nhận danh sách cũ, nên dashboard bỏ `brokers_up` của sink
   có `broker_ok = false`; vài chục giây sau khi một broker dừng, các sink có thể thấy danh sách khác nhau.
-- Phát hiện lúc làm 4b (chưa sửa, nên gộp vào vòng 5 vì cùng đụng `infra/`): (1) `make heal` nối lại mạng bằng
-  `--ip`, gắn cứng IP cho container; build lại thì container khác có thể nhận IP đó, container bị gắn cứng (đã gặp:
-  broker B, `topic-init`) không khởi động được, báo "Address already in use"; tạm xử lý bằng `docker rm` container đó
-  rồi `make local-up`. (2) `topic-init` chạy lại khi topic đã có thì lặp mãi mỗi 3 giây (`rpk topic create` trả mã
-  lỗi nên `until` không dừng), vô hại nhưng tốn log.
-- Vòng 5: trang mở từ cổng vào A gọi cổng vào B là khác origin; cần CORS ở nginx hoặc cách khác. Kiểm ở `/plan-task`
-  vòng 5. Cổng host của nginx ở từng node (chế độ một máy) cũng chọn ở đó.
-- Vòng 5: ngưỡng SUSPECT, OFFLINE (theo chu kỳ heartbeat 5 giây) và cách tính đa số khi một bản sao đã chết (đa số
-  trên tổng số bản sao hay trên số bản sao còn trả lời) chọn ở `/plan-task` vòng 5.
+- ~~Phát hiện lúc làm 4b: (1) `make heal` nối lại bằng `--ip`, container khác lấy mất IP, "Address already in use";
+  (2) `topic-init` chạy lại khi topic đã có thì lặp mãi mỗi 3 giây~~ **Đã sửa ở vòng 5**: (1) mọi container trên
+  `minigo-wan` có IP cố định (`WAN_IP_PREFIX`), IP động chỉ cấp trong `10.210.0.128/25`; đo: cut B, dựng lại hẳn node
+  A, C, heal B, dừng broker B, dựng lại A, bật broker B đều được. (2) điều kiện dừng của `until` là `grep` (sau `;`),
+  chạy lại thì in `TOPIC_ALREADY_EXISTS` và thoát 0 ngay.
+- ~~Vòng 5: trang mở từ cổng vào A gọi cổng vào B là khác origin~~ **Đã làm ở vòng 5**: CORS ở nginx
+  (`Access-Control-Allow-Origin: *`, `OPTIONS` 204, mức `server`); đo trên Edge: dashboard và POS (POST JSON) gọi được
+  cổng khác. Cổng host một máy: A 80, B 8012, C 8022.
+- ~~Vòng 5: ngưỡng SUSPECT, OFFLINE và cách tính đa số~~ **Chốt ở vòng 5**: SUSPECT từ 8 giây, OFFLINE từ 15 giây;
+  đa số trên tổng số bản sao cấu hình (2/3); góc nhìn cũ quá 15 giây không tính. Đối soát vẫn theo góc nhìn riêng.
+- ~~Vòng 5: nginx chết lúc khởi động khi node khác chưa chạy~~ **Đã kiểm ở vòng 5**: nginx 1.27.5 với `server ...
+  resolve` trong upstream (có `zone`, `resolver 127.0.0.11`) khởi động được khi tên chưa phân giải được, đường đó trả
+  502; tên có lại thì tự dùng. `resolve` đặt trên IP literal (máy thật) vẫn qua `nginx -t`.
+- ~~Vòng 5: `docker kill` có bị `restart: unless-stopped` tự bật lại không~~ **Đã kiểm ở vòng 5: không** (Exited 137,
+  RestartCount 0); K14 dùng kill cho ca "chết hẳn".
+- Vòng 5, máy thật: nginx mọi máy gọi `REPLICA_*`, `BRANCH_*` bằng IP overlay, kể cả máy của chính nó (cùng giả định
+  "container gọi được IP overlay của chính máy mình" ở trên); chưa kiểm vì chỉ có một máy.
 - Vòng 6: ghi hộ rải trên nhiều bản sao (nginx chia lần lượt) hay dồn về một bản sao; chi nhánh gom từ mọi bản sao
   thế nào khi một bản sao đang chết. Chọn ở `/plan-task` vòng 6.
 - Vòng 6: RECOVERING mà không gọi được bản sao nào thì làm gì (chờ, hay hết thời hạn thì tự ONLINE kèm cảnh báo như

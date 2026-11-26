@@ -28,12 +28,12 @@ Một chuỗi cửa hàng tiện lợi có nhiều chi nhánh ở nhiều thành
 ## 3. Kiến trúc
 
 ```
-                           Người dùng chỉ biết MỘT địa chỉ: http://<IP máy A>/
+        Người dùng mở MỘT địa chỉ bất kỳ: http://<IP máy A|B|C>/ (cổng chết thì trang tự chuyển cổng)
                                               │
  ┌──────────────────────── MÁY A ─────────────┼───────────────────────────────┐
  │                                            ▼                               │
- │  POS CN1 ─▶ branch_api ─▶ branch_db ─▶ relay ─┐   nginx (cổng vào duy nhất,│
- │                                               │   chia tải các bản sao)    │
+ │  POS CN1 ─▶ branch_api ─▶ branch_db ─▶ relay ─┐   nginx (cổng vào, mỗi máy │
+ │                                               │   một cái; chia tải bản sao)│
  │  dashboard ◀ replica_api ◀ replica_db ◀ sink ◀┤                            │
  │                                         ┌─────┴──────┐                     │
  │                                         │ broker 1   │  console, topic-init│
@@ -44,21 +44,30 @@ Một chuỗi cửa hàng tiện lợi có nhiều chi nhánh ở nhiều thành
  │  POS CN2 ─▶ branch_api ─▶ branch_db ─▶ relay ─┤  topic inventory.movement  │
  │  dashboard ◀ replica_api ◀ replica_db ◀ sink ◀┘  3 phân hoạch, RF=3        │
  └────────────────────────────────────────────────────────────────────────────┘
-   MÁY C giống máy B (broker 3, CN3, bản sao C). Relay, sink mỗi máy nói chuyện với CẢ cụm.
+   MÁY C giống máy B (broker 3, nginx, CN3, bản sao C). Relay, sink mỗi máy nói chuyện với CẢ cụm.
 ```
 
 Mọi máy chạy **giống hệt nhau**: một chi nhánh (`branch_db`, `branch_api`, `relay`), một bản sao trung tâm
-(`replica_db`, `replica_api`, `sink`) và một broker Redpanda (profile **broker**). Ba broker thành **một cụm**: mỗi
-phân hoạch có 3 bản (RF=3), một leader, ghi xong khi đa số (2/3) đã ghi đĩa. Mất 1 broker thì cụm tự bầu leader mới;
-mất 2 broker thì không ghi được nữa, quầy vẫn bán và POS, dashboard báo "đồng bộ dừng" (PT-11). Riêng máy A chạy thêm
-nhóm **core**: `nginx`, `console`, `topic-init` (tạo topic một lần khi cụm đã đủ broker).
+(`replica_db`, `replica_api`, `sink`), một **nginx** (cổng vào, vòng 5) và một broker Redpanda (profile **broker**).
+Ba broker thành **một cụm**: mỗi phân hoạch có 3 bản (RF=3), một leader, ghi xong khi đa số (2/3) đã ghi đĩa. Mất 1
+broker thì cụm tự bầu leader mới; mất 2 broker thì không ghi được nữa, quầy vẫn bán và POS, dashboard báo "đồng bộ
+dừng" (PT-11). Riêng máy A chạy thêm nhóm **core**: `console`, `topic-init` (tạo topic một lần khi cụm đã đủ broker).
+
+**Cổng vào không còn điểm chết duy nhất** (vòng 5, K13). Ba nginx cấu hình giống hệt nhau: vào cổng nào cũng tới được
+mọi bản sao (chia lần lượt) và mọi chi nhánh (`/cnX/`). Tên phân giải động (`resolve`), nên nginx khởi động được cả khi
+node khác chưa chạy hay đang mất mạng. Dashboard và POS đang mở đọc danh sách cổng vào (`GATEWAYS`, qua
+`/lb/gateways.json`) một lần lúc mở trang; cổng đang dùng không trả lời (lỗi mạng, quá 4 giây; dashboard thêm 502–504)
+thì gọi ngay cổng kế tiếp, khác origin nên nginx bật CORS. Giống `bootstrap.servers` của Kafka: client biết nhiều địa
+chỉ, tự thử lần lượt. POS chuyển cổng giữa chừng một lượt bán thì dòng đó giữ `request_id`, gửi lại qua cổng mới không
+trừ hai lần (PT-08). Không tự quay về cổng cũ khi nó sống lại.
 
 | | Máy A | Máy B | Máy C (tuỳ chọn) |
 |---|---|---|---|
 | Chi nhánh | CN1 Cầu Giấy | CN2 Hà Đông | CN3 Đà Nẵng |
 | Bản sao trung tâm | Bản sao A | Bản sao B | Bản sao C |
 | Broker | broker 1 | broker 2 | broker 3 |
-| Core | nginx, console, topic-init | — | — |
+| Cổng vào (nginx) | `:80` (một máy `localhost/`) | `:80` (một máy `localhost:8012`) | `:80` (một máy `localhost:8022`) |
+| Core | console, topic-init | — | — |
 | File env | `infra/env/may-a.env` | `infra/env/may-b.env` | `infra/env/may-c.env` |
 
 **Tại sao mỗi máy một bản sao trung tâm?** Nếu chỉ có một dashboard ở máy A, thì "chịu lỗi" chỉ là lời nói. Có
@@ -100,12 +109,14 @@ mở transaction ghi.
 | Biến | Đặt ở | Ai đọc | Ý nghĩa, ví dụ |
 |---|---|---|---|
 | `COMPOSE_FILE` | `.env` | docker compose | `infra/compose.yml`, để gõ `docker compose ...` từ gốc repo |
-| `COMPOSE_PROFILES` | `.env` | docker compose | `broker` (mọi máy): bật `redpanda`; `core` (chỉ máy A): bật `console`, `nginx`, `topic-init`. Máy A `core,broker`, máy B, C `broker` |
+| `COMPOSE_PROFILES` | `.env` | docker compose | `broker` (mọi máy): bật `redpanda`; `core` (chỉ máy A): bật `console`, `topic-init`. Máy A `core,broker`, máy B, C `broker`. `nginx` không thuộc profile nào: chạy ở mọi máy (vòng 5) |
 | `BROKER_HOST` | `.env`, riêng từng máy | compose (redpanda) | Địa chỉ broker của máy này tự giới thiệu cho client (`:19092`) và broker khác (`:33145`). Máy thật: IP overlay của chính máy đó `100.64.0.2`; một máy: alias `redpanda-b` |
 | `BROKER_SEEDS` | `.env`, giống nhau ở mọi file | compose (redpanda, topic-init) | Các broker lập cụm, cổng RPC `33145`: `100.64.0.1:33145,100.64.0.2:33145,100.64.0.3:33145`; một máy: `redpanda-a:33145,redpanda-b:33145,redpanda-c:33145`. Cụm chỉ lập khi đủ mọi seed; RF của topic = số seed |
-| `REPLICA_A`, `REPLICA_B`, `REPLICA_C` | `.env`, giống nhau ở mọi file | nginx | `host:port` của bản sao từng node. Máy thật: `replica_api:8000` (A, cùng máy), `100.64.0.2:8000`; một máy: `replica-b:8000` |
-| `BRANCH_A`, `BRANCH_B`, `BRANCH_C` | `.env`, giống nhau ở mọi file | nginx | `host:port` của POS chi nhánh trên từng node. Máy thật: `branch_api:8000` (A), `100.64.0.2:8001`; một máy: `branch-b:8000` |
-| `NGINX_PORT` | `.env` (tuỳ chọn) | compose | Cổng host của nginx, mặc định `80` |
+| `REPLICA_A`, `REPLICA_B`, `REPLICA_C` | `.env`, giống nhau ở mọi file | nginx (mọi máy) | `host:port` của bản sao từng node. Máy thật: IP overlay cho cả ba, kể cả máy của chính nginx (`100.64.0.1:8000`, `100.64.0.2:8000`), vì cùng một khối chạy ở mọi máy; một máy: `replica-b:8000` |
+| `BRANCH_A`, `BRANCH_B`, `BRANCH_C` | `.env`, giống nhau ở mọi file | nginx (mọi máy) | `host:port` của POS chi nhánh trên từng node. Máy thật: `100.64.0.1:8001`, `100.64.0.2:8001`; một máy: `branch-b:8000` |
+| `NGINX_PORT` | `.env` (tuỳ chọn) | compose | Cổng host của nginx (cổng vào) trên máy này, mặc định `80`. Một máy: node A `80`, B `8012`, C `8022` |
+| `GATEWAYS` | `.env`, giống nhau ở mọi file của cùng chế độ | nginx (`/lb/gateways.json`) | Mọi cổng vào nhìn từ trình duyệt, phân cách bằng dấu phẩy; dashboard và POS tự chuyển sang cổng kế tiếp khi cổng đang dùng không trả lời (vòng 5). Máy thật: `http://100.64.0.1,http://100.64.0.2,http://100.64.0.3`; một máy: `http://localhost,http://localhost:8012,http://localhost:8022` |
+| `WAN_IP_PREFIX` | `infra/env/local-<x>.env` (chỉ một máy) | compose (`infra/compose.local.yml`) | Tiền tố IP cố định của các container node này trên `minigo-wan`: A `10.210.0.1`, B `10.210.0.2`, C `10.210.0.3`; service thứ n có IP `<tiền tố><n>` (vd. `10.210.0.21`). Vùng IP động của mạng là `10.210.0.128/25`, không đụng IP cố định |
 | `BRANCH_PORT`, `REPLICA_PORT` | `.env` (tuỳ chọn) | compose | Cổng host của POS và dashboard, mặc định `8001`, `8000`. Một máy: node B `8011`, `8010`; node C `8021`, `8020` |
 | `NODE_NAME` | `.env` | `replica_api`, `sink` | Tên bản sao `A`, `B`, `C`; consumer group là `replica-<NODE_NAME>` |
 | `BRANCH_ID` | `.env` | `branch_api`, `relay` | Số chi nhánh `1`, `2`, `3` |
@@ -141,6 +152,16 @@ broker, "chi nhánh còn sống" và "đồng bộ đang chạy" là hai trạng
 Redpanda mỗi 5 giây (`sink_stats.broker_ok`, `lag`), dashboard hiện riêng "Đồng bộ dừng từ HH:MM:SS". Heartbeat mang
 kèm `branch_url`: mất broker quá 15 giây thì bản sao dùng địa chỉ này để đối soát thẳng với chi nhánh.
 
+**Bộ phát hiện lỗi** (vòng 5, PT-13). Mỗi bản sao tự đánh giá từng chi nhánh theo tuổi heartbeat của chính nó
+(`now() - last_seen`, một đồng hồ): dưới 8 giây (`SUSPECT_AFTER_S`, tức đã lỡ ít nhất một nhịp 5 giây) là
+**ONLINE**, từ 8 đến dưới 15 giây là **SUSPECT**, từ 15 giây (`NODE_TIMEOUT_S`) là **OFFLINE**. Góc nhìn này phục vụ ở
+`GET /api/views`; mỗi bản sao kéo góc nhìn của các bản sao khác mỗi 5 giây (`view_loop`), lưu vào `peer_view`, bỏ
+góc nhìn cũ quá 15 giây. **Kết luận theo đa số** trên tổng số bản sao cấu hình (3, cần 2): đủ 2 góc nhìn OFFLINE thì
+OFFLINE, đủ 2 góc nhìn ONLINE thì ONLINE, còn lại SUSPECT ("nghi ngờ, chưa đủ đa số"); góc nhìn thiếu hoặc cũ không
+tính là OFFLINE. Nhờ vậy bản sao bị cô lập (K3) không tự kết luận được chi nhánh khác đã chết. Timeout không phân biệt
+được chậm với chết (K14). `RECOVERING` (chi nhánh tự báo đang phục hồi) dành cho vòng 6. Đối soát vẫn theo góc nhìn
+của chính bản sao (chi nhánh không OFFLINE), không theo đa số.
+
 ## 5. Mức nhất quán
 
 - **Nhất quán cuối** (eventual consistency), không phải nhất quán mạnh. "Thời gian thực" nghĩa là trễ 1–2 giây, và
@@ -163,9 +184,17 @@ kèm `branch_url`: mất broker quá 15 giây thì bản sao dùng địa chỉ 
 
 ## 6. Giới hạn
 
-- **Máy A là điểm chết duy nhất cho cổng vào** (nginx). Rút mạng máy A thì địa chỉ nginx không vào được, nhưng
-  quầy ở mọi máy **vẫn bán**, và máy B, C vẫn đồng bộ với nhau qua 2 broker còn lại (K7c); xem thẳng dashboard
-  `B:8000`, `C:8000`. Cắm lại thì tự phục hồi.
+- **Cổng vào chỉ tự chuyển cho trang ĐANG MỞ** (vòng 5, K13). Mở trang mới khi cổng quen thuộc đã chết thì người
+  dùng vẫn phải tự gõ địa chỉ cổng khác (`http://<IP máy B>/`). Bản production dùng một tên DNS trỏ nhiều địa chỉ
+  (nhiều bản ghi A, hoặc VIP/anycast trước các nginx) để cả lần mở đầu cũng không phụ thuộc một máy; ghi vào "kiến
+  trúc mục tiêu production" (vòng 7). CORS ở nginx cho mọi origin (`*`) vì không có cookie hay xác thực, chỉ hợp cho
+  demo trong mạng riêng; production liệt kê đúng các origin. Chế độ một máy: cổng host không đi qua `minigo-wan`, nên
+  `make cut N=a` KHÔNG làm trình duyệt mất cổng A (nginx A vẫn trả lời, chỉ thấy phía bị cô lập); K13 một máy dùng
+  `make kill`/`make pause` nginx A. Trên máy thật, rút mạng máy A thì trình duyệt máy khác mất cổng A thật.
+- **Bộ phát hiện lỗi chỉ dựa vào timeout** (vòng 5, K14): không phân biệt được chi nhánh chậm (`docker pause`) với
+  chết; cả hai đi qua SUSPECT rồi OFFLINE. Kết luận đa số tính trên tổng số bản sao cấu hình: chết 2/3 bản sao thì
+  bản sao còn lại không bao giờ kết luận OFFLINE được (chỉ "nghi ngờ"), đổi lại bản sao bị cô lập không tự kết luận
+  sai. Kết luận chậm hơn góc nhìn riêng tới khoảng 5–10 giây (kéo góc nhìn mỗi 5 giây).
 - **Cụm broker chịu được mất 1 trong 3 broker** (K7a). Mất đa số (2/3) thì đồng bộ dừng cho tới khi có lại đa số;
   quầy vẫn bán, outbox giữ sự kiện, POS và dashboard báo "đồng bộ dừng"; sau 15 giây bản sao đối soát thẳng với
   chi nhánh nên số tồn vẫn đúng, dashboard ghi "đang đối soát thẳng với chi nhánh" (K7b, K9). Trong lúc bầu leader mới (vài giây)
@@ -212,7 +241,7 @@ kèm `branch_url`: mất broker quá 15 giây thì bản sao dùng địa chỉ 
 | Overlay network | Tailscale / ZeroTier là một mạng phủ dựng trên Internet |
 | Super-peer, BitTorrent tracker | Máy chủ điều phối của Tailscale giúp các máy tìm thấy nhau, rồi dữ liệu đi thẳng giữa các máy |
 | Edge & Fog | Chi nhánh là edge: xử lý tại chỗ, độ trễ thấp (K5) |
-| Phổ kiến trúc | Phi tập trung ở phần bán hàng và broker (cụm 3 máy), tập trung ở cổng vào (nginx máy A) |
+| Phổ kiến trúc | Phi tập trung ở phần bán hàng, broker (cụm 3 máy), cổng vào (nginx mọi máy, client tự chuyển cổng) và phát hiện lỗi (kết luận theo đa số bản sao ngang hàng, không có HQ điều phối) |
 
 ## 8. Quy tắc bất biến
 
@@ -232,3 +261,4 @@ dòng ở đây trước khi code.
 | PT-09 | Không bán lố tồn: trừ bằng một câu `UPDATE` có điều kiện `qty_on_hand + delta >= 0` | `_change_stock` |
 | PT-10 | Mọi kênh cập nhật snapshot (sink, gossip, đối soát) dùng chung một luật merge giao hoán, lũy đẳng theo từng ô | `merge_cells` (`api/services/replica.py`), gọi từ `apply_event`, `merge_replica_snapshot`, `merge_branch_snapshot` |
 | PT-11 | Mất đa số broker không làm dừng bán; trạng thái "đồng bộ dừng" phải hiện trên POS và dashboard | `record_relay_result` (`relay_status`), `record_broker_check` (`sink_stats`), `web/pos.html`, `web/dashboard.html` |
+| PT-13 | Một chi nhánh chỉ bị coi là OFFLINE khi đa số bản sao, tính trên **tổng số bản sao cấu hình** (2/3), cùng thấy OFFLINE; góc nhìn thiếu hoặc cũ quá 15 giây không tính là OFFLINE. Một bản sao mất liên lạc riêng lẻ chỉ đổi góc nhìn của chính nó | `branch_state`, `majority_state`, `query_nodes` (`api/services/replica.py`); góc nhìn bản sao khác kéo qua `GET /api/views` (`view_loop` trong `api/workers/gossip.py`), lưu ở `peer_view` |

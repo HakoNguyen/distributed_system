@@ -22,6 +22,8 @@ Một chuỗi cửa hàng tiện lợi có nhiều chi nhánh ở nhiều thành
 | Chịu lỗi của broker | Cụm 3 broker Redpanda (Raft, RF=3, `acks=all` có fsync); đồng bộ dừng thì POS và dashboard báo rõ, quầy vẫn bán | K7a, K7b, K7c |
 | Bản sao tự vá lẫn nhau (anti-entropy) | Gossip: các bản sao so dấu vân tay, kéo snapshot, merge theo từng ô | K8 |
 | Phục hồi từ nguồn sự thật | Mất broker quá 15 giây thì bản sao đối soát thẳng với chi nhánh qua API | K9 |
+| Đọc đơn điệu (monotonic reads) | Dashboard nhớ phiên bản (`last_movement`) từng ô đã hiện; bản sao trả lời cũ hơn thì giữ số cũ và gắn nhãn "bản sao B trễ N sự kiện" | K11 |
+| Quan sát được đường đi của dữ liệu | Sơ đồ topology sống; truy vết một sự kiện qua chi nhánh, broker (timestamp Kafka), từng bản sao | K12, K1–K9 trên giao diện |
 
 ## 3. Kiến trúc
 
@@ -146,8 +148,18 @@ kèm `branch_url`: mất broker quá 15 giây thì bản sao dùng địa chỉ 
 - Muốn nhất quán mạnh thì mỗi lượt bán phải chờ mọi máy xác nhận; mất mạng là ngừng bán. Hệ chọn **sẵn sàng hơn
   nhất quán** (đánh đổi CAP).
 - Thứ tự sự kiện dựa vào `movement_id` do chi nhánh cấp tăng dần, **không** dựa vào đồng hồ (đồng hồ các máy lệch nhau).
-- Không đảm bảo đọc đơn điệu (monotonic reads): trong lúc một bản sao còn đuổi theo, hai lần làm mới liên tiếp có
-  thể thấy số khác nhau, thậm chí "lùi lại".
+- **Đọc đơn điệu (monotonic reads) trên dashboard** (vòng 4, K11). Đây là mô hình nhất quán lấy client làm trung tâm
+  (Tanenbaum 7.3): một tiến trình đã đọc giá trị của x thì các lần đọc x sau phải ra cùng giá trị hoặc mới hơn. Ở
+  đây tiến trình là một tab dashboard, mục dữ liệu là ô (chi nhánh, mã hàng), phiên bản là `last_movement` do chính
+  chi nhánh cấp (không dùng đồng hồ, PT-05). Tab nhớ phản hồi đang hiện (đóng vai "tập đã đọc" trong sách); phản
+  hồi mới chỉ được nhận khi **mọi ô** có `last_movement` lớn hơn hoặc bằng ô đang hiện, không thì giữ nguyên màn hình
+  cũ (cả một phản hồi, không trộn số của hai bản sao) và gắn nhãn "Bản sao B trễ N sự kiện ở CN2" (N = hiệu
+  `movement_id` lớn nhất của chi nhánh đó; bằng nhau mà vẫn có ô cũ hơn thì ghi "trễ k ô"). So từng ô chứ không chỉ
+  `movement_id` lớn nhất của chi nhánh, vì bản sao có thể lỡ #57 (mã 3) mà đã nhận #58 (mã 4) (K8).
+- Phạm vi bảo đảm: một lần mở trang. Tải lại trang (F5) là phiên mới. Bộ đếm, danh sách sự kiện, dòng đồng bộ đi
+  cùng phản hồi được nhận; vệt "bản sao nào trả lời" vẫn ghi mọi lần (ô vàng = trả lời trễ, giữ số cũ). Gọi thẳng
+  API (`curl`) hay mở thẳng một bản sao thì không qua lớp này; một bản sao tự nó không bao giờ lùi số vì
+  `merge_cells` chỉ ghi đè khi `movement_id` mới hơn.
 
 ## 6. Giới hạn
 
@@ -173,6 +185,17 @@ kèm `branch_url`: mất broker quá 15 giây thì bản sao dùng địa chỉ 
   thì không đối soát được. Sink chết (không còn kiểm broker) thì không đối soát; gossip lo phần vá.
 - **Dữ liệu mỗi chi nhánh chỉ có một bản chính**, ở chính máy chi nhánh. Bản sao trung tâm chỉ là bản tổng hợp để
   đọc. Máy B hỏng ổ cứng thì mất các lượt bán chưa kịp gửi đi.
+- **Sơ đồ topology chỉ là góc nhìn ghép từ những gì hỏi được** (vòng 4): mở qua nginx thì ghép digest của mọi bản
+  sao và `/cn<N>/api/status` của mọi chi nhánh; mở thẳng một bản sao thì chỉ có góc nhìn của bản sao đó, phần còn lại
+  tô xám "không biết". Trạng thái từng broker lấy từ metadata mà sink thấy (`sink_stats.brokers_up`), chỉ tính sink
+  đang đọc được cụm: node bị cô lập vẫn hỏi được broker thiểu số của nó nhưng nhận danh sách cũ (đo ở K3, K7c). Mất
+  đa số thì không sink nào hỏi được metadata, sơ đồ ghi "cụm: không hỏi được" chứ không biết broker nào còn sống. Vài
+  chục giây sau khi một broker dừng, các sink có thể thấy danh sách khác nhau (broker còn sống hiện vàng "k/3 sink
+  thấy"); broker đã dừng thì luôn đỏ "0/n".
+- **Mốc thời gian khi truy vết theo ba đồng hồ** (chi nhánh: `node_time`, `outbox.sent_at`; broker leader:
+  `kafka_ts`, topic `LogAppendTime`; bản sao: `received_at`, `updated_at`): chỉ để hiển thị, không so thứ tự (PT-05).
+  Trên máy thật các đồng hồ lệch nhau nên hiệu giữa hai mốc khác máy có thể âm. Ô vá bằng gossip hoặc đối soát không
+  có dòng nhật ký, nên với bản sao đó chỉ biết "đã vá tới #N lúc nào", không biết mốc riêng của từng lượt bán.
 - **Nginx chỉ tự thử lại yêu cầu idempotent (GET).** Lệnh bán (POST) qua nginx mà thất bại thì không được thử lại
   tự động. POS tự bảo vệ bằng `request_id`.
 

@@ -63,6 +63,13 @@ def snapshot():
         return {"node": NODE_NAME, "cells": replica.query_snapshot(conn)}
 
 
+@router.get("/api/trace")
+def trace(branch_id: int, movement_id: int, product_id: int):
+    """Truy vết: bản sao này nhận sự kiện qua Redpanda, được vá bằng gossip/đối soát, hay chưa biết."""
+    with pool.connection() as conn:
+        return replica.query_trace(conn, branch_id, movement_id, product_id)
+
+
 # Các endpoint rời để gọi bằng tay khi cần
 @router.get("/api/nodes")
 def nodes():

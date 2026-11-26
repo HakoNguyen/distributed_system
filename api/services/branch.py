@@ -186,6 +186,21 @@ def snapshot() -> dict:
     return {"branch_id": BRANCH_ID, "cells": cells}
 
 
+def movement(movement_id: int) -> dict:
+    """Một dòng sổ cái kèm lúc relay gửi xong (outbox.sent_at), cho dashboard truy vết. Chỉ đọc (PT-07)."""
+    with pool.connection() as conn:
+        row = conn.execute(
+            """SELECT m.movement_id, m.product_id, m.move_type, m.qty_delta, m.qty_after,
+                      m.created_at AS node_time, o.sent_at
+               FROM stock_movement m LEFT JOIN outbox o ON o.event_id = m.movement_id
+               WHERE m.movement_id = %s""",
+            (movement_id,),
+        ).fetchone()
+    if row is None:
+        raise HTTPException(404, {"error": "movement_not_found"})
+    return {"branch_id": BRANCH_ID, **row}
+
+
 def outbox_backlog() -> dict:
     """Số sự kiện chưa gửi và tuổi của sự kiện cũ nhất (giây)."""
     with pool.connection() as conn:

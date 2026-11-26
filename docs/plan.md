@@ -5,15 +5,15 @@ Mục tiêu trước mắt: xử lý hai câu hỏi của thầy (mục 3), trê
 
 ## 1. Tiến độ
 
-**Vòng tiếp theo: vòng 4** (sau khi vòng 3 được merge). Mỗi lần chỉ làm một vòng, đúng thứ tự: vòng sau dựa trên hạ tầng của vòng trước.
+**Vòng tiếp theo: vòng 5** (sau khi vòng 4 được merge). Mỗi lần chỉ làm một vòng, đúng thứ tự: vòng sau dựa trên hạ tầng của vòng trước.
 
 | Vòng | Phạm vi | Nhánh | Việc | Quy tắc | Kịch bản | Trạng thái |
 |---|---|---|---|---|---|---|
 | 0 | khung | `base/restructure-workflow` | Gộp về một bản theo cấu trúc mới; quy trình 4 bước; hạ tầng test, 5 test nền | PT-02, 04, 05, 08, 09 | K1, K6 trên 1 node | xong, đã merge (PR #1) |
 | 1 | `infra` | `infra/local-multi-node` | Mô phỏng 3 máy trên một máy, `make cut/heal` | — | K1–K6 trên 3 node | xong, đã merge (PR #2) |
 | 2 | `infra`, `branch`, `replica`, `web` | `broker/redpanda-cluster` | Cụm 3 broker; trạng thái đồng bộ trên POS và dashboard | PT-03, PT-06, PT-11 | K7a, K7b, K7c | xong, đã merge (PR #3); 16 test, K1–K7c đạt trên 3 node một máy |
-| 3 | `replica`, `branch`, `web` | `replica/gossip-reconcile` | Gossip giữa bản sao; đối soát với chi nhánh | PT-04, PT-05, PT-07, PT-10 | K8, K9 | đã code (22/11/2026); `make check` xanh (43 test); K1–K9 đạt trên 3 node một máy; chờ commit |
-| 4 | `web` | `web/sync-dashboard` | Topology sống, đọc đơn điệu, truy vết sự kiện, POS | — | chạy tay K1–K9 | chưa làm |
+| 3 | `replica`, `branch`, `web` | `replica/gossip-reconcile` | Gossip giữa bản sao; đối soát với chi nhánh | PT-04, PT-05, PT-07, PT-10 | K8, K9 | xong, đã merge (PR #4); 43 test, K1–K9 đạt trên 3 node một máy |
+| 4 | `web`, `replica`, `branch` | `web/sync-dashboard` | Topology sống, đọc đơn điệu, truy vết sự kiện, POS | — | chạy tay K1–K9; K11, K12 | đã code (22/11/2026); `make check` xanh (58 test), selftest giao diện 20/20; K1–K9, K11, K12 đạt trên 3 node một máy; chờ commit |
 | 5 | `infra`, `docs` | `infra/production-local` | Standby đồng bộ cho CSDL chi nhánh; vệ sinh vận hành; giám sát (tuỳ chọn); kiến trúc mục tiêu production trên giấy | PT-12 | K10a, K10b | chưa làm |
 | 6 | `replica`, `scripts`, `docs` | `chore/hardening` | `dead_letter`, `scripts/chaos-check.sh`, chốt tài liệu | PT-06 | `chaos-check.sh` | chưa làm |
 
@@ -243,7 +243,17 @@ Xong khi: K10a không mất lượt bán nào đã báo thành công; K10b đo �
   `replica_db`; không bật khi sink đã chết (lần kiểm broker cũ hơn 15 giây); chỉ chi nhánh có heartbeat trong 15 giây.
 - Vòng 3: sau K7b, K9 (bật lại broker sau khi mất đa số), sink đọc tiếp sau ~55 giây, chậm hơn ~15 giây đo ở vòng 2.
   Vòng 3 không sửa sink; nghi do consumer group chờ hết phiên (`session.timeout.ms` mặc định 45 giây) rồi mới chia lại
-  phân hoạch. Chưa kiểm. Số tồn không bị ảnh hưởng nhờ đối soát; chỉ nhật ký sự kiện đến muộn hơn.
+  phân hoạch. Chưa kiểm. Số tồn không bị ảnh hưởng nhờ đối soát; chỉ nhật ký sự kiện đến muộn hơn. Vòng 4 thấy được
+  trên khung truy vết (K12 sau K7b): broker ghi lúc 13:54:05 (bật lại 13:53:56), các bản sao đọc lúc 13:54:50–57,
+  tức chậm nằm ở phía consumer, không ở relay. Vẫn chưa sửa.
+- ~~Vòng 4: timestamp Kafka là giờ broker~~ **Đã kiểm ở vòng 4: đúng khi topic đặt `message.timestamp.type=LogAppendTime`**
+  (Redpanda v24.2.8 nhận lúc `rpk topic create -c`; producer gửi timestamp năm 2001, consumer nhận giờ broker kiểu
+  `LogAppendTime`). Mặc định CreateTime là giờ relay gọi `produce()`.
+- ~~Vòng 4: metadata Redpanda bỏ broker đã chết~~ **Đã kiểm ở vòng 4: đúng** (broker dừng biến khỏi `brokers` ngay
+  lần hỏi sau, bật lại thì có lại sau ~6 giây); ISR thì giữ cả 3 suốt 45 giây nên không dùng. Ba điều phát hiện thêm:
+  mất đa số thì sau ~2 giây không hỏi được metadata (sơ đồ ghi "không hỏi được", không biết broker nào còn); node bị
+  cô lập (K3, K7c) vẫn hỏi được broker thiểu số của nó nhưng nhận danh sách cũ, nên dashboard bỏ `brokers_up` của sink
+  có `broker_ok = false`; vài chục giây sau khi một broker dừng, các sink có thể thấy danh sách khác nhau.
 - Vòng 5: chuỗi kết nối nhiều host của libpq (`target_session_attrs=read-write`) đủ để `psycopg_pool` tự nối sang
   primary mới sau promote mà không đổi code; kiểm ở `/plan-task` vòng 5.
 - Vòng 5: promote bằng tay (`make promote`), không dùng Patroni hay repmgr. Tự động failover CSDL ghi vào "kiến trúc

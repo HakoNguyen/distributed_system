@@ -101,3 +101,9 @@ hàng. Xử lý tại chỗ trong 27,8 ms". Dashboard: bốn tab chỉ hiện đ
 nhánh, truy vết vẫn đủ mốc. Chưa chạy lại K1–K12 đầy đủ trên bố cục này (logic không đổi, chỉ đổi chỗ hiển thị).
 Tab Sự kiện thành bảng một dòng mỗi sự kiện, truy vết thành các bước "+x,xx giây": chọn #126 bằng Enter khi dừng sink
 B, được A +1,96 giây, C +1,50 giây, B vàng +12,34 giây "vá bằng gossip tới #126"; selftest vẫn 22/22.
+
+Chỉnh giao diện `web/ui-polish` (26/11/2026, 3 node một máy): selftest dashboard 24/24 (thêm 2 kiểm `systemIssues`),
+POS 5/5; `make check` 58 test xanh. Cỡ 375px: cả bốn tab rộng đúng 375px (trước đó tràn tới 538–1055px). Dừng broker B:
+Tổng quan hiện dải "Hệ thống có sự cố: broker B không chạy (cụm còn 2/3)", sơ đồ "2/3 broker (máy A, B, C)"; bật lại
+thì dải tự tắt. Tab Sự kiện: cột "Nhận lúc" giảm dần đúng thứ tự, dòng của ngày trước có ngày ("15:16 22-11").
+Trang trả `Cache-Control: no-cache`.

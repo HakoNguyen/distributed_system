@@ -215,7 +215,7 @@ POS là màn hình quầy dạng phiếu. Các kịch bản bên dưới viết 
 | Dashboard: số đã áp / bản trùng, dòng "Đồng bộ", "Gossip lần cuối" | Tab **Hệ thống** (`#he-thong`), thẻ "Đồng bộ của bản sao đang trả lời"; tóm tắt ở thanh bên và ô "Đồng bộ về trụ sở" của tab Tổng quan |
 | Dải vàng đọc đơn điệu (K11) | Đầu vùng chính, hiện ở mọi tab |
 | Thẻ chi nhánh | Tab **Tổng quan** (`#tong-quan`), bảng "Chi nhánh" (Hoạt động / Còn sống, đồng bộ dừng / Mất liên lạc); chi tiết RTT, lệch giờ, gửi lên Redpanda ở bảng "Chi nhánh" của tab Hệ thống |
-| Bảng tồn kho, nhãn "qua đối soát" | Tab **Tồn kho** (`#ton-kho`), có ô tìm và lọc "Chỉ hàng dưới ngưỡng"; hàng dưới ngưỡng cũng tóm tắt ở "Cần đặt thêm hàng" của tab Tổng quan |
+| Bảng tồn kho, chấm cam "đối soát" | Tab **Tồn kho** (`#ton-kho`), có ô tìm và lọc "Chỉ hàng dưới ngưỡng"; hàng dưới ngưỡng cũng tóm tắt ở "Cần đặt thêm hàng" của tab Tổng quan |
 | Cột "Sự kiện vừa nhận", khung truy vết (K12) | Tab **Sự kiện** (`#su-kien`): bảng sự kiện bên trái (mỗi sự kiện một dòng), truy vết bên phải |
 | Sơ đồ đồng bộ, ô / bảng "Các bản sao trung tâm" (dấu vân tay, cột Gossip) | Tab **Hệ thống**; mở thẳng một bản sao thì bảng bản sao báo "chỉ có khi mở qua nginx" |
 
@@ -246,14 +246,14 @@ Bảng tóm tắt: **kịch bản nào chứng minh tính chất gì, nhìn ở 
 | K1 | Đồng bộ dữ liệu | Bán ở POS máy B | Dashboard máy A | Ô CN2 nháy vàng, giảm số trong 1–2 giây; bảng bản sao A và B cùng dấu vân tay, "Khớp từng ô" |
 | K2 | Trong suốt vị trí | Mở `http://<IP máy A>/` và `/cn2/` | Dòng "do bản sao máy … trả lời"; `curl -I` | Vệt `A B A B`: người dùng gõ một địa chỉ nhưng được hai máy phục vụ; `/cn2/` mở POS của máy B qua IP máy A |
 | K3 | Chịu lỗi, failover | Rút mạng máy B | Dashboard máy A; POS máy B | Dashboard vẫn chạy, vệt chỉ còn `A A A`; bản sao B "Không liên lạc được"; thẻ CN2 tô đỏ, số cũ; POS máy B vẫn bán, dải đỏ đếm sự kiện chờ |
-| K4 | Tự phục hồi | Cắm mạng lại, không làm gì khác | Bảng bản sao; thẻ CN2; vệt served-by | B "Đang đuổi theo, thiếu N sự kiện" rồi "Khớp từng ô"; CN2 hết đỏ, sự kiện đến muộn hiện ra (số vàng ở cột "Tới trụ sở sau"); vệt có lại `B` |
+| K4 | Tự phục hồi | Cắm mạng lại, không làm gì khác | Bảng bản sao; thẻ CN2; vệt served-by | B "Đang đuổi theo, thiếu N sự kiện" rồi "Khớp từng ô"; CN2 hết đỏ, sự kiện đến muộn hiện ra (số vàng ở cột "Trễ"); vệt có lại `B` |
 | K5 | Độ trễ mạng | Bật Clumsy/tc trễ 300 ms trên máy B | Chip RTT trên POS máy B; thẻ CN2 trên dashboard | RTT từ vài ms lên hàng trăm ms, sự kiện trễ theo; nhưng POS vẫn báo "xử lý tại chỗ trong ~5 ms" |
 | K6 | Chống trùng (phụ) | Phát lại toàn bộ sự kiện | Dòng đầu dashboard | Số bản trùng bỏ qua tăng vọt, bảng tồn không đổi |
 | K7a | Chịu lỗi broker | Dừng 1/3 broker, bán tiếp | Dashboard; Console | Đồng bộ tiếp sau vài giây, leader chuyển sang broker khác; không mất sự kiện |
 | K7b | Mất đa số broker | Dừng 2/3 broker, bán tiếp, rồi bật lại | POS; dòng "Đồng bộ" trên dashboard | POS "Gửi lên Redpanda: lỗi từ HH:MM:SS", outbox tăng; dashboard "Đồng bộ dừng từ HH:MM:SS", chi nhánh vẫn "còn sống"; bật lại thì tự đồng bộ bù |
 | K7c | Mất máy A (broker + nginx) | Rút mạng máy A | Dashboard máy B, C (cổng 8000) | B và C vẫn đồng bộ với nhau qua 2 broker còn lại; cắm lại thì 3 bản sao khớp |
 | K8 | Bản sao tự vá lẫn nhau (gossip) | Dừng sink B, bán, cho B bỏ qua các sự kiện đó | Bảng bản sao (cột Gossip); dashboard B | B lệch rồi khớp lại trong ≤ 20 giây, "vá N ô"; B mãi ít hơn A N sự kiện đã áp nhưng vẫn "Khớp từng ô" |
-| K9 | Đối soát với chi nhánh | Dừng cả 3 broker, bán ở CN2 | Dòng "Đồng bộ"; ô CN2 trên bảng tồn | Sau 15–25 giây kể từ "dừng từ", 3 bản sao cập nhật CN2, ô ghi "qua đối soát", 3 dấu vân tay khớp dù broker còn dừng |
+| K9 | Đối soát với chi nhánh | Dừng cả 3 broker, bán ở CN2 | Dòng "Đồng bộ"; ô CN2 trên bảng tồn | Sau 15–25 giây kể từ "dừng từ", 3 bản sao cập nhật CN2, ô có chấm cam "đối soát", 3 dấu vân tay khớp dù broker còn dừng |
 | K11 | Đọc đơn điệu | Dừng sink B, bán ở CN2, xem dashboard qua nginx | Dải vàng đầu trang; vệt served-by ở thanh bên; tab Tồn kho, cột CN2 | Lần B trả lời: số CN2 **không lùi**, ô vàng trong vệt, "Bản sao B trễ N sự kiện ở CN2"; gossip vá B thì nhãn tự mất |
 | K12 | Truy vết sự kiện | Tab Sự kiện, bấm một sự kiện | Khung truy vết bên phải | Mốc chi nhánh ghi, broker ghi (phân hoạch, offset, timestamp Kafka), relay đánh dấu đã gửi, từng bản sao nhận qua Redpanda hay được vá bằng gossip/đối soát |
 
@@ -314,7 +314,7 @@ Chi tiết từng kịch bản:
 
 **Thấy trên máy B:**
 - POS **vẫn bán được**. Dải trạng thái chuyển đỏ "Chưa gửi được lên trung tâm từ … giây", số sự kiện chờ trong outbox tăng dần. Chip "Bản sao máy A: mất liên lạc".
-- Tab `localhost:8000` (bản sao B) vẫn mở được. Điều thú vị là **bản sao B thấy CN2 còn sống còn CN1 mất liên lạc**, ngược hẳn với bản sao A. B cũng mất broker (broker máy B một mình là thiểu số), nên sau khoảng 15 giây B **đối soát thẳng với CN2** (cùng máy): cột CN2 trên dashboard B có số mới kèm nhãn "qua đối soát", trong khi CN1, CN3 đứng ở số cũ. Dashboard A lúc này vẫn thấy CN2 số cũ: hai bên mạng bị chia cắt có hai góc nhìn khác nhau.
+- Tab `localhost:8000` (bản sao B) vẫn mở được. Điều thú vị là **bản sao B thấy CN2 còn sống còn CN1 mất liên lạc**, ngược hẳn với bản sao A. B cũng mất broker (broker máy B một mình là thiểu số), nên sau khoảng 15 giây B **đối soát thẳng với CN2** (cùng máy): cột CN2 trên dashboard B có số mới kèm chấm cam "đối soát", trong khi CN1, CN3 đứng ở số cũ. Dashboard A lúc này vẫn thấy CN2 số cũ: hai bên mạng bị chia cắt có hai góc nhìn khác nhau.
 
 **Nói:**
 - Lỗi cục bộ: một máy chết, phần còn lại vẫn chạy, và người dùng qua nginx gần như không nhận ra.
@@ -327,7 +327,7 @@ Chi tiết từng kịch bản:
 
 **Thấy (trong khoảng 10–20 giây):**
 1. Relay máy B gửi bù toàn bộ sự kiện tồn đọng; dải đỏ trên POS biến mất.
-2. Dashboard máy A: các sự kiện của CN2 hiện ra, cột **Tới trụ sở sau** tô vàng (trên 5 giây); thẻ CN2 hết đỏ.
+2. Dashboard máy A: các sự kiện của CN2 hiện ra, cột **Trễ** tô vàng (trên 5 giây); thẻ CN2 hết đỏ.
 3. Ô bản sao: dòng B hiện **Đang đuổi theo, thiếu N sự kiện**, N giảm dần, rồi chuyển sang **Khớp từng ô**, cùng dấu vân tay với A.
 4. Vệt served-by có lại chữ `B`: nginx tự đưa bản sao B trở lại sau tối đa 10 giây (`fail_timeout=10s`).
 
@@ -407,7 +407,7 @@ metadata rồi tự chuyển sang leader mới. Không ai phải làm gì.
   soát thẳng với chi nhánh". Thẻ chi nhánh ghi "Còn sống, đồng bộ dừng": heartbeat (HTTP thẳng) vẫn tới, chỉ đồng bộ
   (qua broker) dừng. Hai trạng thái được tách.
 - Khoảng 15–25 giây sau mốc "dừng từ": dòng đó đổi thành "**đang đối soát thẳng với chi nhánh** (lần cuối
-  HH:MM:SS)"; các ô vừa bán cập nhật kèm nhãn "qua đối soát", 3 dấu vân tay khớp **ngay trong lúc broker còn dừng**
+  HH:MM:SS)"; các ô vừa bán cập nhật kèm chấm cam "đối soát", 3 dấu vân tay khớp **ngay trong lúc broker còn dừng**
   (chi tiết ở K9).
 - Bật lại: outbox về 0 trong khoảng 10 giây, dải đỏ biến mất; sink đọc tiếp sau đó, sự kiện đến muộn hiện ra (số vàng),
   dashboard hết "Đồng bộ dừng", dấu vân tay không đổi (số đã đúng từ lúc đối soát).
@@ -473,9 +473,9 @@ Vì sao "≤ 20 giây": gossip chạy mỗi 10 giây; lần kiểm đầu thấy
 **Thấy:**
 - Sau 4–7 giây: dashboard "Đồng bộ qua Redpanda dừng từ HH:MM:SS … sau 15 giây sẽ đối soát thẳng với chi nhánh".
 - 15–25 giây sau mốc đó (sink kiểm 5 giây một lần, đối soát cũng vậy): "đang đối soát thẳng với chi nhánh (lần cuối HH:MM:SS)"; ô CN2 vừa bán đổi số kèm nhãn
-  **"qua đối soát"**; 3 bản sao cùng dấu vân tay dù broker vẫn dừng. `sync_peers` có dòng `CN2`, `reconcile`.
+  **chấm cam "đối soát"**; 3 bản sao cùng dấu vân tay dù broker vẫn dừng. `sync_peers` có dòng `CN2`, `reconcile`.
 - Bật lại broker: outbox về 0, sink đọc tiếp, sự kiện đến muộn hiện ra (số vàng), "Sự kiện đã áp" tăng đúng 5, dấu vân tay
-  không đổi. Nhãn "qua đối soát" còn tới khi ô đó có lượt bán mới đi qua Redpanda.
+  không đổi. Chấm cam "đối soát" còn tới khi ô đó có lượt bán mới đi qua Redpanda.
 
 **Nói:** Đây là tầng "phục hồi" của câu hỏi Redpanda: broker chỉ là đường nhanh, nguồn sự thật là sổ cái chi nhánh.
 Mất cả cụm broker, bản sao đọc thẳng snapshot của chi nhánh qua API (chỉ đọc, không ghi về, không gọi thẳng CSDL chi
@@ -538,7 +538,7 @@ xám = bỏ qua hoặc chưa rõ):
 Biến thể:
 - **Sau K8**: bấm một sự kiện B đã bỏ qua (hiện khi A hoặc C trả lời): dòng B vàng "vá bằng gossip tới #N", A và C
   xanh. Đo ngày 26/11 (dừng sink B, bán 1 đơn): A +1,96 giây, C +1,50 giây, B vàng +12,34 giây "vá bằng gossip".
-- **Sau K9 / K7b** (khi đã bật lại broker): bấm một sự kiện có số vàng ở cột "Tới trụ sở sau" bán trong lúc mất đa
+- **Sau K9 / K7b** (khi đã bật lại broker): bấm một sự kiện có số vàng ở cột "Trễ" bán trong lúc mất đa
   số: mốc "Vào Redpanda" sau lúc bật lại broker, mỗi bản sao xanh kèm ghi chú "đã vá trước bằng đối soát lúc …".
 
 **Nói:** Ba kênh hiện ra trên cùng một sự kiện. Redpanda là đường nhanh: bình thường cả ba bản sao nhận trong vài
@@ -581,7 +581,7 @@ nhất của ô, không có nhật ký từng lượt. Ba loại mốc theo ba �
 | Chống trùng (Idempotency) | Phát lại toàn bộ sự kiện: số bản trùng tăng vọt, dấu vân tay không đổi | Tab `http://localhost:8000` |
 | Chịu lỗi broker (cần 3 máy) | Dừng 1/3 broker: không mất sự kiện, dấu vân tay khớp. Dừng 2/3 rồi bật lại: POS và dashboard báo "đồng bộ dừng", sau đó tự khớp không thao tác tay | POS, dòng "Đồng bộ" trên dashboard, Console |
 | Gossip giữa bản sao (K8) | Bản sao lỡ sự kiện khớp lại trong ≤ 20 giây, cột Gossip "vá N ô"; bán bình thường thì "vá 0 ô" | Bảng bản sao qua nginx, dashboard B |
-| Đối soát với chi nhánh (K9) | Dừng cả 3 broker, bán: sau 15–25 giây 3 bản sao khớp, ô ghi "qua đối soát" | Dòng "Đồng bộ", bảng tồn |
+| Đối soát với chi nhánh (K9) | Dừng cả 3 broker, bán: sau 15–25 giây 3 bản sao khớp, ô có chấm cam "đối soát" | Dòng "Đồng bộ", bảng tồn |
 
 ## 8. Lỗi hay gặp
 

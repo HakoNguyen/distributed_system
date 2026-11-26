@@ -64,7 +64,7 @@ từ broker thiểu số của nó (`docs/spec.md` mục 6).
 
 `sync_peers` (trong digest): các dòng `sync_peer` (`peer`, `channel`, `last_ok_at`, `failing_since`, `last_error`,
 `cells_patched`), cho cột "Gossip" và dòng đồng bộ trên dashboard. `/api/inventory` (và `inventory` trong overview):
-mỗi ô `by_branch[b]` có thêm `source` (`kafka`, `gossip`, `reconcile`; `reconcile` hiện nhãn "qua đối soát") và
+mỗi ô `by_branch[b]` có thêm `source` (`kafka`, `gossip`, `reconcile`; `reconcile` hiện chấm cam, chú thích "số đọc thẳng từ chi nhánh (đối soát)") và
 `last_movement` (phiên bản của ô, để dashboard đọc đơn điệu).
 
 `/api/trace` trả `{node, branch_id, movement_id, product_id, event, cell, via}`:

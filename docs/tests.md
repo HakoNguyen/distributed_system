@@ -23,7 +23,7 @@ code, không sửa kỳ vọng.
   `BRANCH_ID`, không publish cổng, console và topic-init nối vào `minigo-wan`; kênh trực tiếp (vòng 3): `replica_api`
   có `REPLICA_URLS` và `dns_opt timeout:1`, `branch_api` có `BRANCH_URL=http://branch-<x>:8000` (một máy) hoặc
   `http://<BROKER_HOST>:8001` (máy thật). Chế độ máy thật: `config -q` với `may-a/b/c.env`;
-  vòng 6 gom các kịch bản chính vào `scripts/chaos-check.sh`.
+  vòng 8 gom các kịch bản chính vào `scripts/chaos-check.sh`.
 - Giao diện (vòng 4): repo không có công cụ test JavaScript. Logic thuần của `web/dashboard.html` (đọc đơn điệu
   `compareViews`; màu cạnh `relayEdge`, `sinkEdge`, `brokerState`, `gossipEdge`; trạng thái chi nhánh `branchState`)
   và của `web/pos.html` (kết quả gửi một dòng phiếu `settle`, giữ hay bỏ `request_id`; tìm hàng `match`) kiểm bằng
@@ -66,8 +66,11 @@ Các bước chạy tay ở [demo.md](demo.md). "Đạt" ghi kèm ngày và các
 | K9 | Đối soát với chi nhánh | 3 | đạt trên 3 node một máy (22/11/2026): dừng cả 3 broker, bán 5 đơn ở CN2; A, C đối soát xong +18 giây, B +22 giây sau mốc mất broker, 3 dấu vân tay khớp khi broker còn dừng, ô CN2 "qua đối soát"; bật lại: outbox về 0 sau 5 giây, sink đọc tiếp sau ~55 giây, +5 sự kiện, dấu vân tay không đổi |
 | K11 | Đọc đơn điệu | 4 | đạt trên 3 node một máy (22/11/2026): dừng sink B, bán 5 đơn CN2; lấy mẫu mỗi giây 32 giây: 6 lần B trả lời bị giữ số cũ, nhãn "Bản sao B trễ 5 sự kiện ở CN2", 0 lần ô lùi phiên bản; gossip vá B sau ~22 giây, nhãn tự mất |
 | K12 | Truy vết sự kiện | 4 | đạt trên 3 node một máy (22/11/2026): CN2 #22 đủ mốc chi nhánh → broker (phân hoạch 1, offset 22, LogAppendTime) → `sent_at` → A, B, C qua Redpanda; biến thể K8: B "vá bằng gossip, tới #24"; biến thể K7b: ba bản sao "nhận qua Redpanda, trước đó đã vá bằng đối soát" |
-| K10a | Mất primary CSDL chi nhánh | 5 | chưa có |
-| K10b | Đánh đổi nhân bản đồng bộ / bất đồng bộ | 5 | chưa có |
+| K10a | Mất primary CSDL chi nhánh | 7 | chưa có |
+| K10b | Đánh đổi nhân bản đồng bộ / bất đồng bộ | 7 | chưa có |
+| K13 | Mất cổng vào, client tự chuyển | 5 | chưa có |
+| K14 | Chậm hay chết, kết luận theo đa số | 5 | chưa có |
+| K15 | Chi nhánh sập vẫn bán (ghi hộ) | 6 | chưa có |
 
 K1–K5 chạy lại với cụm 3 broker (vòng 2, 19/11/2026): đều đạt. K4: outbox CN2 về 0 sau 5–9 giây, 3 bản sao khớp sau
 2–27 giây; K5: RTT 5 → 607 ms, bán tại chỗ 2,4–4,4 ms.

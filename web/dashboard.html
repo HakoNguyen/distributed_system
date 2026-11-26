@@ -3,327 +3,344 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>MiniGo · Tồn kho toàn chuỗi</title>
+<title>MiniGo · Trụ sở</title>
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Be+Vietnam+Pro:wght@400;500;600;700&display=swap">
 <style>
   :root {
-    --paper: #F2F4F3;
+    --paper: #F4F5F7;
     --card: #FFFFFF;
-    --ink: #16212B;
-    --muted: #5B6873;
-    --rule: #E1E6E8;
+    --ink: #18212A;
+    --muted: #66727D;
+    --rule: #E3E7EA;
     --alert: #C8312A;
-    --alert-bg: #FBEDEC;
-    --pending: #B97400;
-    --pending-bg: #FFF4DC;
-    --unknown: #9AA5AD;
+    --alert-bg: #FCEEED;
+    --pending: #A86A00;
+    --pending-bg: #FFF5E0;
+    --unknown: #A3ADB5;
     --ok: #0E7C66;
-    --ok-bg: #E3F4EF;
+    --ok-bg: #E4F4EF;
+    --accent: #2F4BB3;
     --cn1: #0E7C66;
     --cn2: #2F4BB3;
     --cn3: #A15C07;
-    --side: #111C24;
-    --side-2: #1A2731;
-    --side-ink: #E8EEF1;
-    --side-muted: #8FA1AC;
-    --shadow: 0 1px 2px rgba(22, 33, 43, .06), 0 6px 20px rgba(22, 33, 43, .05);
     --font: "Be Vietnam Pro", system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
   }
   * { box-sizing: border-box; }
+  [hidden] { display: none !important; }   /* tab ẩn: thắng cả lớp có display riêng (.stack) */
   body {
     margin: 0; background: var(--paper); color: var(--ink);
-    font: 15px/1.5 var(--font); font-variant-numeric: tabular-nums;
-    display: grid; grid-template-columns: 290px minmax(0, 1fr); min-height: 100vh;
+    font: 15px/1.45 var(--font); font-variant-numeric: tabular-nums;
+    display: grid; grid-template-columns: 232px minmax(0, 1fr); min-height: 100vh;
   }
   code { font: inherit; font-weight: 600; letter-spacing: .03em; }
+  button { font: inherit; }
 
   /* ================= Thanh bên ================= */
   aside {
-    background: var(--side); color: var(--side-ink); position: sticky; top: 0; height: 100vh; overflow-y: auto;
-    padding: 1.4rem 1rem 1.2rem; display: flex; flex-direction: column; gap: 1.1rem;
+    background: var(--card); border-right: 1px solid var(--rule); position: sticky; top: 0; height: 100vh; overflow-y: auto;
+    padding: 1.2rem .8rem 1rem; display: flex; flex-direction: column; gap: 1.2rem;
   }
-  .brand { padding: 0 .5rem; }
-  .brand h1 { margin: 0; font-size: 1.45rem; font-weight: 700; letter-spacing: -0.01em; }
-  .brand p { margin: 0; color: var(--side-muted); font-size: .88rem; }
-  .side-label { font-size: .72rem; font-weight: 600; letter-spacing: .08em; text-transform: uppercase;
-                color: var(--side-muted); margin: 0 0 .35rem; padding: 0 .5rem; }
-
-  nav[role="tablist"] { display: flex; flex-direction: column; gap: .2rem; }
+  .brand { padding: 0 .6rem; }
+  .brand b { font-size: 1.2rem; font-weight: 700; }
+  .brand span { display: block; color: var(--muted); font-size: .85rem; }
+  nav[role="tablist"] { display: flex; flex-direction: column; gap: 2px; }
   nav button {
     all: unset; box-sizing: border-box; cursor: pointer; display: flex; align-items: center; gap: .65rem;
-    padding: .6rem .75rem; border-radius: 8px; color: var(--side-ink); font-weight: 500;
+    padding: .55rem .7rem; border-radius: 8px; color: var(--muted); font-weight: 500;
   }
-  nav button:hover { background: var(--side-2); }
-  nav button:focus-visible { outline: 2px solid #fff; outline-offset: -2px; }
-  nav button[aria-selected="true"] { background: #fff; color: var(--ink); font-weight: 600; }
-  nav button .ico { width: 1.25rem; text-align: center; opacity: .85; }
-  nav button .dot { margin-left: auto; width: .55rem; height: .55rem; border-radius: 50%; background: transparent; }
-  .dot.ok { background: #3FBF9B !important; }
-  .dot.warn { background: #F0B23C !important; }
-  .dot.bad { background: #F0645B !important; }
+  nav button svg { width: 18px; height: 18px; fill: none; stroke: currentColor; stroke-width: 1.8; stroke-linecap: round; stroke-linejoin: round; flex: none; }
+  nav button:hover { background: var(--paper); color: var(--ink); }
+  nav button:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; }
+  nav button[aria-selected="true"] { background: #EAEEFA; color: var(--accent); font-weight: 600; }
+  nav .dot { margin-left: auto; width: .5rem; height: .5rem; border-radius: 50%; }
+  .dot.ok { background: var(--ok); }
+  .dot.warn { background: #E5A00D; }
+  .dot.bad { background: var(--alert); }
 
-  .side-box { background: var(--side-2); border-radius: 10px; padding: .75rem .85rem; font-size: .88rem; }
-  .side-box b { color: #fff; font-weight: 600; }
-  #served-now { display: flex; align-items: center; gap: .7rem; }
-  #served-now .big { width: 2.4rem; height: 2.4rem; border-radius: 50%; background: #fff; color: var(--ink);
-                     display: grid; place-items: center; font-weight: 700; font-size: 1.2rem; flex: none; }
-  #served-now .big.held { background: var(--pending-bg); color: var(--pending); }
-  #served-now span { color: var(--side-muted); line-height: 1.35; }
-  .trail { display: flex; flex-wrap: wrap; gap: 3px; margin-top: .6rem; }
-  .trail i { font-style: normal; font-size: .72rem; font-weight: 700; width: 1.35rem; text-align: center; border-radius: 4px;
-             background: rgba(255, 255, 255, .1); color: var(--side-ink); }
-  .trail i.now { background: #fff; color: var(--ink); }
+  .side-status { margin-top: auto; border-top: 1px solid var(--rule); padding: .9rem .6rem 0; font-size: .82rem; color: var(--muted); display: grid; gap: .7rem; }
+  .side-status .lbl { display: block; font-size: .72rem; font-weight: 600; text-transform: uppercase; letter-spacing: .06em; margin-bottom: .3rem; }
+  #served b { color: var(--ink); }
+  .trail { display: flex; flex-wrap: wrap; gap: 3px; margin-top: .35rem; }
+  .trail i { font-style: normal; font-size: .7rem; font-weight: 700; width: 1.25rem; text-align: center; border-radius: 4px; background: var(--paper); color: var(--muted); }
+  .trail i.now { background: var(--ink); color: #fff; }
   .trail i.held { background: var(--pending-bg); color: var(--pending); }
-  #sync { border-left: 4px solid var(--unknown); }
-  #sync.ok { border-left-color: #3FBF9B; }
-  #sync.down { border-left-color: #F0645B; color: #FFD9D6; }
-  #sync.down b { color: #fff; }
-  #gossip, #stats { color: var(--side-muted); margin-top: .45rem; }
-  #mono { display: none; background: var(--pending-bg); color: #6B4300; border-radius: 10px; padding: .7rem .85rem; font-size: .88rem; }
-  #mono b { font-weight: 700; }
-  #selftest { display: none; border-radius: 10px; padding: .55rem .85rem; font-size: .85rem; font-weight: 600; }
-  .side-foot { margin-top: auto; color: var(--side-muted); font-size: .78rem; padding: 0 .5rem; }
+  #side-sync { display: flex; gap: .45rem; align-items: baseline; color: var(--ink); }
+  #side-sync .dot { flex: none; width: .55rem; height: .55rem; border-radius: 50%; background: var(--unknown); transform: translateY(-1px); }
+  #selftest { display: none; border-radius: 8px; padding: .4rem .6rem; font-weight: 600; }
 
   /* ================= Vùng chính ================= */
-  main { padding: 1.6rem 2rem 2.5rem; min-width: 0; }
-  #conn-error { display: none; margin-bottom: 1rem; padding: .7rem 1rem; border-radius: 10px;
-                background: var(--alert-bg); color: var(--alert); font-weight: 500; }
-  .panel-head { display: flex; align-items: baseline; justify-content: space-between; gap: 1rem; flex-wrap: wrap; margin-bottom: 1rem; }
-  .panel-head h2 { margin: 0; font-size: 1.45rem; font-weight: 700; letter-spacing: -0.01em; }
-  .panel-head p { margin: 0; color: var(--muted); }
-  .card { background: var(--card); border-radius: 14px; box-shadow: var(--shadow); padding: 1rem 1.2rem; }
-  .card + .card { margin-top: 1rem; }
-  .card h3 { margin: 0 0 .2rem; font-size: 1.05rem; font-weight: 600; }
-  .card .sub { margin: 0 0 .6rem; color: var(--muted); font-size: .88rem; }
+  main { padding: 1.5rem 2rem 2.5rem; min-width: 0; max-width: 1400px; }
+  .page-head { display: flex; align-items: baseline; justify-content: space-between; gap: 1rem; flex-wrap: wrap; margin-bottom: 1.1rem; }
+  .page-head h1 { margin: 0; font-size: 1.4rem; font-weight: 700; }
+  .page-head span { color: var(--muted); font-size: .88rem; }
+  #conn-error, #mono { display: none; margin-bottom: 1rem; padding: .7rem 1rem; border-radius: 10px; font-weight: 500; }
+  #conn-error { background: var(--alert-bg); color: var(--alert); }
+  #mono { background: var(--pending-bg); color: #6B4300; }
+  #mono b { font-weight: 700; }
+  .card { background: var(--card); border: 1px solid var(--rule); border-radius: 12px; }
+  .card-head { display: flex; align-items: baseline; justify-content: space-between; gap: .8rem; flex-wrap: wrap; padding: .85rem 1.1rem; border-bottom: 1px solid var(--rule); }
+  .card-head h2 { margin: 0; font-size: 1rem; font-weight: 600; }
+  .card-head span, .card-head a { color: var(--muted); font-size: .85rem; }
+  .card-body { padding: .9rem 1.1rem; }
+  .stack { display: grid; gap: 1rem; }
+  .grid-2 { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: 1rem; align-items: start; }
 
-  /* ---------- Thẻ chi nhánh ---------- */
-  #nodes { display: grid; grid-template-columns: repeat(auto-fit, minmax(250px, 1fr)); gap: 1rem; margin-bottom: 1rem; }
-  .node { background: var(--card); border-radius: 14px; box-shadow: var(--shadow); padding: 1rem 1.15rem 1.05rem;
-          border-top: 6px solid var(--c); transition: background-color .4s; }
-  .node h4 { margin: 0; font-size: 1.15rem; font-weight: 700; line-height: 1.25; }
-  .node .state { display: inline-block; margin: .35rem 0 .75rem; font-weight: 600; font-size: .85rem; padding: .1rem .55rem;
-                 border-radius: 999px; background: var(--ok-bg); color: var(--ok); }
-  .node dl { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: .2rem .8rem; margin: 0; font-size: .88rem; }
-  .node dt { color: var(--muted); }
-  .node dd { margin: 0; text-align: right; font-weight: 500; white-space: nowrap; }
-  .node dd.bad { color: var(--alert); font-weight: 700; }
-  .node .backlog-hot { color: var(--pending); font-weight: 700; }
-  .node.down { border-top-color: var(--alert); background: repeating-linear-gradient(-45deg, var(--alert-bg) 0 12px, #fff 12px 24px); }
-  .node.down .state { background: var(--alert); color: #fff; }
-  .node.sync-off .state { background: var(--pending-bg); color: var(--pending); }
-  .empty { padding: 1.25rem; color: var(--muted); background: var(--card); border-radius: 14px; box-shadow: var(--shadow); }
+  /* ---------- Ô số liệu ---------- */
+  .kpis { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 1rem; }
+  .kpi { background: var(--card); border: 1px solid var(--rule); border-radius: 12px; padding: .9rem 1.1rem; }
+  .kpi span { color: var(--muted); font-size: .85rem; }
+  .kpi b { display: block; font-size: 1.7rem; font-weight: 700; margin: .15rem 0 .05rem; letter-spacing: -.01em; }
+  .kpi small { color: var(--muted); font-size: .82rem; }
+  .kpi.warn b { color: var(--pending); }
+  .kpi.bad b { color: var(--alert); }
 
-  /* ---------- Sơ đồ topology sống ---------- */
-  #topology .topo-head { display: flex; align-items: baseline; justify-content: space-between; gap: 1rem; flex-wrap: wrap; }
-  #topology .topo-head span { color: var(--muted); font-size: .85rem; }
-  #topology svg { width: 100%; max-width: 860px; max-height: 340px; display: block; margin: .3rem auto 0; }
-  #topology .legend { display: flex; flex-wrap: wrap; justify-content: center; gap: .3rem 1.1rem; font-size: .8rem; color: var(--muted); }
-  #topology .legend i { display: inline-block; width: 1.2rem; height: 0; border-top: 3px solid; vertical-align: middle; margin-right: .3rem; }
-  .col-label { font: 600 11px var(--font); fill: var(--muted); text-anchor: middle; letter-spacing: .08em; text-transform: uppercase; }
-  .box rect.frame { fill: #fff; stroke-width: 2; }
+  /* ---------- Bảng ---------- */
+  .table-wrap { overflow-x: auto; }
+  table { border-collapse: collapse; width: 100%; }
+  th, td { padding: .55rem 1.1rem; border-bottom: 1px solid var(--rule); text-align: right; white-space: nowrap; }
+  th { font-weight: 600; font-size: .75rem; color: var(--muted); text-transform: uppercase; letter-spacing: .04em; background: #FAFBFC; position: sticky; top: 0; }
+  th.b { color: var(--c); }
+  th.b small { display: block; font-weight: 400; text-transform: none; letter-spacing: 0; color: var(--alert); }
+  .name { text-align: left; }
+  td.id { color: var(--muted); width: 3rem; }
+  td.total { font-weight: 700; }
+  td.stale { color: var(--unknown); font-style: italic; }
+  td.low { color: var(--alert); font-weight: 600; }
+  td.flash { animation: flash 1.6s ease-out; }
+  td small.via { display: block; font-size: .7rem; font-weight: 600; color: var(--pending); font-style: normal; }
+  td.note { white-space: normal; color: var(--muted); text-align: left; }
+  tbody tr:hover td { background: #FAFBFC; }
+  tr:last-child td { border-bottom: 0; }
+  @keyframes flash { from { background: #FFE9A8; } to { background: transparent; } }
+  .bname { display: inline-flex; align-items: center; gap: .5rem; font-weight: 600; }
+  .bname::before { content: ""; width: .6rem; height: .6rem; border-radius: 3px; background: var(--c); }
+  .pill { display: inline-block; font-size: .8rem; font-weight: 600; padding: .1rem .55rem; border-radius: 999px; background: var(--ok-bg); color: var(--ok); }
+  .pill.warn { background: var(--pending-bg); color: var(--pending); }
+  .pill.bad { background: var(--alert-bg); color: var(--alert); }
+  .pill.unknown { background: var(--paper); color: var(--muted); }
+  td.bad { color: var(--alert); font-weight: 600; }
+  td.warn { color: var(--pending); font-weight: 600; }
+  .muted { color: var(--muted); font-weight: 400; }
+  .bar { display: inline-block; width: 4.5rem; height: .4rem; border-radius: 999px; background: var(--paper); vertical-align: middle; margin-left: .5rem; overflow: hidden; }
+  .bar i { display: block; height: 100%; background: var(--alert); border-radius: 999px; }
+  .empty-row td { text-align: center; color: var(--muted); padding: 1.4rem; white-space: normal; }
+  #replica-table td.match { color: var(--ok); font-weight: 600; }
+  #replica-table td.behind { color: var(--pending); font-weight: 600; }
+  #replica-table td.gone { color: var(--alert); font-weight: 600; }
+  #replica-table td.gossip { text-align: left; white-space: normal; color: var(--muted); font-size: .88rem; }
+  #replica-table td.gossip b { color: var(--ink); }
+
+  .filters { display: flex; gap: .8rem; align-items: center; flex-wrap: wrap; }
+  #inv-search { font: inherit; padding: .4rem .7rem; border: 1px solid var(--rule); border-radius: 8px; min-width: 240px; }
+  #inv-search:focus-visible, .filters input[type=checkbox]:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
+  .filters label { display: inline-flex; gap: .35rem; align-items: center; color: var(--muted); font-size: .9rem; cursor: pointer; }
+
+  /* ---------- Đồng bộ (tab Hệ thống) ---------- */
+  #sync { margin: 0; padding-left: .7rem; border-left: 3px solid var(--unknown); }
+  #sync.ok { border-left-color: var(--ok); }
+  #sync.down { border-left-color: var(--alert); color: var(--alert); }
+  #gossip, #stats { margin: .4rem 0 0; color: var(--muted); font-size: .9rem; }
+  #gossip b, #stats b { color: var(--ink); }
+
+  /* ---------- Sơ đồ đồng bộ ---------- */
+  #topo-svg { width: 100%; max-width: 860px; max-height: 340px; display: block; margin: 0 auto; }
+  .legend { display: flex; flex-wrap: wrap; justify-content: center; gap: .3rem 1.1rem; font-size: .8rem; color: var(--muted); padding-bottom: .9rem; }
+  .legend i { display: inline-block; width: 1.2rem; height: 0; border-top: 3px solid; vertical-align: middle; margin-right: .3rem; }
+  .col-label { font: 500 12px var(--font); fill: var(--muted); text-anchor: middle; }
+  .box rect.frame { fill: #fff; stroke-width: 1.5; }
   .box text { font: 600 14px var(--font); fill: var(--ink); text-anchor: middle; }
   .box text.sub { font-weight: 500; font-size: 11px; }
-  .box.ok rect.frame { stroke: var(--rule); }
+  .box.ok rect.frame { stroke: #D5DCE1; }
   .box.warn rect.frame { stroke: var(--pending); fill: var(--pending-bg); }
   .box.warn text.sub { fill: var(--pending); }
   .box.bad rect.frame { stroke: var(--alert); fill: var(--alert-bg); }
   .box.bad text.sub { fill: var(--alert); }
   .box.off rect.frame, .box.unknown rect.frame { stroke: var(--unknown); stroke-dasharray: 4 3; }
   .box.off text, .box.unknown text { fill: var(--muted); }
-  .box.served rect.frame { stroke: var(--ink); stroke-width: 2.5; }
-  .cluster { fill: #F5F7F6; stroke: var(--rule); stroke-width: 1.5; }
+  .box.served rect.frame { stroke: var(--ink); stroke-width: 2; }
+  .cluster { fill: #F1F4F6; stroke: #D5DCE1; stroke-width: 1.5; }
+  .cluster-title { font: 600 13px var(--font); fill: var(--ink); text-anchor: middle; }
   .cluster-sub { font: 500 11px var(--font); fill: var(--muted); text-anchor: middle; }
-  .broker circle { stroke-width: 2; }
-  .broker text { font: 700 12px var(--font); text-anchor: middle; fill: #fff; }
-  .broker.ok circle { fill: var(--ok); stroke: var(--ok); }
-  .broker.warn circle { fill: var(--pending); stroke: var(--pending); }
-  .broker.bad circle { fill: var(--alert); stroke: var(--alert); }
-  .broker.unknown circle { fill: #fff; stroke: var(--unknown); stroke-dasharray: 3 3; }
+  .broker text { font: 700 11px var(--font); text-anchor: middle; fill: #fff; }
+  .broker.ok circle { fill: var(--ok); }
+  .broker.warn circle { fill: var(--pending); }
+  .broker.bad circle { fill: var(--alert); }
+  .broker.unknown circle { fill: #fff; stroke: var(--unknown); stroke-width: 1.5; stroke-dasharray: 3 2; }
   .broker.unknown text { fill: var(--muted); }
-  .edge { fill: none; stroke-width: 3.5; stroke-linecap: round; }
-  .edge.ok { stroke: var(--ok); }
-  .edge.warn { stroke: var(--pending); }
-  .edge.bad { stroke: var(--alert); }
-  .edge.off, .edge.unknown { stroke: var(--unknown); stroke-dasharray: 3 6; stroke-width: 2.5; }
-  .edge.rec { stroke-dasharray: 8 6; stroke-width: 2; opacity: .9; }
-  .edge.flow { stroke-dasharray: 10 8; animation: flow .8s linear 2; }
-  @keyframes flow { to { stroke-dashoffset: -36; } }
-
-  /* ---------- Bảng ---------- */
-  .table-wrap { overflow-x: auto; }
-  table { border-collapse: collapse; width: 100%; }
-  th, td { padding: .5rem .8rem; border-bottom: 1px solid var(--rule); text-align: right; white-space: nowrap; }
-  th { font-weight: 600; font-size: .82rem; color: var(--muted); background: #FAFBFA; position: sticky; top: 0; }
-  th.b { color: var(--c); }
-  th.b small { display: block; font-weight: 400; font-size: .75rem; color: var(--alert); }
-  td.name, th.name { text-align: left; }
-  td.id { color: var(--muted); width: 3rem; }
-  td.total { font-weight: 700; }
-  td.stale { color: var(--unknown); font-style: italic; }
-  td.low::before { content: ""; display: inline-block; width: .5rem; height: .5rem; border-radius: 50%; background: var(--alert); margin-right: .4rem; vertical-align: middle; }
-  td.low { color: var(--alert); font-weight: 600; }
-  td.flash { animation: flash 1.6s ease-out; }
-  td small.via { display: block; font-size: .7rem; font-weight: 600; color: var(--pending); font-style: normal; }
-  td.note { white-space: normal; color: var(--muted); }
-  tbody tr:hover td { background: #FAFBFA; }
-  tr:last-child td { border-bottom: 0; }
-  @keyframes flash { from { background: #FFE9A8; } to { background: transparent; } }
-  #replica-table td.match { color: var(--ok); font-weight: 700; }
-  #replica-table td.behind { color: var(--pending); font-weight: 700; }
-  #replica-table td.gone { color: var(--alert); font-weight: 700; }
-  #replica-table td.gossip { text-align: left; white-space: normal; color: var(--muted); font-size: .88rem; }
-  #replica-table td.gossip b { color: var(--ink); }
+  /* Đường bình thường: mảnh, xám nhạt; chỉ đường có vấn đề mới có màu */
+  .edge { fill: none; stroke-width: 2; stroke-linecap: round; }
+  .edge.ok { stroke: #B9C3CB; }
+  .edge.warn { stroke: var(--pending); stroke-width: 2.5; }
+  .edge.bad { stroke: var(--alert); stroke-width: 2.5; }
+  .edge.off, .edge.unknown { stroke: var(--unknown); stroke-dasharray: 3 5; }
+  .edge.gossip { stroke-dasharray: 1 5; stroke-width: 2.5; }
+  .edge.gossip.ok { stroke: #A3AFB8; }
+  .edge.rec { stroke-dasharray: 7 5; stroke-width: 2; }
+  .pulse { stroke: #fff; stroke-width: 1.5; }
 
   /* ---------- Sự kiện + truy vết ---------- */
-  .events-layout { display: grid; grid-template-columns: minmax(280px, 380px) minmax(0, 1fr); gap: 1rem; align-items: start; }
-  #events { list-style: none; margin: 0; padding: 0; max-height: calc(100vh - 12rem); overflow-y: auto; }
-  #events li { border-bottom: 1px solid var(--rule); }
-  #events li:last-child { border-bottom: 0; }
-  #events button { all: unset; box-sizing: border-box; width: 100%; cursor: pointer; padding: .6rem .8rem; border-radius: 8px;
-                   display: grid; grid-template-columns: auto 1fr auto; gap: .1rem .6rem; align-items: baseline; }
-  #events button:hover { background: #F5F7F6; }
-  #events button.sel { background: #EEF2FB; box-shadow: inset 3px 0 0 var(--ink); }
-  #events button:focus-visible { outline: 2px solid var(--ink); outline-offset: -2px; }
-  #events .empty-ev { padding: .6rem .8rem; color: var(--muted); }
-  .chip { font-size: .75rem; font-weight: 700; color: #fff; background: var(--c); padding: .05rem .45rem; border-radius: 4px; }
-  .ev-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-  .ev-delta { font-weight: 700; }
-  .ev-delta.neg { color: var(--ink); } .ev-delta.pos { color: var(--ok); }
-  .ev-meta { grid-column: 2 / 4; font-size: .8rem; color: var(--muted); }
-  .ev-meta .late { color: var(--pending); font-weight: 600; }
+  .events-layout { display: grid; grid-template-columns: minmax(0, 3fr) minmax(320px, 2fr); gap: 1rem; align-items: start; }
+  .ev-scroll { max-height: calc(100vh - 8rem); overflow-y: auto; }
+  #events th, #events td { padding: .5rem .8rem; }
+  #events tbody tr { cursor: pointer; }
+  #events tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; }
+  #events tbody tr[aria-selected="true"] td { background: #EAEEFA; }
+  #events td.t { color: var(--muted); }
+  #events td.qty { font-weight: 700; }
+  #events td.qty.pos { color: var(--ok); }
+  #events td.lag { color: var(--muted); }
+  #events td.lag.late { color: var(--pending); font-weight: 600; }
+  .chip { font-size: .72rem; font-weight: 700; color: #fff; background: var(--c); padding: .05rem .4rem; border-radius: 4px; }
 
-  #trace { border-left: 6px solid var(--c, var(--rule)); position: sticky; top: 1rem; }
-  #trace .trace-head { display: flex; align-items: baseline; justify-content: space-between; gap: .8rem; flex-wrap: wrap; }
-  #trace .trace-head h3 span { font-weight: 400; color: var(--muted); font-size: .9rem; }
-  #trace .trace-head div { display: flex; gap: .4rem; }
-  #trace button { font: inherit; font-size: .88rem; font-weight: 600; cursor: pointer; border-radius: 8px; padding: .25rem .7rem;
-                  border: 1.5px solid var(--rule); background: #fff; color: var(--ink); }
+  #trace { position: sticky; top: 1rem; }
+  #trace-empty { color: var(--muted); padding: 3rem 1.5rem; text-align: center; }
+  #trace .card-head { align-items: center; }
+  #trace .card-head h2 small { display: block; font-weight: 400; color: var(--muted); font-size: .85rem; }
+  #trace .card-head div { display: flex; gap: .4rem; }
+  #trace button { cursor: pointer; border-radius: 8px; padding: .25rem .7rem; font-size: .85rem; font-weight: 600;
+                  border: 1px solid var(--rule); background: #fff; color: var(--ink); }
   #trace button:hover { border-color: var(--ink); }
-  #trace button:focus-visible { outline: 2px solid var(--ink); outline-offset: 2px; }
-  #trace-empty { color: var(--muted); padding: 2rem .5rem; text-align: center; }
-  #trace ol { list-style: none; margin: .6rem 0 .2rem; padding: 0 0 0 1rem; border-left: 2px solid var(--rule); }
-  #trace li { position: relative; display: grid; grid-template-columns: 8rem 1fr; gap: .1rem 1rem; padding: .45rem 0 .45rem .4rem; }
-  #trace li::before { content: ""; position: absolute; left: -1.42rem; top: .78rem; width: .7rem; height: .7rem; border-radius: 50%;
-                      background: #fff; border: 2px solid var(--ok); }
-  #trace li.missing::before, #trace li.gone::before { border-color: var(--alert); }
-  #trace li.patched::before { border-color: var(--pending); }
-  #trace li .at { font-weight: 600; }
-  #trace li .what small { display: block; color: var(--muted); font-size: .8rem; }
-  #trace li.missing .what, #trace li.gone .what { color: var(--alert); }
-  #trace li.patched .what { color: var(--pending); }
-  #trace p.note { margin: .5rem 0 0; font-size: .8rem; color: var(--muted); }
+  #trace button:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+  /* Mỗi bước một dòng: chấm trạng thái, tên bước, thời gian tính từ lúc chi nhánh ghi */
+  .steps { list-style: none; margin: 0; padding: 0; }
+  .steps li { position: relative; display: grid; grid-template-columns: 1.4rem 1fr auto; gap: 0 .6rem; padding: .55rem 0; }
+  .steps li + li::after { content: ""; position: absolute; left: .32rem; top: -.55rem; height: 1.1rem; border-left: 2px solid var(--rule); }
+  .steps i { width: .75rem; height: .75rem; border-radius: 50%; margin-top: .35rem; background: var(--ok); }
+  .steps .warn i { background: var(--pending); }
+  .steps .bad i { background: var(--alert); }
+  .steps .unknown i { background: var(--unknown); }
+  .steps b { font-weight: 500; }
+  .steps .at { font-weight: 600; text-align: right; }
+  .steps .warn .at { color: var(--pending); }
+  .steps .bad .at { color: var(--alert); }
+  .steps .unknown .at { color: var(--muted); font-weight: 400; }
+  .steps small { grid-column: 2 / 4; color: var(--muted); font-size: .82rem; }
+  #trace p.note { margin: .5rem 0 0; padding-top: .6rem; border-top: 1px solid var(--rule); font-size: .78rem; color: var(--muted); }
 
-  @media (max-width: 960px) {
+  @media (max-width: 1100px) { .kpis { grid-template-columns: repeat(2, minmax(0, 1fr)); } .grid-2, .events-layout { grid-template-columns: 1fr; } #trace { position: static; } }
+  @media (max-width: 760px) {
     body { grid-template-columns: 1fr; }
-    aside { position: static; height: auto; }
+    aside { position: static; height: auto; border-right: 0; border-bottom: 1px solid var(--rule); }
     nav[role="tablist"] { flex-direction: row; overflow-x: auto; }
     nav button { white-space: nowrap; }
+    .side-status { margin-top: 0; }
     main { padding: 1rem; }
-    .events-layout { grid-template-columns: 1fr; }
-    #trace { position: static; }
   }
-  @media (prefers-reduced-motion: reduce) { td.flash, .edge.flow { animation: none; } .node { transition: none; } }
+  @media (prefers-reduced-motion: reduce) { td.flash { animation: none; } .pulse { display: none; } }
 </style>
 </head>
 <body>
 <aside>
-  <div class="brand">
-    <h1>MiniGo</h1>
-    <p>Tồn kho toàn chuỗi</p>
+  <div class="brand"><b>MiniGo</b><span>Trụ sở · tồn kho toàn chuỗi</span></div>
+  <nav role="tablist" aria-orientation="vertical" aria-label="Màn hình">
+    <button role="tab" id="tab-tong-quan" data-tab="tong-quan" aria-controls="panel-tong-quan">
+      <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3 11l9-7 9 7M5 10v10h14V10"/></svg>Tổng quan<i class="dot" id="dot-tong-quan"></i></button>
+    <button role="tab" id="tab-ton-kho" data-tab="ton-kho" aria-controls="panel-ton-kho">
+      <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3 7l9-4 9 4-9 4-9-4zM3 7v10l9 4 9-4V7M12 11v10"/></svg>Tồn kho</button>
+    <button role="tab" id="tab-su-kien" data-tab="su-kien" aria-controls="panel-su-kien">
+      <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M9 6h12M9 12h12M9 18h12M4 6h.01M4 12h.01M4 18h.01"/></svg>Sự kiện</button>
+    <button role="tab" id="tab-he-thong" data-tab="he-thong" aria-controls="panel-he-thong">
+      <svg viewBox="0 0 24 24" aria-hidden="true"><rect x="3" y="4" width="18" height="7" rx="2"/><rect x="3" y="13" width="18" height="7" rx="2"/><path d="M7 7.5h.01M7 16.5h.01"/></svg>Hệ thống<i class="dot" id="dot-he-thong"></i></button>
+  </nav>
+
+  <div class="side-status">
+    <div><span class="lbl">Bản sao trả lời</span><div id="served" aria-live="polite">Đang tải…</div></div>
+    <div><span class="lbl">Đồng bộ</span><div id="side-sync"><i class="dot"></i><span>Đang kiểm…</span></div></div>
+    <div id="selftest" role="status"></div>
   </div>
-
-  <div>
-    <p class="side-label" id="nav-label">Màn hình</p>
-    <nav role="tablist" aria-orientation="vertical" aria-labelledby="nav-label">
-      <button role="tab" id="tab-tong-quan" data-tab="tong-quan" aria-controls="panel-tong-quan"><span class="ico" aria-hidden="true">◉</span>Tổng quan<i class="dot" id="dot-tong-quan"></i></button>
-      <button role="tab" id="tab-ton-kho" data-tab="ton-kho" aria-controls="panel-ton-kho"><span class="ico" aria-hidden="true">▦</span>Tồn kho</button>
-      <button role="tab" id="tab-su-kien" data-tab="su-kien" aria-controls="panel-su-kien"><span class="ico" aria-hidden="true">≡</span>Sự kiện &amp; truy vết</button>
-      <button role="tab" id="tab-ban-sao" data-tab="ban-sao" aria-controls="panel-ban-sao"><span class="ico" aria-hidden="true">⧉</span>Bản sao<i class="dot" id="dot-ban-sao"></i></button>
-    </nav>
-  </div>
-
-  <div>
-    <p class="side-label">Bản sao đang trả lời</p>
-    <div class="side-box" id="served" aria-live="polite">Đang tải…</div>
-  </div>
-
-  <div id="mono" role="status"></div>
-
-  <div>
-    <p class="side-label">Đồng bộ</p>
-    <div class="side-box" id="sync" role="status">Đang kiểm…</div>
-    <div class="side-box" style="margin-top:.5rem">
-      <div id="stats" style="margin:0"></div>
-      <div id="gossip"></div>
-    </div>
-  </div>
-
-  <div id="selftest" role="status"></div>
-  <p class="side-foot">Làm mới mỗi 2 giây. Mở qua nginx để thấy mọi bản sao; mở thẳng một bản sao thì chỉ có góc nhìn của nó.</p>
 </aside>
 
 <main>
   <div id="conn-error" role="alert"></div>
+  <div id="mono" role="status"></div>
 
-  <section id="panel-tong-quan" role="tabpanel" aria-labelledby="tab-tong-quan">
-    <div class="panel-head">
-      <h2>Tổng quan</h2>
-      <p>Mỗi chi nhánh: còn sống (heartbeat) và đồng bộ (outbox, broker) là hai trạng thái riêng</p>
+  <!-- ================= Tổng quan: góc nhìn của người quản lý ================= -->
+  <section id="panel-tong-quan" role="tabpanel" aria-labelledby="tab-tong-quan" class="stack">
+    <div class="page-head"><h1>Tổng quan</h1><span id="updated"></span></div>
+    <div class="kpis">
+      <div class="kpi" id="kpi-total"><span>Tồn toàn chuỗi</span><b>–</b><small></small></div>
+      <div class="kpi" id="kpi-low"><span>Cần đặt thêm</span><b>–</b><small></small></div>
+      <div class="kpi" id="kpi-alive"><span>Chi nhánh hoạt động</span><b>–</b><small></small></div>
+      <div class="kpi" id="kpi-sync"><span>Đồng bộ về trụ sở</span><b>–</b><small></small></div>
     </div>
-    <div id="nodes" aria-live="polite"></div>
-    <div class="card" id="topology">
-      <div class="topo-head"><h3>Sơ đồ đồng bộ</h3><span id="topo-view"></span></div>
-      <svg id="topo-svg" viewBox="0 0 820 320" role="img" aria-labelledby="topo-desc"><desc id="topo-desc">Luồng dữ liệu: ba chi nhánh gửi vào cụm Redpanda, cụm phát tới ba bản sao; các bản sao gossip với nhau.</desc></svg>
-      <div class="legend">
-        <span><i style="border-color:var(--ok)"></i>chạy</span>
-        <span><i style="border-color:var(--pending)"></i>tồn đọng</span>
-        <span><i style="border-color:var(--alert)"></i>lỗi</span>
-        <span><i style="border-color:var(--unknown);border-top-style:dashed"></i>không rõ</span>
-        <span><i style="border-color:var(--pending);border-top-style:dashed"></i>đối soát</span>
-        <span>di chuột để xem chi tiết</span>
+    <div class="grid-2">
+      <div class="card">
+        <div class="card-head"><h2>Chi nhánh</h2><span>heartbeat và đồng bộ là hai trạng thái riêng</span></div>
+        <div class="table-wrap"><table id="branches"></table></div>
+      </div>
+      <div class="card">
+        <div class="card-head"><h2>Cần đặt thêm hàng</h2><span id="low-more"></span></div>
+        <div class="table-wrap"><table id="lowstock"></table></div>
       </div>
     </div>
   </section>
 
-  <section id="panel-ton-kho" role="tabpanel" aria-labelledby="tab-ton-kho" hidden>
-    <div class="panel-head">
-      <h2>Tồn kho toàn chuỗi</h2>
-      <p>Dựng từ sự kiện các chi nhánh gửi lên; di chuột lên ô để xem biến động và nguồn</p>
+  <!-- ================= Tồn kho ================= -->
+  <section id="panel-ton-kho" role="tabpanel" aria-labelledby="tab-ton-kho" class="stack" hidden>
+    <div class="page-head"><h1>Tồn kho toàn chuỗi</h1><span>dựng từ sự kiện các chi nhánh gửi lên</span></div>
+    <div class="card">
+      <div class="card-head">
+        <div class="filters">
+          <input id="inv-search" type="search" placeholder="Tìm mã hoặc tên hàng" aria-label="Tìm mặt hàng" autocomplete="off">
+          <label><input type="checkbox" id="inv-low"> Chỉ hàng dưới ngưỡng</label>
+        </div>
+        <span id="inv-count"></span>
+      </div>
+      <div class="table-wrap"><table id="inv"></table></div>
     </div>
-    <div class="card table-wrap"><table id="inv"></table></div>
   </section>
 
-  <section id="panel-su-kien" role="tabpanel" aria-labelledby="tab-su-kien" hidden>
-    <div class="panel-head">
-      <h2>Sự kiện &amp; truy vết</h2>
-      <p>Bấm một sự kiện để xem nó đi qua chi nhánh, broker, từng bản sao</p>
-    </div>
+  <!-- ================= Sự kiện + truy vết ================= -->
+  <section id="panel-su-kien" role="tabpanel" aria-labelledby="tab-su-kien" class="stack" hidden>
+    <div class="page-head"><h1>Sự kiện</h1><span>bấm một dòng để xem đường đi của nó</span></div>
     <div class="events-layout">
-      <div class="card" style="padding:.4rem">
-        <ul id="events"></ul>
-      </div>
+      <div class="card"><div class="ev-scroll"><table id="events"></table></div></div>
       <div class="card" id="trace" aria-live="polite">
-        <div id="trace-empty">Chưa chọn sự kiện. Bấm một dòng ở danh sách bên trái.</div>
+        <div id="trace-empty">Chọn một sự kiện để xem nó tới từng bản sao lúc nào.</div>
         <div id="trace-body" hidden>
-          <div class="trace-head">
-            <h3 id="trace-title">Truy vết sự kiện</h3>
-            <div><button type="button" id="trace-again">Truy vết lại</button><button type="button" id="trace-close">Đóng</button></div>
+          <div class="card-head">
+            <h2 id="trace-title">Truy vết</h2>
+            <div><button type="button" id="trace-again">Làm mới</button><button type="button" id="trace-close">Đóng</button></div>
           </div>
-          <ol id="trace-list"></ol>
-          <p class="note">Ba loại mốc theo ba đồng hồ khác nhau (chi nhánh, broker leader, bản sao), chỉ để hiển thị; thứ tự
-            sự kiện dựa vào <code>movement_id</code>, không so bằng đồng hồ. Chạy 3 node trên một máy thì cùng một đồng hồ.</p>
+          <div class="card-body">
+            <ol class="steps" id="trace-list"></ol>
+            <p class="note">Thời gian tính từ lúc chi nhánh ghi, mỗi mốc theo đồng hồ máy của nó (chỉ để xem; thứ tự dựa
+              vào <code>movement_id</code>). Rê chuột lên một mốc để xem giờ đầy đủ.</p>
+          </div>
         </div>
       </div>
     </div>
   </section>
 
-  <section id="panel-ban-sao" role="tabpanel" aria-labelledby="tab-ban-sao" hidden>
-    <div class="panel-head">
-      <h2>Các bản sao trung tâm</h2>
-      <p>Mỗi máy giữ một bản, đồng bộ qua Redpanda; gossip vá ô còn thiếu</p>
+  <!-- ================= Hệ thống: góc nhìn kỹ thuật ================= -->
+  <section id="panel-he-thong" role="tabpanel" aria-labelledby="tab-he-thong" class="stack" hidden>
+    <div class="page-head"><h1>Hệ thống</h1><span id="topo-view"></span></div>
+    <div class="card">
+      <div class="card-head"><h2>Đồng bộ của bản sao đang trả lời</h2></div>
+      <div class="card-body"><p id="sync" role="status">Đang kiểm…</p><p id="gossip"></p><p id="stats"></p></div>
     </div>
-    <div class="card table-wrap"><table id="replica-table"></table></div>
+    <div class="card" id="topology">
+      <div class="card-head"><h2>Sơ đồ đồng bộ</h2><span>di chuột lên hộp, đường nối để xem chi tiết</span></div>
+      <svg id="topo-svg" viewBox="0 0 820 310" role="img" aria-labelledby="topo-desc"><desc id="topo-desc">Luồng dữ liệu: ba chi nhánh gửi vào cụm Redpanda, cụm phát tới ba bản sao; các bản sao gossip với nhau.</desc></svg>
+      <div class="legend">
+        <span><i style="border-color:#B9C3CB"></i>bình thường</span>
+        <span><i style="border-color:var(--pending)"></i>tồn đọng</span>
+        <span><i style="border-color:var(--alert)"></i>lỗi</span>
+        <span><i style="border-color:var(--unknown);border-top-style:dashed"></i>không rõ</span>
+        <span><i style="border-color:var(--pending);border-top-style:dashed"></i>đối soát</span>
+        <span><i style="border-color:#A3AFB8;border-top-style:dotted"></i>gossip</span>
+        <span>● chấm chạy: vừa có dữ liệu đi qua</span>
+      </div>
+    </div>
+    <div class="card">
+      <div class="card-head"><h2>Chi nhánh</h2><span>theo heartbeat tới bản sao đang trả lời</span></div>
+      <div class="table-wrap"><table id="node-table"></table></div>
+    </div>
+    <div class="card">
+      <div class="card-head"><h2>Các bản sao trung tâm</h2><span>mỗi máy một bản; gossip vá ô còn thiếu</span></div>
+      <div class="table-wrap"><table id="replica-table"></table></div>
+    </div>
   </section>
 </main>
 
@@ -335,19 +352,24 @@ const prevQty = new Map();   // để tô sáng ô vừa đổi số
 let firstRender = true;
 
 const esc = (s) => String(s).replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]));
+const fmtN = (n) => Number(n).toLocaleString("vi-VN");
 
 function ago(ts) {
   if (!ts) return "chưa có";
   const s = Math.max(0, Math.round((Date.now() - Date.parse(ts)) / 1000));
   if (s < 60) return `${s} giây trước`;
-  if (s < 3600) return `${Math.floor(s / 60)} phút ${s % 60} giây trước`;
-  return `${Math.floor(s / 3600)} giờ trước`;
+  if (s < 3600) return `${Math.floor(s / 60)} phút trước`;
+  if (s < 86400) return `${Math.floor(s / 3600)} giờ trước`;
+  return `${Math.floor(s / 86400)} ngày trước`;
 }
 function fmtMs(ms) {
   if (ms == null) return "–";
   const a = Math.abs(ms);
   const sign = ms > 0 ? "+" : ms < 0 ? "−" : "";
-  return a < 1000 ? `${sign}${a} ms` : `${sign}${(a / 1000).toFixed(1).replace(".", ",")} giây`;
+  if (a < 1000) return `${sign}${a} ms`;
+  if (a < 60000) return `${sign}${(a / 1000).toFixed(1).replace(".", ",")} giây`;
+  if (a < 3600000) return `${sign}${Math.round(a / 60000)} phút`;
+  return a < 86400000 ? `${sign}${Math.round(a / 3600000)} giờ` : `${sign}${Math.round(a / 86400000)} ngày`;
 }
 
 async function getJSON(url, signal) {
@@ -365,11 +387,13 @@ const orNull = (p) => p.catch(() => null);
 const clock = (ts) => new Date(ts).toLocaleTimeString("vi-VN", { hour12: false });
 const clockMs = (ts) => ts ? `${clock(ts)},${String(new Date(ts).getMilliseconds()).padStart(3, "0")}` : "–";
 const setDot = (tab, s) => { document.getElementById(`dot-${tab}`).className = `dot ${s}`; };
+const WORSE = { ok: 0, unknown: 0, warn: 1, bad: 2 };
+const worse = (a, b) => (WORSE[b] > WORSE[a] ? b : a);
 
 // ---------------------------------------------------------------------------
 // Tab ở thanh bên. Tab đang mở nằm trong #hash để tải lại trang vẫn giữ.
 // ---------------------------------------------------------------------------
-const TABS = ["tong-quan", "ton-kho", "su-kien", "ban-sao"];
+const TABS = ["tong-quan", "ton-kho", "su-kien", "he-thong"];
 function showTab(id, focus) {
   if (!TABS.includes(id)) id = TABS[0];
   for (const t of TABS) {
@@ -397,20 +421,23 @@ showTab(location.hash.slice(1));
 // Tách khỏi "còn sống": heartbeat đi HTTP thẳng, nên mất broker thì chi nhánh vẫn sống mà số đứng yên.
 function syncState(d) {
   if (d.broker_checked_at && Date.now() - Date.parse(d.broker_checked_at) > 15000)
-    return { down: true, text: `Đồng bộ dừng: sink của bản sao này không chạy (kiểm lần cuối ${ago(d.broker_checked_at)})` };
+    return { down: true, short: "sink không chạy",
+             text: `Đồng bộ dừng: sink của bản sao này không chạy (kiểm lần cuối ${ago(d.broker_checked_at)})` };
   if (d.broker_ok === false) {
     // Mất broker quá 15 giây: bản sao kéo snapshot thẳng từ chi nhánh (đối soát, vòng 3)
     const rec = (d.sync_peers || []).filter((p) => p.channel === "reconcile" && p.last_ok_at &&
                                                    Date.parse(p.last_ok_at) >= Date.parse(d.broker_lost_at));
     const last = rec.reduce((m, p) => Math.max(m, Date.parse(p.last_ok_at)), 0);
-    return { down: true, since: d.broker_lost_at,
+    return { down: true, since: d.broker_lost_at, rec: rec.length > 0,
+             short: `từ ${clock(d.broker_lost_at)}${rec.length ? ", đang đối soát" : ""}`,
              text: `Đồng bộ qua Redpanda dừng từ <b>${clock(d.broker_lost_at)}</b>: ` + (rec.length
                ? `đang đối soát thẳng với chi nhánh (lần cuối ${clock(last)}); ô vá bằng đối soát ghi "qua đối soát"`
                : `bản sao này không đọc được Redpanda. Chi nhánh vẫn bán; sau 15 giây sẽ đối soát thẳng với chi nhánh`) };
   }
   if (d.broker_ok === true)
-    return { down: false, text: `Đồng bộ qua Redpanda đang chạy, còn <b>${d.lag}</b> sự kiện chưa áp` };
-  return { down: false, text: "Đồng bộ qua Redpanda: đang kiểm…" };
+    return { down: false, short: `còn ${d.lag} sự kiện chưa áp`,
+             text: `Đồng bộ qua Redpanda đang chạy, còn <b>${d.lag}</b> sự kiện chưa áp` };
+  return { down: false, short: "đang kiểm", text: "Đồng bộ qua Redpanda: đang kiểm…" };
 }
 
 // Gossip của một bản sao với các bản sao khác (sync_peers, channel gossip)
@@ -426,10 +453,16 @@ function gossipSummary(d) {
 
 function renderSync(s, digest) {
   const el = document.getElementById("sync");
-  el.className = `side-box ${s.down ? "down" : digest.broker_ok ? "ok" : ""}`;
+  el.className = s.down ? "down" : digest.broker_ok ? "ok" : "";
   el.innerHTML = s.text;
   const g = gossipSummary(digest);
   document.getElementById("gossip").innerHTML = g ? `Gossip lần cuối: ${g.peers}; đã vá <b>${g.patched}</b> ô` : "Gossip: chưa trao đổi";
+  document.getElementById("stats").innerHTML =
+    `Đã áp <b>${digest.processed}</b> sự kiện, bỏ qua <b>${digest.duplicates}</b> bản trùng`;
+  const side = document.getElementById("side-sync");
+  side.querySelector(".dot").style.background = s.down ? "var(--alert)" : digest.broker_ok ? "var(--ok)" : "var(--unknown)";
+  side.querySelector("span").textContent = s.down ? `Dừng ${s.short}` : "Đang chạy";
+  side.title = side.querySelector("span").textContent;
 }
 
 // ---------------------------------------------------------------------------
@@ -474,55 +507,116 @@ function renderMono() {
     `. Đang giữ số mới nhất đã thấy, không để số lùi lại (đọc đơn điệu).`;
 }
 
-function renderNodes(nodes, sync, statuses) {
-  const el = document.getElementById("nodes");
+// ---------------------------------------------------------------------------
+// Chi nhánh: hai trạng thái tách nhau, "còn sống" theo heartbeat (HTTP thẳng), "đồng bộ" theo outbox và broker
+// ---------------------------------------------------------------------------
+function branchState(n, sync, st) {
+  const down = !n.alive;
+  const relayBad = !!st?.relay?.failing_since;   // st: /cn<id>/api/status, chỉ có khi mở qua nginx
+  const syncOff = !down && (sync.down || relayBad);
+  return {
+    s: down ? "bad" : syncOff ? "warn" : "ok", relayBad,
+    label: down ? `Mất liên lạc ${ago(n.last_seen).replace(" trước", "")}` : syncOff ? "Còn sống, đồng bộ dừng" : "Hoạt động",
+    send: st === undefined ? "–" : st === null ? "không hỏi được" : relayBad ? `lỗi từ ${clock(st.relay.failing_since)}` : "được",
+  };
+}
+
+function renderBranches(nodes, sync, statuses) {
+  const el = document.getElementById("branches");
   if (!nodes.length) {
-    el.innerHTML = `<div class="empty">Chưa chi nhánh nào gửi heartbeat tới bản sao này. Kiểm tra dòng REPLICA_URLS trong file .env của các máy, và chắc rằng cổng 8000 của máy này đã mở.</div>`;
+    el.innerHTML = `<tbody><tr class="empty-row"><td>Chưa chi nhánh nào gửi heartbeat tới bản sao này. Kiểm tra dòng REPLICA_URLS trong file .env của các máy, và chắc rằng cổng 8000 của máy này đã mở.</td></tr></tbody>`;
     setDot("tong-quan", "unknown");
     return;
   }
   let worst = "ok";
-  el.innerHTML = nodes.map((n) => {
-    const down = !n.alive;
-    // Hai trạng thái tách nhau: "còn sống" theo heartbeat (HTTP thẳng), "đồng bộ" theo outbox và broker
-    const st = statuses ? statuses[n.branch_id] : undefined;   // /cn<id>/api/status, chỉ có khi mở qua nginx
-    const relayBad = !!st?.relay?.failing_since;
-    const syncOff = !down && (sync.down || relayBad);
-    if (down) worst = "bad"; else if (syncOff && worst === "ok") worst = "warn";
-    const state = down ? `Mất liên lạc ${ago(n.last_seen).replace(" trước", "")}`
-                : syncOff ? "Còn sống, đồng bộ dừng" : "Đang hoạt động";
-    const backlog = down ? `${n.outbox_backlog}, lần báo cuối` : n.outbox_backlog;
-    const send = st === undefined ? "–" : st === null ? "không hỏi được chi nhánh"
-               : relayBad ? `lỗi từ ${clock(st.relay.failing_since)}` : "được";
-    return `<article class="node ${down ? "down" : syncOff ? "sync-off" : ""}" style="--c:${color(n.branch_id)}">
-      <h4>CN${n.branch_id} ${esc(n.branch_name)}</h4>
-      <div class="state">${state}</div>
-      <dl>
-        <dt>Heartbeat</dt><dd class="${down ? "bad" : ""}">${down ? "mất liên lạc" : ago(n.last_seen)}</dd>
-        <dt title="Relay của chi nhánh gửi outbox lên cụm Redpanda (relay_status)">Gửi lên Redpanda</dt><dd class="${relayBad ? "bad" : ""}">${send}</dd>
-        <dt>Sự kiện chờ gửi</dt><dd class="${n.outbox_backlog > 0 ? "backlog-hot" : ""}">${backlog}</dd>
-        <dt title="Sink của bản sao đang trả lời đọc Redpanda (sink_stats)">Bản sao đọc Redpanda</dt><dd class="${sync.down ? "bad" : ""}">${sync.down ? (sync.since ? `dừng từ ${clock(sync.since)}` : "dừng") : "đang chạy"}</dd>
-        <dt>Độ trễ vòng (RTT)</dt><dd>${n.rtt_ms == null ? "–" : n.rtt_ms + " ms"}</dd>
-        <dt>Lệch giờ đo được</dt><dd title="Giờ chi nhánh trừ giờ trung tâm, gồm cả thời gian gói tin đi trên mạng">${fmtMs(n.clock_offset_ms)}</dd>
-        <dt>Số liệu ở trung tâm</dt><dd>${ago(n.snapshot_updated_at)}</dd>
-        <dt>Biến động mới nhất</dt><dd>#${n.last_movement ?? "–"}</dd>
-      </dl>
-    </article>`;
+  const body = nodes.map((n) => {
+    const b = branchState(n, sync, statuses?.[n.branch_id]);
+    worst = worse(worst, b.s);
+    return `<tr style="--c:${color(n.branch_id)}">
+      <td class="name"><span class="bname">CN${n.branch_id} ${esc(n.branch_name)}</span></td>
+      <td class="name"><span class="pill ${b.s}">${b.label}</span></td>
+      <td class="${n.outbox_backlog > 0 ? "warn" : "muted"}">${n.outbox_backlog}</td>
+      <td class="muted">${ago(n.snapshot_updated_at)}</td>
+    </tr>`;
   }).join("");
+  el.innerHTML = `<thead><tr><th class="name">Chi nhánh</th><th class="name">Trạng thái</th><th>Chờ gửi</th><th>Số liệu mới nhất</th></tr></thead><tbody>${body}</tbody>`;
   setDot("tong-quan", worst);
 }
 
+function renderNodeTable(nodes, sync, statuses) {
+  const el = document.getElementById("node-table");
+  if (!nodes.length) { el.innerHTML = `<tbody><tr class="empty-row"><td>Chưa có heartbeat.</td></tr></tbody>`; return; }
+  const body = nodes.map((n) => {
+    const b = branchState(n, sync, statuses?.[n.branch_id]);
+    return `<tr style="--c:${color(n.branch_id)}">
+      <td class="name"><span class="bname">CN${n.branch_id}</span></td>
+      <td class="${n.alive ? "" : "bad"}">${n.alive ? ago(n.last_seen) : "mất liên lạc"}</td>
+      <td class="${b.relayBad ? "bad" : ""}" title="Relay của chi nhánh gửi outbox lên cụm Redpanda (relay_status)">${b.send}</td>
+      <td class="${n.outbox_backlog > 0 ? "warn" : ""}">${n.outbox_backlog}</td>
+      <td class="${sync.down ? "bad" : ""}" title="Sink của bản sao đang trả lời đọc Redpanda (sink_stats)">${sync.down ? (sync.since ? `dừng từ ${clock(sync.since)}` : "dừng") : "đang chạy"}</td>
+      <td>${n.rtt_ms == null ? "–" : n.rtt_ms + " ms"}</td>
+      <td title="Giờ chi nhánh trừ giờ trung tâm, gồm cả thời gian gói tin đi trên mạng">${fmtMs(n.clock_offset_ms)}</td>
+      <td>#${n.last_movement ?? "–"}</td>
+    </tr>`;
+  }).join("");
+  el.innerHTML = `<thead><tr><th class="name">Chi nhánh</th><th>Heartbeat</th><th>Gửi lên Redpanda</th><th>Chờ gửi</th>` +
+    `<th>Bản sao đọc Redpanda</th><th>RTT</th><th>Lệch giờ</th><th>Biến động mới nhất</th></tr></thead><tbody>${body}</tbody>`;
+}
+
+function setKpi(id, value, sub, s = "") {
+  const el = document.getElementById(id);
+  el.className = `kpi ${s}`;
+  el.querySelector("b").textContent = value;
+  el.querySelector("small").textContent = sub;
+}
+function renderKpis(view, sync) {
+  const total = view.inventory.reduce((s, p) => s + p.total, 0);
+  const lows = view.inventory.flatMap((p) => Object.values(p.by_branch)).filter((c) => c.below_reorder).length;
+  const alive = view.nodes.filter((n) => n.alive).length;
+  setKpi("kpi-total", fmtN(total), `${view.inventory.length} mặt hàng, ${view.nodes.length} chi nhánh`);
+  setKpi("kpi-low", fmtN(lows), lows ? "ô (chi nhánh, mặt hàng) dưới ngưỡng" : "không có mặt hàng dưới ngưỡng", lows ? "warn" : "");
+  setKpi("kpi-alive", `${alive}/${view.nodes.length}`,
+         view.nodes.filter((n) => !n.alive).map((n) => `CN${n.branch_id} mất liên lạc`).join(", ") || "đủ heartbeat",
+         alive < view.nodes.length ? "bad" : "");
+  setKpi("kpi-sync", sync.down ? "Dừng" : "Đang chạy", sync.short, sync.down ? "bad" : "");
+}
+
+function renderLowStock(items, nodes) {
+  const alive = new Map(nodes.map((n) => [n.branch_id, n.alive]));
+  const rows = items.flatMap((p) => Object.entries(p.by_branch)
+      .filter(([, c]) => c.below_reorder)
+      .map(([b, c]) => ({ b: Number(b), p, c, ratio: c.qty / p.reorder_point })))
+    .sort((x, y) => x.ratio - y.ratio);
+  const shownRows = rows.slice(0, 8);
+  document.getElementById("low-more").textContent = rows.length > 8 ? `và ${rows.length - 8} mục khác, xem tab Tồn kho` : "";
+  document.getElementById("lowstock").innerHTML = rows.length
+    ? `<thead><tr><th class="name">Chi nhánh</th><th class="name">Mặt hàng</th><th>Tồn / ngưỡng</th></tr></thead><tbody>` +
+      shownRows.map(({ b, p, c, ratio }) => `<tr style="--c:${color(b)}">
+        <td class="name"><span class="bname">CN${b}</span></td>
+        <td class="name">${esc(p.name)}${alive.get(b) === false ? ` <small class="muted">(số cũ)</small>` : ""}</td>
+        <td class="low">${c.qty} / ${p.reorder_point} ${esc(p.unit)}<span class="bar"><i style="width:${Math.round(Math.min(1, ratio) * 100)}%"></i></span></td>
+      </tr>`).join("") + `</tbody>`
+    : `<tbody><tr class="empty-row"><td>Mọi mặt hàng ở mọi chi nhánh đều trên ngưỡng đặt lại.</td></tr></tbody>`;
+}
+
+let invData = null;
 function renderInventory(items, nodes) {
+  invData = { items, nodes };
+  const q = document.getElementById("inv-search").value.trim().toLowerCase();
+  const onlyLow = document.getElementById("inv-low").checked;
   const alive = new Map(nodes.map((n) => [n.branch_id, n.alive]));
   const ids = new Set(nodes.map((n) => n.branch_id));
   items.forEach((p) => Object.keys(p.by_branch).forEach((b) => ids.add(Number(b))));
   const branches = [...ids].sort((a, b) => a - b);
+  const rows = items.filter((p) => (!q || String(p.product_id) === q || p.name.toLowerCase().includes(q)) &&
+                                   (!onlyLow || Object.values(p.by_branch).some((c) => c.below_reorder)));
+  document.getElementById("inv-count").textContent = `${rows.length}/${items.length} mặt hàng`;
 
-  const head = `<tr><th class="id">Mã</th><th class="name">Tên hàng</th>` +
+  const head = `<tr><th class="id">Mã</th><th class="name">Mặt hàng</th>` +
     branches.map((b) => `<th class="b" style="--c:${color(b)}">CN${b}${alive.get(b) === false ? "<small>số cũ</small>" : ""}</th>`).join("") +
-    `<th>Toàn chuỗi</th></tr>`;
+    `<th>Ngưỡng</th><th>Toàn chuỗi</th></tr>`;
 
-  const body = items.map((p) => {
+  const body = rows.map((p) => {
     const cells = branches.map((b) => {
       const c = p.by_branch[b];
       if (!c) return `<td class="stale">–</td>`;
@@ -537,12 +631,15 @@ function renderInventory(items, nodes) {
       const via = c.source === "reconcile" ? `<small class="via">qua đối soát</small>` : "";
       return `<td class="${cls}" title="${title}">${c.qty}${via}</td>`;
     }).join("");
-    return `<tr><td class="id">${p.product_id}</td><td class="name">${esc(p.name)}</td>${cells}<td class="total">${p.total}</td></tr>`;
-  }).join("");
+    return `<tr><td class="id">${p.product_id}</td><td class="name">${esc(p.name)} <small class="muted">${esc(p.unit)}</small></td>${cells}` +
+           `<td class="muted">${p.reorder_point}</td><td class="total">${p.total}</td></tr>`;
+  }).join("") || `<tr class="empty-row"><td colspan="${branches.length + 4}">Không có mặt hàng khớp bộ lọc.</td></tr>`;
 
   document.getElementById("inv").innerHTML = `<thead>${head}</thead><tbody>${body}</tbody>`;
   firstRender = false;
 }
+document.getElementById("inv-search").addEventListener("input", () => invData && renderInventory(invData.items, invData.nodes));
+document.getElementById("inv-low").addEventListener("change", () => invData && renderInventory(invData.items, invData.nodes));
 
 let shownEvents = [];
 let traced = null;           // sự kiện đang truy vết
@@ -551,27 +648,24 @@ const evKey = (e) => `${e.branch_id}-${e.movement_id}`;
 function renderEvents(events) {
   shownEvents = events;
   const el = document.getElementById("events");
+  const head = `<thead><tr><th>Giờ</th><th class="name">Chi nhánh</th><th class="name">Mặt hàng</th><th>SL</th><th>Còn</th>` +
+               `<th title="Từ lúc chi nhánh ghi tới lúc bản sao này nhận">Tới trụ sở sau</th></tr></thead>`;
   if (!events.length) {
-    el.innerHTML = `<li class="empty-ev">Chưa có lượt bán hay nhập nào. Thử bán một món ở màn hình quầy của chi nhánh.</li>`;
+    el.innerHTML = head + `<tbody><tr class="empty-row"><td colspan="6">Chưa có lượt bán hay nhập nào. Thử bán một món ở màn hình quầy của chi nhánh.</td></tr></tbody>`;
     return;
   }
-  el.innerHTML = events.map((e, i) => {
+  el.innerHTML = head + "<tbody>" + events.map((e, i) => {
     const late = e.lag_ms > 5000;
-    const kind = e.move_type === "SALE" ? "bán" : "nhập";
-    const sel = traced && evKey(traced) === evKey(e);
-    return `<li><button type="button" data-i="${i}" class="${sel ? "sel" : ""}" aria-pressed="${sel}" title="Truy vết sự kiện này">
-      <span class="chip" style="--c:${color(e.branch_id)}">CN${e.branch_id}</span>
-      <span class="ev-name">${esc(e.product_name)}</span>
-      <span class="ev-delta ${e.qty_delta < 0 ? "neg" : "pos"}">${e.qty_delta > 0 ? "+" : ""}${e.qty_delta}</span>
-      <span class="ev-meta">#${e.movement_id}, ${kind}, còn ${e.qty_after}.
-        <span class="${late ? "late" : ""}">${late ? "Đến muộn" : "Trễ"} ${fmtMs(e.lag_ms).replace("+", "")}</span></span>
-    </button></li>`;
-  }).join("");
-}
-
-function renderStats(d) {
-  document.getElementById("stats").innerHTML =
-    `Đã áp <b>${d.processed}</b> sự kiện, bỏ qua <b>${d.duplicates}</b> bản trùng`;
+    const sel = Boolean(traced && evKey(traced) === evKey(e));
+    return `<tr data-i="${i}" tabindex="0" aria-selected="${sel}" title="#${e.movement_id}: ${e.move_type === "SALE" ? "bán" : "nhập"}, bấm để truy vết">
+      <td class="t">${clock(e.node_time)}</td>
+      <td class="name"><span class="chip" style="--c:${color(e.branch_id)}">CN${e.branch_id}</span></td>
+      <td class="name">${esc(e.product_name)}</td>
+      <td class="qty ${e.qty_delta > 0 ? "pos" : ""}">${e.qty_delta > 0 ? "+" : ""}${e.qty_delta}</td>
+      <td>${e.qty_after}</td>
+      <td class="lag ${late ? "late" : ""}">${fmtMs(e.lag_ms).replace("+", "")}</td>
+    </tr>`;
+  }).join("") + "</tbody>";
 }
 
 // Nhật ký "bản sao nào vừa trả lời", để thấy nginx chia tải và chuyển hướng khi lỗi.
@@ -581,8 +675,7 @@ function renderServed(name, held) {
   servedTrail.push({ name, held });
   if (servedTrail.length > 12) servedTrail.shift();
   document.getElementById("served").innerHTML =
-    `<div id="served-now"><div class="big ${held ? "held" : ""}">${esc(name)}</div>` +
-    `<span>Lần làm mới này do bản sao máy <b>${esc(name)}</b> trả lời${held ? ", nhưng trễ hơn số đang hiện: giữ số cũ" : ""}</span></div>` +
+    `Máy <b>${esc(name)}</b>${held ? " (trễ, giữ số cũ)" : ""}` +
     `<div class="trail" title="12 lần làm mới gần nhất; ô vàng = bản sao trả lời trễ, giữ số cũ">${servedTrail
       .map((t, i) => `<i class="${i === servedTrail.length - 1 ? "now" : ""} ${t.held ? "held" : ""}">${esc(t.name)}</i>`).join("")}</div>`;
 }
@@ -605,13 +698,13 @@ async function fetchPeers() {
   };
 }
 
+// Trả trạng thái xấu nhất của bảng bản sao, để tô chấm tab Hệ thống
 function renderReplicas(peers) {
   const table = document.getElementById("replica-table");
   if (!peers) {
-    table.innerHTML = `<tbody><tr><td class="name note">Bảng này chỉ có khi mở dashboard qua nginx (<code>http://&lt;IP máy A&gt;/</code>):
+    table.innerHTML = `<tbody><tr><td class="note">Bảng này chỉ có khi mở dashboard qua nginx (<code>http://&lt;IP máy A&gt;/</code>):
       mỗi bản sao được hỏi riêng qua <code>/replica/&lt;X&gt;/api/digest</code>. Đang mở thẳng một bản sao.</td></tr></tbody>`;
-    setDot("ban-sao", "unknown");
-    return;
+    return "unknown";
   }
   const results = replicaNames.map((n) => ({ n, d: peers.digests[n] }));
 
@@ -632,7 +725,7 @@ function renderReplicas(peers) {
     const g = gossipSummary(d);
     const gossip = `<td class="gossip">${g ? `vá <b>${g.patched}</b> ô; ${g.peers}` : "chưa trao đổi"}</td>`;
     const same = lead && d.fingerprint === lead.d.fingerprint;
-    if (!same && worst === "ok") worst = "warn";
+    if (!same) worst = worse(worst, "warn");
     const gap = lead ? lead.d.processed - d.processed : 0;
     const verdict = same ? `<td class="name match">Khớp từng ô</td>`
                          : `<td class="name behind">Đang đuổi theo${gap > 0 ? `, thiếu ${gap} sự kiện` : ""}</td>`;
@@ -640,7 +733,7 @@ function renderReplicas(peers) {
            `<td><code>${esc(d.fingerprint)}</code></td>${verdict}${gossip}</tr>`;
   }).join("");
   table.innerHTML = `<thead>${head}</thead><tbody>${body}</tbody>`;
-  setDot("ban-sao", worst);
+  return worst;
 }
 
 // ---------------------------------------------------------------------------
@@ -717,7 +810,7 @@ function reconcileEdges(digests, now) {
 // Bố cục luồng trái → phải: chi nhánh dồn vào cụm Redpanda (log chung), cụm tách ra tới từng bản sao.
 const topoPrev = { processed: {}, patched: {}, rec: {}, moved: {} };
 const ROW = (i) => 70 + 90 * i;                       // hàng của CN1/A, CN2/B, CN3/C
-const CN = { x: 40, w: 130 }, RP = { x: 620, w: 130 }, CL = { x: 315, y: 45, w: 170, h: 230, mid: 160 };
+const CN = { x: 40, w: 130 }, RP = { x: 620, w: 130 }, CL = { x: 320, y: 110, w: 160, h: 100, mid: 160 };
 const maxMovementOf = (view, id) => view ? maxMovement(view, id) : 0;
 
 // Hộp: chỉ tên; dòng phụ chỉ hiện khi có chuyện. Chi tiết nằm ở tooltip.
@@ -728,10 +821,15 @@ function svgBox(x, y, w, label, sub, s, title, color, extra = "") {
   return `<g class="box ${s} ${extra}"><title>${esc(title)}</title>` +
          `<rect class="frame" x="${x}" y="${y - h / 2}" width="${w}" height="${h}" rx="10"/>${bar}${text}</g>`;
 }
-function svgEdge(d, st, flow, extra = "") {
-  return `<g><title>${esc(st.text)}</title><path class="edge ${st.s} ${flow ? "flow" : ""} ${extra}" d="${d}"/></g>`;
+// Có dữ liệu đi qua thì một chấm chạy dọc đường một lần (thay cho làm cả đường nhấp nháy)
+function svgEdge(d, st, flow, extra = "", dot = "var(--ok)") {
+  // begin="indefinite": SMIL tính giờ theo cả SVG, chèn vào sau thì phải tự gọi beginElement() (renderTopology)
+  const pulse = flow ? `<circle class="pulse" r="5" fill="${dot}" opacity="0"><animateMotion begin="indefinite" dur="1.2s" fill="freeze" path="${d}"/>` +
+                       `<animate begin="indefinite" attributeName="opacity" values="0;1;1;0" keyTimes="0;.1;.85;1" dur="1.2s" fill="freeze"/></circle>` : "";
+  return `<g><title>${esc(st.text)}</title><path class="edge ${st.s} ${extra}" d="${d}"/>${pulse}</g>`;
 }
 
+// Trả trạng thái xấu nhất của sơ đồ (cạnh relay, sink, gossip; broker), để tô chấm tab Hệ thống
 function renderTopology(peers, view) {
   const now = Date.now();
   const direct = !peers;
@@ -739,8 +837,11 @@ function renderTopology(peers, view) {
   const digests = direct ? (view ? { [view.served_by]: view.digest } : {}) : peers.digests;
   const statuses = direct ? {} : peers.statuses;
   const nodesById = new Map((view?.nodes || []).map((n) => [n.branch_id, n]));
-  document.getElementById("topo-view").textContent = direct ? `Chỉ góc nhìn của bản sao ${view?.served_by ?? "?"} (mở qua nginx để thấy cả ba)` : "";
+  document.getElementById("topo-view").textContent = direct
+    ? `Chỉ góc nhìn của bản sao ${view?.served_by ?? "?"} (mở qua nginx để thấy cả ba)` : "góc nhìn ghép từ mọi bản sao qua nginx";
 
+  let worst = "ok";
+  const seen = (s) => { worst = worse(worst, s === "off" ? "warn" : s); };
   const inX = CL.x, outX = CL.x + CL.w, cnR = CN.x + CN.w;
   const edges = [], boxes = [];
   NODES.forEach((x, i) => {
@@ -750,10 +851,11 @@ function renderTopology(peers, view) {
     const relay = relayEdge(statuses[id], node);
     const moved = maxMovementOf(view, id);
     edges.push(svgEdge(`M${cnR},${y} C${cnR + 90},${y} ${inX - 70},${CL.mid} ${inX},${CL.mid}`, relay,
-                       moved > (topoPrev.moved[id] ?? moved)));
+                       moved > (topoPrev.moved[id] ?? moved), "", color(id)));
     topoPrev.moved[id] = moved;
     const d = digests[x];
     const sink = sinkEdge(d, now);
+    seen(relay.s); seen(sink.s);
     edges.push(svgEdge(`M${outX},${CL.mid} C${outX + 70},${CL.mid} ${RP.x - 90},${y} ${RP.x},${y}`, sink,
                        d && d.processed > (topoPrev.processed[x] ?? d.processed)));
     if (d) topoPrev.processed[x] = d.processed;
@@ -778,64 +880,73 @@ function renderTopology(peers, view) {
    ["A", "C", `M${gx},${ROW(0) - 10} C${gx + 66},${ROW(0) - 10} ${gx + 66},${ROW(2) + 10} ${gx},${ROW(2) + 10}`]].forEach(([x, y, path]) => {
     const g = gossipEdge(digests, x, y, now);
     const key = x + y;
-    edges.push(svgEdge(path, g, g.patched > (topoPrev.patched[key] ?? g.patched)));
+    seen(g.s);
+    edges.push(svgEdge(path, g, g.patched > (topoPrev.patched[key] ?? g.patched), "gossip", "var(--pending)"));
     topoPrev.patched[key] = g.patched;
   });
 
   // Kênh 3: đối soát bản sao → chi nhánh, chỉ khi đang đối soát: làn nét đứt đi vòng dưới cụm (bỏ qua Redpanda)
-  const lane = CL.y + CL.h + 25;
+  const lane = ROW(2) + 42;   // dưới hàng cuối, không cắt qua hộp nào
   for (const r of reconcileEdges(digests, now)) {
     const xi = NODES.indexOf(r.x), yi = r.id - 1;
     if (xi < 0 || yi < 0 || yi > 2) continue;
     const key = r.x + r.id, y1 = ROW(xi) + 14, y2 = ROW(yi) + 14;
     edges.push(svgEdge(`M${RP.x},${y1} C${RP.x - 50},${y1} ${RP.x - 50},${lane} ${RP.x - 110},${lane} ` +
                        `L${cnR + 110},${lane} C${cnR + 50},${lane} ${cnR + 50},${y2} ${cnR},${y2}`, r,
-                       r.patched > (topoPrev.rec[key] ?? r.patched), "rec"));
+                       r.patched > (topoPrev.rec[key] ?? r.patched), "rec", "var(--pending)"));
     topoPrev.rec[key] = r.patched;
   }
 
   // Cụm Redpanda: ba broker là ba chấm
   const brokers = [1, 2, 3].map((id) => brokerState(digests, id, now));
+  brokers.forEach((b) => seen(b.s));
   const up = brokers.filter((b) => b.s === "ok" || b.s === "warn").length;
   const known = brokers.some((b) => b.of);
   const cluster = `<g><title>${esc(brokers.map((b) => b.text).join("; "))}</title>` +
-    `<rect class="cluster" x="${CL.x}" y="${CL.y}" width="${CL.w}" height="${CL.h}" rx="16"/>` +
-    brokers.map((b, i) => `<g class="broker ${b.s}"><circle cx="${CL.x + 45 + 40 * i}" cy="${CL.mid}" r="15"/>` +
-                          `<text x="${CL.x + 45 + 40 * i}" y="${CL.mid + 4}">${i + 1}</text></g>`).join("") +
-    `<text class="cluster-sub" x="${CL.x + CL.w / 2}" y="${CL.mid + 40}">${known ? `${up}/3 broker` : "không rõ"}</text></g>`;
+    `<rect class="cluster" x="${CL.x}" y="${CL.y}" width="${CL.w}" height="${CL.h}" rx="14"/>` +
+    `<text class="cluster-title" x="${CL.x + CL.w / 2}" y="${CL.y + 24}">Redpanda</text>` +
+    brokers.map((b, i) => `<g class="broker ${b.s}"><circle cx="${CL.x + 40 + 40 * i}" cy="${CL.mid + 2}" r="12"/>` +
+                          `<text x="${CL.x + 40 + 40 * i}" y="${CL.mid + 6}">${i + 1}</text></g>`).join("") +
+    `<text class="cluster-sub" x="${CL.x + CL.w / 2}" y="${CL.y + CL.h - 12}">${known ? `${up}/3 broker` : "không rõ"}</text></g>`;
 
-  const labels = [["Chi nhánh", CN.x + CN.w / 2], ["Redpanda", CL.x + CL.w / 2], ["Bản sao", RP.x + RP.w / 2]]
+  const labels = [["Chi nhánh", CN.x + CN.w / 2], ["Log chung", CL.x + CL.w / 2], ["Bản sao", RP.x + RP.w / 2]]
     .map(([t, x]) => `<text class="col-label" x="${x}" y="22">${t}</text>`).join("");
   document.getElementById("topo-svg").innerHTML =
     `<desc id="topo-desc">Luồng dữ liệu: ba chi nhánh gửi vào cụm Redpanda, cụm phát tới ba bản sao; các bản sao gossip với nhau.</desc>` +
     labels + edges.join("") + cluster + boxes.join("");
+  document.querySelectorAll("#topo-svg .pulse > *").forEach((a) => a.beginElement());
+  return direct ? "unknown" : worst;
 }
 
 // ---------------------------------------------------------------------------
 // Truy vết một sự kiện: mốc ở chi nhánh (sổ cái, outbox.sent_at), ở broker (LogAppendTime), ở từng bản sao
 // (nhận qua Redpanda, vá bằng gossip/đối soát, hay chưa biết). Gọi qua nginx; mở thẳng thì chỉ bản sao này.
 // ---------------------------------------------------------------------------
-function traceReplicaRow(name, t) {
-  const who = name ? `Bản sao ${esc(name)}` : `Bản sao ${esc(t?.node ?? "này")}`;
-  if (!t) return `<li class="gone"><span class="at">–</span><span class="what">${who}: không liên lạc được</span></li>`;
+// Một bước: trạng thái (ok/warn/bad/unknown), tên, mốc (ts tính từ base; text thay mốc khi chưa có), ghi chú ngắn
+function step(st, label, ts, base, note = "", text = "–") {
+  const d = ts ? Date.parse(ts) - base : 0;
+  // dưới 1 phút ghi tới phần trăm giây để thấy chênh giữa các bước
+  const rel = Math.abs(d) < 1000 || Math.abs(d) >= 60000 ? fmtMs(d)
+            : `${d > 0 ? "+" : "−"}${(Math.abs(d) / 1000).toFixed(2).replace(".", ",")} giây`;
+  const at = ts ? `<span class="at" title="${clockMs(ts)}">${rel}</span>` : `<span class="at">${text}</span>`;
+  return `<li class="${st}"><i></i><b>${label}</b>${at}${note ? `<small>${note}</small>` : ""}</li>`;
+}
+
+function traceReplicaRow(name, t, base) {
+  const who = `Bản sao ${esc(name ?? t?.node ?? "này")}`;
+  if (!t) return step("bad", who, null, base, "", "mất liên lạc");
   const c = t.cell;
   if (t.via === "kafka") {
-    const e = t.event;
-    const lag = Date.parse(e.received_at) - Date.parse(e.node_time);
     const patched = c && c.source !== "kafka" && c.last_movement === t.movement_id
-      ? `<small>Trước đó ô đã được vá bằng ${c.source === "gossip" ? "gossip" : "đối soát"} lúc ${clockMs(c.updated_at)}</small>` : "";
-    return `<li><span class="at">${clockMs(e.received_at)}</span><span class="what">${who} nhận qua Redpanda` +
-           ` (${fmtMs(lag).replace("+", "")} sau khi chi nhánh ghi)${patched}</span></li>`;
+      ? `đã vá trước bằng ${c.source === "gossip" ? "gossip" : "đối soát"} lúc ${clockMs(c.updated_at)}` : "";
+    return step("ok", who, t.event.received_at, base, patched);
   }
   if (t.via === "gossip" || t.via === "reconcile")
-    return `<li class="patched"><span class="at">${clockMs(c.updated_at)}</span><span class="what">${who}: ô được vá bằng ` +
-           `${t.via === "gossip" ? "gossip (bản sao khác)" : "đối soát (đọc thẳng chi nhánh)"}, tới #${c.last_movement}` +
-           `<small>Không có dòng nhật ký: kênh này chỉ mang số tồn mới nhất của ô</small></span></li>`;
+    return step("warn", who, c.updated_at, base,
+      `vá bằng ${t.via === "gossip" ? "gossip" : "đối soát"} tới #${c.last_movement}, không qua Redpanda`);
   if (t.via === "superseded")
-    return `<li class="patched"><span class="at">–</span><span class="what">${who}: bỏ qua sự kiện này, ô đã có #${c.last_movement} ` +
-           `mới hơn nhận qua Redpanda<small>Không có dòng nhật ký (ví dụ sau rpk group seek --to end); số tồn vẫn đúng</small></span></li>`;
-  return `<li class="missing"><span class="at">–</span><span class="what">${who}: chưa biết sự kiện này` +
-         `${c ? ` (ô đang ở #${c.last_movement})` : ""}</span></li>`;
+    return step("unknown", who, null, base, `đã có #${c.last_movement} mới hơn, số tồn vẫn đúng`, "bỏ qua");
+  return step("bad", who, null, base, c ? `ô đang ở #${c.last_movement}` : "", "chưa nhận");
 }
 
 async function runTrace() {
@@ -843,12 +954,11 @@ async function runTrace() {
   const e = traced;
   document.getElementById("trace-empty").hidden = true;
   document.getElementById("trace-body").hidden = false;
-  document.getElementById("trace").style.setProperty("--c", color(e.branch_id));
   const kind = e.move_type === "SALE" ? "bán" : e.move_type === "RECEIPT" ? "nhập" : e.move_type;
   document.getElementById("trace-title").innerHTML =
-    `CN${e.branch_id} #${e.movement_id} <span>${esc(e.product_name)}, ${kind} ${Math.abs(e.qty_delta)}, còn ${e.qty_after}</span>`;
+    `CN${e.branch_id} #${e.movement_id}<small>${esc(e.product_name)}, ${kind} ${Math.abs(e.qty_delta)}</small>`;
   const list = document.getElementById("trace-list");
-  list.innerHTML = `<li><span class="at">…</span><span class="what">Đang hỏi chi nhánh và các bản sao…</span></li>`;
+  list.innerHTML = step("unknown", "Đang hỏi chi nhánh và các bản sao…", null, 0, "", "");
 
   const q = `branch_id=${e.branch_id}&movement_id=${e.movement_id}&product_id=${e.product_id}`;
   const names = replicaNames?.length ? replicaNames : [null];
@@ -857,34 +967,42 @@ async function runTrace() {
     Promise.all(names.map((n) => orNull(fetchWithTimeout(n ? `/replica/${n}/api/trace?${q}` : `api/trace?${q}`, 2500)))),
   ]);
   const ev = traces.find((t) => t?.event)?.event;   // vị trí và timestamp Kafka giống nhau ở mọi bản sao đã nhận
-  const rows = [];
-  rows.push(`<li><span class="at">${clockMs(mv?.node_time ?? e.node_time)}</span><span class="what">CN${e.branch_id} ghi biến động vào sổ cái và outbox (cùng transaction)<small>Giờ chi nhánh</small></span></li>`);
-  // Thứ tự dòng theo luồng: broker ghi rồi mới xác nhận, relay nhận xác nhận rồi mới đánh dấu sent_at (PT-03)
+  const cn = `CN${e.branch_id}`;
+  const t0 = mv?.node_time ?? e.node_time;
+  const base = Date.parse(t0);
+  const rows = [`<li class="ok"><i></i><b>${cn} ghi sổ</b><span class="at" title="${clockMs(t0)}">${clock(t0)}</span>` +
+                 `<small>sổ cái và outbox cùng một transaction</small></li>`];
+  // Thứ tự theo luồng: broker ghi rồi mới xác nhận, relay nhận xác nhận rồi mới đánh dấu sent_at (PT-03)
   rows.push(ev?.kafka_ts
-    ? `<li><span class="at">${clockMs(ev.kafka_ts)}</span><span class="what">Broker leader ghi vào phân hoạch ${ev.kafka_partition}, offset ${ev.kafka_offset}<small>Giờ broker (LogAppendTime)</small></span></li>`
-    : `<li class="missing"><span class="at">–</span><span class="what">Chưa bản sao nào nhận qua Redpanda nên chưa có mốc broker</span></li>`);
-  rows.push(mv === undefined
-    ? `<li><span class="at">–</span><span class="what">Lúc relay đánh dấu đã gửi: mở dashboard qua nginx để hỏi chi nhánh</span></li>`
-    : mv === null ? `<li class="gone"><span class="at">–</span><span class="what">Không hỏi được CN${e.branch_id} lúc relay đánh dấu đã gửi (chi nhánh mất liên lạc?)</span></li>`
-    : mv.sent_at ? `<li><span class="at">${clockMs(mv.sent_at)}</span><span class="what">Relay CN${e.branch_id} nhận xác nhận của cụm, đánh dấu đã gửi (outbox.sent_at)<small>Giờ chi nhánh</small></span></li>`
-    : `<li class="missing"><span class="at">–</span><span class="what">Relay CN${e.branch_id} chưa gửi được (còn trong outbox)</span></li>`);
-  names.forEach((n, i) => rows.push(traceReplicaRow(n, traces[i])));
+    ? step("ok", "Vào Redpanda", ev.kafka_ts, base, `phân hoạch ${ev.kafka_partition}, offset ${ev.kafka_offset}`)
+    : step("unknown", "Vào Redpanda", null, base, "chưa bản sao nào nhận qua Redpanda", "chưa rõ"));
+  if (mv === null) rows.push(step("bad", `${cn} xác nhận đã gửi`, null, base, "không hỏi được chi nhánh", "mất liên lạc"));
+  else if (mv) rows.push(mv.sent_at
+    ? step("ok", `${cn} xác nhận đã gửi`, mv.sent_at, base)
+    : step("warn", `${cn} xác nhận đã gửi`, null, base, "còn trong outbox, chờ Redpanda", "chưa gửi"));
+  // mv === undefined: mở thẳng một bản sao, không hỏi được chi nhánh, bỏ bước này
+  names.forEach((n, i) => rows.push(traceReplicaRow(n, traces[i], base)));
   list.innerHTML = rows.join("");
 }
 
-document.getElementById("events").addEventListener("click", (ev) => {
-  const b = ev.target.closest("button[data-i]");
-  if (!b) return;
-  traced = shownEvents[Number(b.dataset.i)];
+function pickEvent(tr) {
+  traced = shownEvents[Number(tr.dataset.i)];
   renderEvents(shownEvents);
   runTrace();
+}
+document.getElementById("events").addEventListener("click", (ev) => {
+  const tr = ev.target.closest("tr[data-i]");
+  if (tr) pickEvent(tr);
+});
+document.getElementById("events").addEventListener("keydown", (ev) => {
+  const tr = ev.target.closest("tr[data-i]");
+  if (tr && (ev.key === "Enter" || ev.key === " ")) { ev.preventDefault(); pickEvent(tr); }
 });
 document.getElementById("trace-again").addEventListener("click", runTrace);
 document.getElementById("trace-close").addEventListener("click", () => {
   traced = null;
   document.getElementById("trace-body").hidden = true;
   document.getElementById("trace-empty").hidden = false;
-  document.getElementById("trace").style.removeProperty("--c");
   renderEvents(shownEvents);
 });
 
@@ -904,8 +1022,9 @@ async function tick() {
     if (cmp.accept) {
       shown = o;
       lagging.delete(o.served_by);
-      renderInventory(o.inventory, o.nodes); renderEvents(o.events);
-      renderStats(o.digest); renderSync(syncState(o.digest), o.digest);
+      renderInventory(o.inventory, o.nodes); renderLowStock(o.inventory, o.nodes); renderEvents(o.events);
+      renderSync(syncState(o.digest), o.digest);
+      document.getElementById("updated").textContent = `cập nhật ${clock(Date.now())} · bản sao ${o.served_by}`;
     } else {
       lagging.set(o.served_by, { behind: cmp.behind, at: Date.now() });
     }
@@ -913,10 +1032,13 @@ async function tick() {
     renderMono();
   }
   const peers = await fetchPeers();
-  renderReplicas(peers);
+  const replicaState = renderReplicas(peers);
   if (shown) {
-    renderNodes(shown.nodes, syncState(shown.digest), peers?.statuses);
-    renderTopology(peers, shown);
+    const sync = syncState(shown.digest);
+    renderKpis(shown, sync);
+    renderBranches(shown.nodes, sync, peers?.statuses);
+    renderNodeTable(shown.nodes, sync, peers?.statuses);
+    setDot("he-thong", worse(worse(renderTopology(peers, shown), replicaState), sync.down ? "bad" : "ok"));
   }
 }
 
@@ -957,6 +1079,10 @@ function selftest() {
   check("gossip cả hai chiều mới -> ok", gossipEdge({ A: gp("B", { last_ok_at: iso(2) }), B: gp("A", { last_ok_at: iso(4) }) }, "A", "B", now).s === "ok");
   check("relay lỗi -> bad", relayEdge({ relay: { failing_since: iso(5) }, outbox_backlog: 9 }).s === "bad");
   check("relay tồn đọng -> warn", relayEdge({ relay: {}, outbox_backlog: 2 }).s === "warn");
+
+  const sync = { down: false };
+  check("chi nhánh mất heartbeat -> bad", branchState({ alive: false, last_seen: iso(40) }, sync, undefined).s === "bad");
+  check("còn sống mà relay lỗi -> đồng bộ dừng", branchState({ alive: true }, sync, { relay: { failing_since: iso(5) } }).label === "Còn sống, đồng bộ dừng");
 
   const failed = results.filter(([, ok]) => !ok);
   const el = document.getElementById("selftest");

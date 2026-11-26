@@ -25,9 +25,10 @@ code, không sửa kỳ vọng.
   `http://<BROKER_HOST>:8001` (máy thật). Chế độ máy thật: `config -q` với `may-a/b/c.env`;
   vòng 6 gom các kịch bản chính vào `scripts/chaos-check.sh`.
 - Giao diện (vòng 4): repo không có công cụ test JavaScript. Logic thuần của `web/dashboard.html` (đọc đơn điệu
-  `compareViews`; màu cạnh `relayEdge`, `sinkEdge`, `brokerState`, `gossipEdge`) kiểm bằng `?selftest=1`: mở
-  `http://localhost/?selftest=1`, dải đầu trang ghi "Selftest: n/n đạt" (và in ra console). **Chạy tay, không nằm
-  trong `make check`.** Phần hiển thị kiểm bằng kịch bản chạy tay K1–K9, K11, K12. Phần server phục vụ truy vết
+  `compareViews`; màu cạnh `relayEdge`, `sinkEdge`, `brokerState`, `gossipEdge`; trạng thái chi nhánh `branchState`)
+  và của `web/pos.html` (kết quả gửi một dòng phiếu `settle`, giữ hay bỏ `request_id`; tìm hàng `match`) kiểm bằng
+  `?selftest=1`: mở `http://localhost/?selftest=1` hoặc `http://localhost/cn2/?selftest=1`, thanh bên / dưới phiếu
+  ghi "Selftest: n/n đạt" (và in ra console). **Chạy tay, không nằm trong `make check`.** Phần hiển thị kiểm bằng kịch bản chạy tay K1–K9, K11, K12. Phần server phục vụ truy vết
   (`/api/trace`, `/api/movement/{movement_id}`, `kafka_ts`, `brokers_up`, `last_movement`) có pytest như mọi phần khác.
 
 ## 2. Quy tắc và test chứng minh
@@ -90,3 +91,10 @@ outbox về 0 sau 10 giây, sink đọc lại sau ~61 giây, dấu vân tay khô
 ≤ 10 giây, `brokers_up` về `[1,2,3]` sau ~25 giây. K8: gossip vá B (5 ô), `processed` B thấp hơn 5. K9: 3 bản sao khớp
 khi broker dừng, 44 ô "qua đối soát". Selftest giao diện (`?selftest=1`): 20/20 đạt. POS: số lượng 7 bán đúng 7; 0,
 1001, 2,5 bị chặn trên trình duyệt, tồn không đổi.
+
+Làm lại giao diện theo nghiệp vụ (26/11/2026, 3 node một máy): selftest dashboard 22/22, POS 5/5. POS qua `/cn2/`:
+gõ "3" + Enter, gõ "gạo" + Enter, tăng dòng đầu lên 2, Thanh toán: tồn mã 3 130 → 128, mã 7 70 → 69, "Đã bán 2 mặt
+hàng. Xử lý tại chỗ trong 27,8 ms". Dashboard: bốn tab chỉ hiện đúng tab chọn, Tổng quan đủ 4 ô số liệu và bảng chi
+nhánh, truy vết vẫn đủ mốc. Chưa chạy lại K1–K12 đầy đủ trên bố cục này (logic không đổi, chỉ đổi chỗ hiển thị).
+Tab Sự kiện thành bảng một dòng mỗi sự kiện, truy vết thành các bước "+x,xx giây": chọn #126 bằng Enter khi dừng sink
+B, được A +1,96 giây, C +1,50 giây, B vàng +12,34 giây "vá bằng gossip tới #126"; selftest vẫn 22/22.

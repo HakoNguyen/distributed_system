@@ -4,19 +4,24 @@ HTML + JS thuần, mỗi màn hình một file, không framework, không bước
 trong image: sửa xong phải build lại, `make local-up` hoặc `make up`).
 
 - `pos.html`: màn hình quầy, do `branch_api` phục vụ. Gọi API bằng đường dẫn TƯƠNG ĐỐI (`api/inventory`, không có
-  `/` đầu), vì nginx mở trang này dưới tiền tố `/cn2/`. Một ô "Số lượng" chung (1–1000, đúng giới hạn `StockChange`),
-  kiểm ngay trên trình duyệt trước khi gửi.
-- `dashboard.html`: dashboard toàn chuỗi, do `replica_api` phục vụ. Bố cục: thanh bên (menu tab, bản sao đang trả
-  lời, đồng bộ, cảnh báo đọc đơn điệu, selftest) và bốn tab `#tong-quan`, `#ton-kho`, `#su-kien`, `#ban-sao` (tab
-  đang mở nằm trong `location.hash`, `docs/demo.md` mục 5 dùng các tên này). Mọi tab vẫn được vẽ mỗi lần làm mới, tab
-  ẩn chỉ có thuộc tính `hidden`. Mỗi lần làm mới gọi một `api/overview` để số
-  không bị trộn giữa hai bản sao. Đọc đơn điệu (`docs/spec.md` mục 5): chỉ nhận phản hồi mà mọi ô có
-  `last_movement` không cũ hơn số đang hiện (`compareViews`), không thì giữ nguyên phản hồi cũ và gắn nhãn bản sao
-  trễ. Phần chỉ có khi mở qua nginx: bảng so bản sao và sơ đồ topology gọi `/lb/replicas.json`,
-  `/replica/<X>/api/digest`, `/cn<N>/api/status`; truy vết gọi `/cn<N>/api/movement/{id}` và
+  `/` đầu), vì nginx mở trang này dưới tiền tố `/cn2/`. Dạng phiếu: chế độ Bán hàng / Nhập hàng, ô tìm (gõ mã rồi
+  Enter như máy quét), phiếu với số lượng 1–1000 (đúng giới hạn `StockChange`). Thanh toán gửi từng dòng một
+  `api/sale` (hoặc `api/receipt`); mỗi dòng giữ một `request_id`: lỗi mạng thì giữ mã và khoá dòng để gửi lại không
+  trừ hai lần (PT-08), server từ chối thì bỏ mã (`settle`). Giữ: dải trạng thái gửi, chip RTT, câu "Xử lý tại chỗ trong
+  … ms", nút "Bán 20 đơn ngẫu nhiên" (mục Công cụ demo), vì kịch bản K1–K9 dùng. Tự kiểm: `?selftest=1`.
+- `dashboard.html`: dashboard trụ sở, do `replica_api` phục vụ. Thanh bên (menu, bản sao trả lời, đồng bộ tóm tắt,
+  selftest) và bốn tab `#tong-quan` (ô số liệu, bảng chi nhánh, cần đặt thêm hàng), `#ton-kho` (tìm, lọc dưới
+  ngưỡng), `#su-kien` (danh sách, truy vết), `#he-thong` (đồng bộ của bản sao đang trả lời, sơ đồ, bảng kỹ thuật
+  chi nhánh, bảng bản sao). Tab đang mở nằm trong `location.hash`; `docs/demo.md` mục 5 dùng các tên này. Tab ẩn bằng
+  thuộc tính `hidden` (luật `[hidden]` có `!important` vì panel có `display` riêng); mọi tab vẫn được vẽ mỗi lần làm
+  mới. Mỗi lần làm mới gọi một `api/overview` để số không bị trộn giữa hai bản sao. Đọc đơn điệu
+  (`docs/spec.md` mục 5): chỉ nhận phản hồi mà mọi ô có `last_movement` không cũ hơn số đang hiện (`compareViews`),
+  không thì giữ nguyên phản hồi cũ và gắn nhãn bản sao trễ. Phần chỉ có khi mở qua nginx: bảng bản sao và sơ đồ gọi
+  `/lb/replicas.json`, `/replica/<X>/api/digest`, `/cn<N>/api/status`; truy vết gọi `/cn<N>/api/movement/{id}` và
   `/replica/<X>/api/trace`. Mở thẳng một bản sao thì chỉ có góc nhìn của bản sao đó.
-- Logic thuần (`compareViews`, `relayEdge`, `sinkEdge`, `brokerState`, `gossipEdge`) nhận `now` làm tham số, kiểm
-  bằng `?selftest=1` (chạy tay trong trình duyệt, không nằm trong `make check`). Thêm logic thì thêm `check(...)`.
+- Logic thuần (`compareViews`, `relayEdge`, `sinkEdge`, `brokerState`, `gossipEdge`, `branchState`) nhận `now` hoặc
+  dữ liệu làm tham số, kiểm bằng `?selftest=1` (chạy tay trong trình duyệt, không nằm trong `make check`). Thêm logic
+  thì thêm `check(...)`.
 - Màu và font đặt bằng biến CSS ở `:root`.
 
 Quy tắc chung xem CLAUDE.md ở gốc repo.

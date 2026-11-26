@@ -5,94 +5,156 @@
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>MiniGo · Quầy</title>
 <link rel="preconnect" href="https://fonts.googleapis.com">
-<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Be+Vietnam+Pro:wght@400;500;600;700;800&display=swap">
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Be+Vietnam+Pro:wght@400;500;600;700&display=swap">
 <style>
   :root {
-    --paper: #F3F5F4; --card: #fff; --ink: #16212B; --muted: #5B6873; --rule: #D3DADE;
-    --alert: #C8312A; --alert-bg: #FBEDEC; --pending: #B97400;
+    --paper: #F4F5F7; --card: #fff; --ink: #18212A; --muted: #66727D; --rule: #E3E7EA;
+    --alert: #C8312A; --alert-bg: #FCEEED; --pending: #A86A00; --pending-bg: #FFF5E0; --ok: #0E7C66; --ok-bg: #E4F4EF;
     --c: #0E7C66;   /* màu chi nhánh, JS đổi theo BRANCH_ID */
     --font: "Be Vietnam Pro", system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
   }
   * { box-sizing: border-box; }
-  body { margin: 0; background: var(--paper); color: var(--ink); font: 15px/1.5 var(--font); font-variant-numeric: tabular-nums; }
-  header {
-    background: var(--c); color: #fff; padding: 1rem 1.5rem;
-    display: flex; align-items: center; justify-content: space-between; gap: 1rem; flex-wrap: wrap;
-  }
-  header h1 { margin: 0; font-size: 1.7rem; font-weight: 800; letter-spacing: -0.01em; line-height: 1.15; }
-  header p { margin: 0; opacity: .85; }
-  button {
-    font: inherit; font-weight: 600; cursor: pointer; border-radius: 6px; padding: .45rem .9rem;
-    border: 1.5px solid var(--c); background: #fff; color: var(--c);
-  }
-  button:hover { background: color-mix(in srgb, var(--c) 8%, #fff); }
-  button:focus-visible { outline: 3px solid var(--ink); outline-offset: 2px; }
-  button:disabled { opacity: .5; cursor: wait; }
-  button.solid { background: var(--c); color: #fff; }
-  header button { border-color: #fff; }
+  body { margin: 0; background: var(--paper); color: var(--ink); font: 15px/1.45 var(--font); font-variant-numeric: tabular-nums; }
+  button { font: inherit; cursor: pointer; }
+  button:focus-visible, input:focus-visible { outline: 2px solid var(--c); outline-offset: 2px; }
 
-  #link { padding: .7rem 1.5rem; font-weight: 500; border-bottom: 1px solid var(--rule); background: var(--card); }
-  #link.down { background: var(--alert-bg); color: var(--alert); border-bottom-color: var(--alert); }
-  #link b { font-weight: 700; }
-
-  #links { display: flex; flex-wrap: wrap; gap: .5rem; padding: .5rem 1.5rem 0; font-size: .88rem; color: var(--muted); }
-  #links span { background: var(--card); border: 1px solid var(--rule); border-radius: 999px; padding: .1rem .7rem; }
+  /* ---------- Đầu trang ---------- */
+  header { display: flex; align-items: center; justify-content: space-between; gap: 1rem; flex-wrap: wrap;
+           background: var(--card); border-bottom: 1px solid var(--rule); border-top: 4px solid var(--c); padding: .7rem 1.5rem; }
+  .who { display: flex; align-items: baseline; gap: .7rem; }
+  header h1 { margin: 0; font-size: 1.3rem; font-weight: 700; }
+  header .role { color: var(--muted); }
+  #links { display: flex; flex-wrap: wrap; gap: .4rem; font-size: .82rem; }
+  #links span { border: 1px solid var(--rule); border-radius: 999px; padding: .1rem .6rem; color: var(--muted); }
   #links span b { color: var(--ink); font-weight: 600; }
   #links span.down { border-color: var(--alert); color: var(--alert); }
   #links span.down b { color: var(--alert); }
-  #toast { min-height: 1.6rem; padding: .6rem 1.5rem 0; color: var(--muted); }
-  #toast.err { color: var(--alert); font-weight: 600; }
+  #link { padding: .5rem 1.5rem; font-size: .9rem; background: var(--ok-bg); color: var(--ok); font-weight: 500; }
+  #link.busy { background: var(--pending-bg); color: var(--pending); }
+  #link.down { background: var(--alert-bg); color: var(--alert); }
+  #link b { font-weight: 700; }
 
-  #grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(190px, 1fr)); gap: .8rem; padding: .6rem 1.5rem 2rem; }
-  /* Mỗi ô là một "thẻ giá trên kệ" */
-  .tag { background: var(--card); border-radius: 8px; padding: .75rem .9rem .8rem; border-top: 5px solid var(--c); display: flex; flex-direction: column; gap: .35rem; }
-  .tag .name { font-weight: 600; line-height: 1.3; min-height: 2.6em; }
-  .tag .qty { font-size: 2rem; font-weight: 800; line-height: 1; }
-  .tag .qty small { font-size: .9rem; font-weight: 500; color: var(--muted); margin-left: .25rem; }
-  .tag .meta { font-size: .8rem; color: var(--muted); }
-  .tag.low { border-top-color: var(--alert); }
-  .tag.low .qty { color: var(--alert); }
-  .tag .actions { display: flex; gap: .4rem; margin-top: .2rem; }
-  .tag .actions button { flex: 1; padding: .35rem .4rem; white-space: nowrap; }
-  #qty-bar { display: flex; align-items: center; gap: .6rem; padding: .6rem 1.5rem 0; font-weight: 600; }
-  #qty-bar input { font: inherit; font-weight: 700; width: 6.5rem; padding: .35rem .5rem; border-radius: 6px;
-                   border: 1.5px solid var(--c); background: #fff; color: var(--ink); }
-  #qty-bar input:focus-visible { outline: 3px solid var(--ink); outline-offset: 2px; }
-  #qty-bar input:invalid { border-color: var(--alert); color: var(--alert); }
-  #qty-bar small { font-weight: 400; color: var(--muted); }
+  /* ---------- Bố cục: danh mục | phiếu ---------- */
+  .layout { display: grid; grid-template-columns: minmax(0, 1fr) 380px; gap: 1.2rem; padding: 1.2rem 1.5rem 2rem; align-items: start; }
+  .panel { background: var(--card); border-radius: 12px; border: 1px solid var(--rule); }
+
+  .toolbar { display: flex; gap: .8rem; padding: .9rem 1rem; border-bottom: 1px solid var(--rule); flex-wrap: wrap; }
+  .seg { display: inline-flex; background: var(--paper); border-radius: 9px; padding: 3px; }
+  .seg button { border: 0; background: transparent; padding: .45rem 1rem; border-radius: 7px; font-weight: 600; color: var(--muted); }
+  .seg button[aria-checked="true"] { background: var(--card); color: var(--ink); box-shadow: 0 1px 2px rgba(0,0,0,.12); }
+  .seg button:disabled { cursor: not-allowed; opacity: .6; }
+  #search { flex: 1; min-width: 220px; font: inherit; padding: .5rem .8rem; border: 1px solid var(--rule); border-radius: 9px; background: #fff; }
+
+  .products { max-height: calc(100vh - 13rem); overflow-y: auto; }
+  table { width: 100%; border-collapse: collapse; }
+  th { position: sticky; top: 0; background: #FAFBFC; text-align: left; font-size: .78rem; font-weight: 600; color: var(--muted);
+       text-transform: uppercase; letter-spacing: .04em; padding: .55rem 1rem; border-bottom: 1px solid var(--rule); }
+  td { padding: .55rem 1rem; border-bottom: 1px solid var(--rule); }
+  tr:last-child td { border-bottom: 0; }
+  th.num, td.num { text-align: right; }
+  td.code { color: var(--muted); width: 3.5rem; }
+  tbody tr { cursor: pointer; }
+  tbody tr:hover td { background: #F7F9FA; }
+  td .unit { color: var(--muted); font-size: .85rem; margin-left: .2rem; }
+  td.low { color: var(--alert); font-weight: 600; }
+  td.low small { display: block; font-weight: 400; font-size: .75rem; }
+  td.act { width: 1%; }
+  .add { border: 1px solid var(--rule); background: #fff; border-radius: 7px; padding: .2rem .7rem; font-weight: 600; color: var(--c); white-space: nowrap; }
+  .add:hover { border-color: var(--c); }
+  .none { padding: 1.5rem 1rem; color: var(--muted); text-align: center; }
+
+  /* ---------- Phiếu ---------- */
+  .ticket { position: sticky; top: 1rem; display: flex; flex-direction: column; }
+  .ticket h2 { margin: 0; padding: .9rem 1rem; font-size: 1.05rem; border-bottom: 1px solid var(--rule); }
+  #lines { list-style: none; margin: 0; padding: 0; max-height: calc(100vh - 22rem); overflow-y: auto; }
+  #lines li { padding: .65rem 1rem; border-bottom: 1px solid var(--rule); display: grid; grid-template-columns: 1fr auto auto; gap: .3rem .6rem; align-items: center; }
+  #lines .name { font-weight: 600; line-height: 1.3; }
+  #lines .name small { display: block; font-weight: 400; color: var(--muted); font-size: .8rem; }
+  .qty { display: inline-flex; align-items: center; border: 1px solid var(--rule); border-radius: 8px; }
+  .qty button { border: 0; background: transparent; width: 1.9rem; height: 1.9rem; font-weight: 700; color: var(--muted); }
+  .qty input { width: 3.4rem; border: 0; text-align: center; font: inherit; font-weight: 600; padding: 0; }
+  .qty input:invalid { color: var(--alert); }
+  .rm { border: 0; background: transparent; color: var(--muted); font-size: 1.1rem; width: 1.8rem; height: 1.8rem; border-radius: 6px; }
+  .rm:hover { background: var(--alert-bg); color: var(--alert); }
+  #lines .msg { grid-column: 1 / 4; font-size: .82rem; }
+  #lines .msg.err { color: var(--alert); }
+  #lines .msg.warn { color: var(--pending); }
+  .empty-ticket { padding: 2rem 1rem; text-align: center; color: var(--muted); }
+  .ticket-foot { padding: .9rem 1rem; display: grid; gap: .6rem; }
+  #summary { color: var(--muted); }
+  #summary b { color: var(--ink); }
+  .actions { display: grid; grid-template-columns: 1fr auto; gap: .5rem; }
+  #submit { border: 0; border-radius: 9px; padding: .75rem; font-weight: 700; font-size: 1rem; background: var(--c); color: #fff; }
+  #submit:disabled { opacity: .45; cursor: not-allowed; }
+  #clear { border: 1px solid var(--rule); background: #fff; border-radius: 9px; padding: .75rem 1rem; font-weight: 600; color: var(--muted); }
+  #toast { min-height: 1.2rem; font-size: .9rem; color: var(--ok); }
+  #toast.err { color: var(--alert); }
+  .demo { border-top: 1px dashed var(--rule); padding: .7rem 1rem; font-size: .85rem; color: var(--muted); }
+  .demo summary { cursor: pointer; }
+  #bulk { margin-top: .5rem; border: 1px solid var(--rule); background: #fff; border-radius: 8px; padding: .4rem .8rem; font-weight: 600; color: var(--ink); }
+  #selftest { display: none; margin: .5rem 1rem; padding: .4rem .7rem; border-radius: 8px; font-size: .85rem; font-weight: 600; }
+
+  @media (max-width: 900px) {
+    .layout { grid-template-columns: 1fr; padding: 1rem; }
+    .ticket { position: static; }
+    .products, #lines { max-height: none; }
+    header, #link { padding-left: 1rem; padding-right: 1rem; }
+  }
 </style>
 </head>
 <body>
 <header>
-  <div>
-    <h1 id="title">Đang tải…</h1>
-    <p id="subtitle">Quầy bán hàng. Dữ liệu nằm ngay tại chi nhánh.</p>
-  </div>
-  <button id="bulk" class="solid" type="button">Bán 20 đơn ngẫu nhiên</button>
+  <div class="who"><h1 id="title">Đang tải…</h1><span class="role">Quầy</span></div>
+  <div id="links" aria-label="Độ trễ tới các bản sao trung tâm"></div>
 </header>
 <div id="link" role="status">Đang kiểm tra kết nối tới trung tâm…</div>
-<div id="links" aria-label="Đường nối tới các bản sao trung tâm"></div>
-<div id="qty-bar">
-  <label for="qty">Số lượng mỗi lần bấm</label>
-  <input id="qty" type="number" min="1" max="1000" step="1" value="1" inputmode="numeric">
-  <small>từ 1 đến 1000, dùng cho cả Bán và Nhập</small>
+
+<div class="layout">
+  <section class="panel">
+    <div class="toolbar">
+      <div class="seg" role="radiogroup" aria-label="Loại phiếu">
+        <button type="button" role="radio" data-mode="sale" aria-checked="true">Bán hàng</button>
+        <button type="button" role="radio" data-mode="receipt" aria-checked="false">Nhập hàng</button>
+      </div>
+      <input id="search" type="search" autocomplete="off" placeholder="Quét hoặc gõ mã / tên hàng, Enter để thêm vào phiếu"
+             aria-label="Tìm mặt hàng">
+    </div>
+    <div class="products">
+      <table>
+        <thead><tr><th>Mã</th><th>Mặt hàng</th><th class="num">Tồn</th><th></th></tr></thead>
+        <tbody id="products"></tbody>
+      </table>
+    </div>
+  </section>
+
+  <aside class="panel ticket" aria-labelledby="ticket-title">
+    <h2 id="ticket-title">Phiếu bán</h2>
+    <ul id="lines"></ul>
+    <div class="ticket-foot">
+      <div id="summary"></div>
+      <div class="actions">
+        <button type="button" id="submit">Thanh toán</button>
+        <button type="button" id="clear">Xoá phiếu</button>
+      </div>
+      <div id="toast" aria-live="polite"></div>
+    </div>
+    <details class="demo">
+      <summary>Công cụ demo</summary>
+      <button id="bulk" type="button">Bán 20 đơn ngẫu nhiên</button>
+    </details>
+    <div id="selftest" role="status"></div>
+  </aside>
 </div>
-<div id="toast" aria-live="polite"></div>
-<div id="grid"></div>
 
 <script>
 const COLORS = { 1: "#0E7C66", 2: "#2F4BB3", 3: "#A15C07" };
 const esc = (s) => String(s).replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]));
+const ms = (x) => String(Math.round(x * 10) / 10).replace(".", ",");
 
-// Mã yêu cầu duy nhất cho mỗi lần bấm: bấm lặp hay mạng chập chờn thì server
-// vẫn chỉ trừ một lần. (crypto.randomUUID chỉ có trên localhost/https nên có dự phòng.)
+// Mã yêu cầu duy nhất cho mỗi dòng phiếu: gửi lại (mạng chập chờn) thì server vẫn chỉ trừ một lần (PT-08).
+// crypto.randomUUID chỉ có trên localhost/https nên có dự phòng.
 const newRequestId = () =>
   (crypto.randomUUID ? crypto.randomUUID() : `${Date.now()}-${Math.random().toString(16).slice(2)}`);
-
-function toast(msg, isErr = false) {
-  const t = document.getElementById("toast");
-  t.textContent = msg; t.className = isErr ? "err" : "";
-}
 
 async function post(url, body) {
   const r = await fetch(url, { method: "POST", headers: { "Content-Type": "application/json" }, body: body ? JSON.stringify(body) : undefined });
@@ -101,45 +163,163 @@ async function post(url, body) {
   return data;
 }
 
-async function change(kind, product, qty) {
-  try {
-    const res = await post(`api/${kind}`, { product_id: product.product_id, qty, request_id: newRequestId() });
-    toast(`${kind === "sale" ? "Đã bán" : "Đã nhập"} ${qty} ${product.unit} ${product.name}. Còn ${res.qty_on_hand}. ` +
-          `Xử lý tại chỗ trong ${String(res.elapsed_ms).replace(".", ",")} ms.`);
-  } catch (e) {
-    const d = e.data?.detail || {};
-    if (d.error === "insufficient_stock") toast(`Không đủ hàng: ${product.name} chỉ còn ${d.qty_on_hand}.`, true);
-    else if (d.error === "version_conflict") toast("Số tồn vừa bị quầy khác sửa. Đã tải lại, thử bấm lần nữa.", true);
-    else if (Array.isArray(e.data?.detail)) toast("Số lượng phải là số nguyên từ 1 đến 1000.", true);  // lỗi kiểm của StockChange
-    else toast(`Không bán được (mã lỗi ${e.status || e.message}). Kiểm tra container api và db của chi nhánh.`, true);
-  }
-  refresh();
+let products = [];             // từ api/inventory
+let mode = "sale";             // "sale" | "receipt"
+let cart = [];                 // [{ product_id, qty, rid, uncertain, msg }]
+const byId = (id) => products.find((p) => p.product_id === id);
+
+function toast(msg, isErr = false) {
+  const t = document.getElementById("toast");
+  t.textContent = msg; t.className = isErr ? "err" : "";
 }
 
-let products = [];
-let lastRendered = "";  // chỉ vẽ lại khi số liệu đổi, để không mất nút đang bấm
+// ---------------------------------------------------------------------------
+// Kết quả gửi một dòng phiếu. Hàm thuần, kiểm bằng ?selftest=1.
+// - Thành công: dòng xong, bỏ khỏi phiếu.
+// - Server trả lỗi (có mã HTTP): chưa trừ gì, bỏ request_id để lần sau là yêu cầu mới.
+// - Lỗi mạng: KHÔNG biết server đã trừ chưa, giữ request_id và khoá số lượng; gửi lại thì server trả kết quả cũ
+//   chứ không trừ hai lần.
+// ---------------------------------------------------------------------------
+function errorText(status, data) {
+  const d = data?.detail;
+  if (d?.error === "insufficient_stock") return `Không đủ hàng: chỉ còn ${d.qty_on_hand}.`;
+  if (d?.error === "product_not_found") return "Không có mã hàng này.";
+  if (d?.error === "version_conflict") return "Số tồn vừa bị quầy khác sửa, thử lại.";
+  if (Array.isArray(d)) return "Số lượng phải là số nguyên từ 1 đến 1000.";
+  return `Lỗi mã ${status}.`;
+}
+function settle(line, outcome) {
+  if (outcome.ok) return { ...line, done: true, uncertain: false, msg: "" };
+  if (outcome.status) return { ...line, rid: null, uncertain: false, msg: errorText(outcome.status, outcome.data) };
+  return { ...line, uncertain: true, msg: "Chưa rõ đã ghi chưa (mất kết nối). Bấm gửi lại: không bị trừ hai lần." };
+}
 
-function renderGrid() {
-  document.getElementById("grid").innerHTML = products.map((p, i) => `
-    <div class="tag ${p.qty_on_hand < p.reorder_point ? "low" : ""}">
-      <div class="name">${esc(p.name)}</div>
-      <div class="qty">${p.qty_on_hand}<small>${esc(p.unit)}</small></div>
-      <div class="meta">Ngưỡng ${p.reorder_point}, phiên bản ${p.version}</div>
-      <div class="actions">
-        <button type="button" data-i="${i}" data-kind="sale">Bán</button>
-        <button type="button" data-i="${i}" data-kind="receipt">Nhập</button>
+// ---------------------------------------------------------------------------
+// Danh mục hàng
+// ---------------------------------------------------------------------------
+function match(p, q) {
+  if (!q) return true;
+  q = q.toLowerCase();
+  return String(p.product_id) === q || p.name.toLowerCase().includes(q);
+}
+
+function renderProducts() {
+  const q = document.getElementById("search").value.trim();
+  const rows = products.filter((p) => match(p, q));
+  document.getElementById("products").innerHTML = rows.length ? rows.map((p) => {
+    const low = p.qty_on_hand < p.reorder_point;
+    return `<tr data-id="${p.product_id}">
+      <td class="code">${p.product_id}</td>
+      <td>${esc(p.name)}</td>
+      <td class="num ${low ? "low" : ""}">${p.qty_on_hand}<span class="unit">${esc(p.unit)}</span>${low ? `<small>dưới ngưỡng ${p.reorder_point}</small>` : ""}</td>
+      <td class="act"><button type="button" class="add" data-id="${p.product_id}" aria-label="Thêm ${esc(p.name)} vào phiếu">+ Thêm</button></td>
+    </tr>`;
+  }).join("") : `<tr><td colspan="4" class="none">Không có mặt hàng khớp "${esc(q)}".</td></tr>`;
+}
+
+function addToCart(id) {
+  if (!byId(id)) return;
+  const line = cart.find((l) => l.product_id === id);
+  if (line) {
+    if (line.uncertain) return toast("Dòng này đang chờ gửi lại, chưa sửa số lượng được.", true);
+    line.qty = Math.min(1000, line.qty + 1); line.rid = null; line.msg = "";
+  } else cart.push({ product_id: id, qty: 1, rid: null, uncertain: false, msg: "" });
+  renderCart();
+}
+
+document.getElementById("products").addEventListener("click", (ev) => {
+  const tr = ev.target.closest("tr[data-id]");
+  if (tr) addToCart(Number(tr.dataset.id));
+});
+// Máy quét mã vạch gõ mã rồi Enter: thêm đúng mã đó, không thì thêm mặt hàng đầu tiên khớp
+document.getElementById("search").addEventListener("input", renderProducts);
+document.getElementById("search").addEventListener("keydown", (ev) => {
+  if (ev.key !== "Enter") return;
+  const q = ev.target.value.trim();
+  const p = products.find((x) => String(x.product_id) === q) || products.find((x) => match(x, q));
+  if (p) { addToCart(p.product_id); ev.target.value = ""; renderProducts(); }
+});
+
+// ---------------------------------------------------------------------------
+// Phiếu
+// ---------------------------------------------------------------------------
+function renderCart() {
+  const sale = mode === "sale";
+  document.getElementById("ticket-title").textContent = sale ? "Phiếu bán" : "Phiếu nhập";
+  document.getElementById("submit").textContent = sale ? "Thanh toán" : "Nhập kho";
+  const el = document.getElementById("lines");
+  el.innerHTML = cart.length ? cart.map((l, i) => {
+    const p = byId(l.product_id) || { name: `Mã ${l.product_id}`, unit: "", qty_on_hand: 0 };
+    const over = sale && l.qty > p.qty_on_hand;
+    const msg = l.msg ? `<div class="msg ${l.uncertain ? "warn" : "err"}">${esc(l.msg)}</div>`
+              : over ? `<div class="msg warn">Tồn chỉ còn ${p.qty_on_hand} ${esc(p.unit)}.</div>` : "";
+    return `<li>
+      <div class="name">${esc(p.name)}<small>Mã ${l.product_id} · tồn ${p.qty_on_hand} ${esc(p.unit)}</small></div>
+      <div class="qty">
+        <button type="button" data-i="${i}" data-step="-1" aria-label="Bớt 1" ${l.uncertain ? "disabled" : ""}>−</button>
+        <input type="number" min="1" max="1000" step="1" value="${l.qty}" data-i="${i}" aria-label="Số lượng ${esc(p.name)}" ${l.uncertain ? "disabled" : ""}>
+        <button type="button" data-i="${i}" data-step="1" aria-label="Thêm 1" ${l.uncertain ? "disabled" : ""}>+</button>
       </div>
-    </div>`).join("");
+      <button type="button" class="rm" data-rm="${i}" aria-label="Bỏ ${esc(p.name)} khỏi phiếu">×</button>
+      ${msg}
+    </li>`;
+  }).join("") : `<li class="empty-ticket">Phiếu trống. Chọn mặt hàng ở danh sách bên trái hoặc quét mã.</li>`;
+  const units = cart.reduce((s, l) => s + l.qty, 0);
+  document.getElementById("summary").innerHTML = cart.length ? `<b>${cart.length}</b> mặt hàng, <b>${units}</b> đơn vị` : "";
+  document.getElementById("submit").disabled = !cart.length;
+  // Dòng chưa rõ kết quả gắn với loại phiếu đã gửi: không cho đổi loại phiếu tới khi gửi lại xong
+  document.querySelectorAll(".seg button").forEach((b) => {
+    b.setAttribute("aria-checked", b.dataset.mode === mode);
+    b.disabled = cart.some((l) => l.uncertain) && b.dataset.mode !== mode;
+  });
 }
 
-document.getElementById("grid").addEventListener("click", (ev) => {
-  const b = ev.target.closest("button[data-kind]");
+const lines = document.getElementById("lines");
+lines.addEventListener("click", (ev) => {
+  const rm = ev.target.closest("[data-rm]");
+  if (rm) { cart.splice(Number(rm.dataset.rm), 1); return renderCart(); }
+  const b = ev.target.closest("button[data-step]");
   if (!b) return;
-  const p = products[Number(b.dataset.i)];
-  // Một ô số lượng chung, nằm ngoài lưới nên vẽ lại lưới không làm mất số đang nhập. Giới hạn như StockChange.
-  const qty = Number(document.getElementById("qty").value);
-  if (!Number.isInteger(qty) || qty < 1 || qty > 1000) return toast("Số lượng phải là số nguyên từ 1 đến 1000.", true);
-  change(b.dataset.kind, p, qty);
+  const l = cart[Number(b.dataset.i)];
+  l.qty = Math.max(1, Math.min(1000, l.qty + Number(b.dataset.step))); l.rid = null; l.msg = "";
+  renderCart();
+});
+lines.addEventListener("change", (ev) => {
+  const inp = ev.target.closest("input[data-i]");
+  if (!inp) return;
+  const l = cart[Number(inp.dataset.i)], v = Number(inp.value);
+  if (!Number.isInteger(v) || v < 1 || v > 1000) { toast("Số lượng phải là số nguyên từ 1 đến 1000.", true); return renderCart(); }
+  l.qty = v; l.rid = null; l.msg = "";
+  renderCart();
+});
+
+document.querySelector(".seg").addEventListener("click", (ev) => {
+  const b = ev.target.closest("button[data-mode]");
+  if (!b || b.disabled) return;
+  mode = b.dataset.mode; toast(""); renderCart(); renderProducts();
+});
+document.getElementById("clear").addEventListener("click", () => { cart = cart.filter((l) => l.uncertain); toast(""); renderCart(); });
+
+document.getElementById("submit").addEventListener("click", async (ev) => {
+  const btn = ev.currentTarget; btn.disabled = true;
+  let done = 0, spent = 0;
+  for (let i = 0; i < cart.length; i++) {
+    const l = cart[i];
+    l.rid ||= newRequestId();
+    let outcome;
+    try {
+      const res = await post(`api/${mode}`, { product_id: l.product_id, qty: l.qty, request_id: l.rid });
+      outcome = { ok: true, res }; done++; spent += res.elapsed_ms;
+    } catch (e) {
+      outcome = e.status ? { status: e.status, data: e.data } : { network: true };
+    }
+    cart[i] = settle(l, outcome);
+  }
+  cart = cart.filter((l) => !l.done);
+  const verb = mode === "sale" ? "Đã bán" : "Đã nhập";
+  if (done) toast(`${verb} ${done} mặt hàng. Xử lý tại chỗ trong ${ms(spent)} ms.` + (cart.length ? ` Còn ${cart.length} dòng lỗi.` : ""), !!cart.length);
+  else toast("Chưa ghi được dòng nào, xem lỗi ở từng dòng.", true);
+  renderCart(); refresh();
 });
 
 document.getElementById("bulk").addEventListener("click", async (ev) => {
@@ -151,6 +331,9 @@ document.getElementById("bulk").addEventListener("click", async (ev) => {
   btn.disabled = false; refresh();
 });
 
+// ---------------------------------------------------------------------------
+// Trạng thái gửi lên trung tâm
+// ---------------------------------------------------------------------------
 const clock = (ts) => new Date(ts).toLocaleTimeString("vi-VN", { hour12: false });
 
 function renderLink(s) {
@@ -168,7 +351,7 @@ function renderLink(s) {
     el.innerHTML = `Chưa gửi được lên trung tâm từ ${Math.round(s.oldest_unsent_s)} giây. ` +
       `Quầy vẫn bán bình thường; <b>${n}</b> sự kiện đang nằm chờ trong outbox và sẽ tự gửi khi có mạng.`;
   } else {
-    el.className = "";
+    el.className = n ? "busy" : "";
     el.innerHTML = n ? `Đang gửi <b>${n}</b> sự kiện lên trung tâm.` : "Mọi lượt bán đã gửi lên trung tâm.";
   }
   // Độ trễ tới từng bản sao, đo bằng heartbeat
@@ -177,6 +360,7 @@ function renderLink(s) {
     : `<span class="down">Bản sao máy ${esc(l.name)}: <b>mất liên lạc</b></span>`).join("");
 }
 
+let lastRendered = "";  // chỉ vẽ lại danh mục khi số liệu đổi
 async function refresh() {
   try {
     const [inv, st] = await Promise.all([
@@ -184,20 +368,45 @@ async function refresh() {
       fetch("api/status", { cache: "no-store" }).then((r) => r.json()),
     ]);
     const snapshot = JSON.stringify(inv);
-    if (snapshot !== lastRendered) { products = inv; renderGrid(); lastRendered = snapshot; }
+    if (snapshot !== lastRendered) {
+      products = inv; renderProducts(); lastRendered = snapshot;
+      if (!lines.contains(document.activeElement)) renderCart();   // đang gõ số lượng thì không vẽ lại phiếu
+    }
     renderLink(st);
   } catch (e) {
     toast("Không đọc được dữ liệu của chính chi nhánh. Kiểm tra container api và db.", true);
   }
 }
 
+function selftest() {
+  const r = [];
+  const check = (name, ok) => { r.push([name, ok]); console.assert(ok, name); };
+  const line = { product_id: 1, qty: 3, rid: "x", uncertain: false, msg: "" };
+  check("thành công thì xong dòng", settle(line, { ok: true }).done === true);
+  const net = settle(line, { network: true });
+  check("lỗi mạng giữ request_id và khoá dòng", net.rid === "x" && net.uncertain);
+  const stock = settle(net, { status: 422, data: { detail: { error: "insufficient_stock", qty_on_hand: 2 } } });
+  check("server từ chối thì bỏ request_id, mở khoá", stock.rid === null && !stock.uncertain && stock.msg.includes("chỉ còn 2"));
+  check("lỗi kiểm số lượng của StockChange", settle(line, { status: 422, data: { detail: [{}] } }).msg.includes("1 đến 1000"));
+  check("tìm theo mã hoặc tên", match({ product_id: 7, name: "Gạo thơm" }, "7") && match({ product_id: 7, name: "Gạo thơm" }, "gạo") && !match({ product_id: 17, name: "Sữa" }, "7"));
+  const failed = r.filter(([, ok]) => !ok);
+  const el = document.getElementById("selftest");
+  el.style.display = "block";
+  el.style.background = failed.length ? "var(--alert-bg)" : "var(--ok-bg)";
+  el.style.color = failed.length ? "var(--alert)" : "var(--ok)";
+  el.textContent = `Selftest: ${r.length - failed.length}/${r.length} đạt` + (failed.length ? `. Trượt: ${failed.map(([n]) => n).join("; ")}` : "");
+}
+if (new URLSearchParams(location.search).get("selftest") === "1") selftest();
+
 (async () => {
   const info = await fetch("api/info").then((r) => r.json());
-  document.documentElement.style.setProperty("--c", COLORS[info.branch_id] || "#16212B");
+  document.documentElement.style.setProperty("--c", COLORS[info.branch_id] || "#18212A");
   document.getElementById("title").textContent = `CN${info.branch_id} ${info.branch_name}`;
-  document.title = `MiniGo · CN${info.branch_id} ${info.branch_name}`;
+  document.title = `MiniGo · Quầy CN${info.branch_id} ${info.branch_name}`;
+  renderCart();
   refresh();
   setInterval(refresh, 1500);
+  document.getElementById("search").focus();
 })();
 </script>
 </body>

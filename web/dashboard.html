@@ -252,6 +252,7 @@
 
   <div class="side-status">
     <div><span class="lbl">Bản sao trả lời</span><div id="served" aria-live="polite">Đang tải…</div></div>
+    <div><span class="lbl">Cổng vào</span><div id="gate" aria-live="polite">–</div></div>
     <div><span class="lbl">Đồng bộ</span><div id="side-sync"><i class="dot"></i><span>Đang kiểm…</span></div></div>
     <div id="selftest" role="status"></div>
   </div>
@@ -379,9 +380,29 @@ function fmtMs(ms) {
   return a < 86400000 ? `${sign}${Math.round(a / 3600000)} giờ` : `${sign}${Math.round(a / 86400000)} ngày`;
 }
 
-async function getJSON(url, signal) {
-  const r = await fetch(url, { cache: "no-store", signal });
-  if (!r.ok) throw new Error(`${url} trả về ${r.status}`);
+// ---------------------------------------------------------------------------
+// Cổng vào (vòng 5): nginx chạy ở mọi node. Cổng đang dùng không trả lời thì chuyển sang cổng kế tiếp trong
+// GATEWAYS (/lb/gateways.json), như bootstrap.servers của Kafka. Hàm thuần, kiểm bằng ?selftest=1.
+// listed: chuỗi GATEWAYS; null khi mở thẳng một bản sao (không có cổng dự phòng).
+// ---------------------------------------------------------------------------
+function gateList(origin, listed) {
+  return [...new Set([origin, ...(listed || "").split(",").map((g) => g.trim().replace(/\/$/, "")).filter(Boolean)])];
+}
+// Cổng `failed` vừa lỗi: chỉ chuyển nếu nó vẫn là cổng đang dùng (i), để lỗi muộn của cổng cũ không làm nhảy thêm
+const nextGate = (gates, i, failed = i) => (failed === i ? (i + 1) % gates.length : i);
+let gates = [location.origin], gi = 0, gateLost = null;
+// Còn ở cổng ban đầu thì giữ nguyên URL như trước; đã chuyển thì gọi thẳng cổng mới (khác origin, nginx bật CORS)
+const url = (p) => gi === 0 ? p : gates[gi] + (p.startsWith("/") ? p : `/${p}`);
+const hostOf = (g) => g.replace(/^https?:\/\//, "");
+function renderGate() {
+  document.getElementById("gate").innerHTML = gates.length < 2 ? "chỉ cổng này (mở thẳng bản sao)"
+    : `<b>${esc(hostOf(gates[gi]))}</b> (${gi + 1}/${gates.length})` +
+      (gateLost ? `<br><small>cổng ${esc(hostOf(gateLost))} không trả lời, đã chuyển</small>` : "");
+}
+
+async function getJSON(u, signal) {
+  const r = await fetch(url(u), { cache: "no-store", signal });
+  if (!r.ok) throw Object.assign(new Error(`${u} trả về ${r.status}`), { status: r.status });
   return r.json();
 }
 async function fetchWithTimeout(url, ms) {
@@ -521,13 +542,20 @@ function renderMono() {
 // ---------------------------------------------------------------------------
 // Chi nhánh: hai trạng thái tách nhau, "còn sống" theo heartbeat (HTTP thẳng), "đồng bộ" theo outbox và broker
 // ---------------------------------------------------------------------------
+// Trạng thái theo KẾT LUẬN ĐA SỐ của các bản sao (verdict, PT-13), không theo góc nhìn riêng của bản sao đang trả lời.
+const offCount = (n) => {
+  const v = Object.values(n.views || {});
+  return v.length ? ` (${v.filter((s) => s === "OFFLINE").length}/${v.length} bản sao)` : "";
+};
 function branchState(n, sync, st) {
-  const down = !n.alive;
+  const verdict = n.verdict ?? (n.alive ? "ONLINE" : "OFFLINE");
+  const down = verdict === "OFFLINE", suspect = verdict === "SUSPECT";
   const relayBad = !!st?.relay?.failing_since;   // st: /cn<id>/api/status, chỉ có khi mở qua nginx
-  const syncOff = !down && (sync.down || relayBad);
+  const syncOff = !down && !suspect && (sync.down || relayBad);
   return {
-    s: down ? "bad" : syncOff ? "warn" : "ok", relayBad,
-    label: down ? `Mất liên lạc ${ago(n.last_seen).replace(" trước", "")}` : syncOff ? "Còn sống, đồng bộ dừng" : "Hoạt động",
+    s: down ? "bad" : suspect || syncOff ? "warn" : "ok", relayBad,
+    label: down ? `Mất liên lạc${n.last_seen ? " " + ago(n.last_seen).replace(" trước", "") : ""}${offCount(n)}`
+      : suspect ? "Nghi ngờ, chưa đủ đa số" : syncOff ? "Còn sống, đồng bộ dừng" : "Hoạt động",
     send: st === undefined ? "–" : st === null ? "không hỏi được" : relayBad ? `lỗi từ ${clock(st.relay.failing_since)}` : "được",
   };
 }
@@ -554,6 +582,8 @@ function renderBranches(nodes, sync, statuses) {
   setDot("tong-quan", worst);
 }
 
+const VIEW_TXT = { ONLINE: "sống", SUSPECT: "nghi ngờ", OFFLINE: "mất" };
+const VIEW_CLS = { ONLINE: "", SUSPECT: "warn", OFFLINE: "bad" };
 function renderNodeTable(nodes, sync, statuses) {
   const el = document.getElementById("node-table");
   if (!nodes.length) { el.innerHTML = `<tbody><tr class="empty-row"><td>Chưa có heartbeat.</td></tr></tbody>`; return; }
@@ -562,6 +592,9 @@ function renderNodeTable(nodes, sync, statuses) {
     return `<tr style="--c:${color(n.branch_id)}">
       <td class="name"><span class="bname">CN${n.branch_id}</span></td>
       <td class="${n.alive ? "" : "bad"}">${n.alive ? ago(n.last_seen) : "mất liên lạc"}</td>
+      <td title="Góc nhìn của từng bản sao theo tuổi heartbeat nó nhận (ONLINE dưới 8 giây, SUSPECT tới 15 giây, OFFLINE từ 15 giây)">${
+        Object.entries(n.views || {}).map(([k, v]) => `<span class="${VIEW_CLS[v] ?? "muted"}">${esc(k)}: ${VIEW_TXT[v] ?? "–"}</span>`).join(" ")}</td>
+      <td class="${b.s === "bad" ? "bad" : b.s === "warn" ? "warn" : ""}">${VIEW_TXT[n.verdict] ?? "–"}</td>
       <td class="${b.relayBad ? "bad" : ""}" title="Relay của chi nhánh gửi outbox lên cụm Redpanda (relay_status)">${b.send}</td>
       <td class="${n.outbox_backlog > 0 ? "warn" : ""}">${n.outbox_backlog}</td>
       <td class="${sync.down ? "bad" : ""}" title="Sink của bản sao đang trả lời đọc Redpanda (sink_stats)">${sync.down ? (sync.since ? `dừng từ ${clock(sync.since)}` : "dừng") : "đang chạy"}</td>
@@ -570,7 +603,7 @@ function renderNodeTable(nodes, sync, statuses) {
       <td>#${n.last_movement ?? "–"}</td>
     </tr>`;
   }).join("");
-  el.innerHTML = `<thead><tr><th class="name">Chi nhánh</th><th>Heartbeat</th><th>Gửi lên Redpanda</th><th>Chờ gửi</th>` +
+  el.innerHTML = `<thead><tr><th class="name">Chi nhánh</th><th>Heartbeat</th><th>Góc nhìn từng bản sao</th><th>Kết luận (đa số)</th><th>Gửi lên Redpanda</th><th>Chờ gửi</th>` +
     `<th>Bản sao đọc Redpanda</th><th>RTT</th><th>Lệch giờ</th><th>Biến động mới nhất</th></tr></thead><tbody>${body}</tbody>`;
 }
 
@@ -583,12 +616,14 @@ function setKpi(id, value, sub, s = "") {
 function renderKpis(view, sync) {
   const total = view.inventory.reduce((s, p) => s + p.total, 0);
   const lows = view.inventory.flatMap((p) => Object.values(p.by_branch)).filter((c) => c.below_reorder).length;
-  const alive = view.nodes.filter((n) => n.alive).length;
+  // Theo kết luận đa số (PT-13): nghi ngờ vẫn tính là hoạt động, chỉ OFFLINE mới trừ
+  const off = view.nodes.filter((n) => n.verdict === "OFFLINE");
+  const sus = view.nodes.filter((n) => n.verdict === "SUSPECT");
   setKpi("kpi-total", fmtN(total), `${view.inventory.length} mặt hàng, ${view.nodes.length} chi nhánh`);
   setKpi("kpi-low", fmtN(lows), lows ? "ô (chi nhánh, mặt hàng) dưới ngưỡng" : "không có mặt hàng dưới ngưỡng", lows ? "warn" : "");
-  setKpi("kpi-alive", `${alive}/${view.nodes.length}`,
-         view.nodes.filter((n) => !n.alive).map((n) => `CN${n.branch_id} mất liên lạc`).join(", ") || "đủ heartbeat",
-         alive < view.nodes.length ? "bad" : "");
+  setKpi("kpi-alive", `${view.nodes.length - off.length}/${view.nodes.length}`,
+         [...off.map((n) => `CN${n.branch_id} mất liên lạc`), ...sus.map((n) => `CN${n.branch_id} nghi ngờ`)].join(", ") || "đủ heartbeat",
+         off.length ? "bad" : sus.length ? "warn" : "");
   setKpi("kpi-sync", sync.down ? "Dừng" : "Đang chạy", sync.short, sync.down ? "bad" : "");
 }
 
@@ -844,9 +879,14 @@ function svgEdge(d, st, flow, extra = "", dot = "var(--ok)") {
 }
 
 // Sự cố hệ thống để báo ở Tổng quan (hàm thuần, kiểm bằng ?selftest=1). peers null: mở thẳng một bản sao, không biết.
-function systemIssues(peers, sync, now) {
+function systemIssues(peers, sync, now, nodes = []) {
   const out = [];
   if (sync?.down) out.push({ s: "bad", text: "đồng bộ qua Redpanda đang dừng" });
+  // Kết luận đa số về chi nhánh (PT-13): có cả khi mở thẳng một bản sao (góc nhìn kéo qua /api/views)
+  nodes.forEach((n) => {
+    if (n.verdict === "OFFLINE") out.push({ s: "bad", text: `CN${n.branch_id} mất liên lạc${offCount(n)}` });
+    else if (n.verdict === "SUSPECT") out.push({ s: "warn", text: `CN${n.branch_id} nghi ngờ, chưa đủ đa số` });
+  });
   if (!peers) return out;
   const brokers = [1, 2, 3].map((id) => brokerState(peers.digests, id, now));
   if (brokers.every((b) => b.s === "unknown")) out.push({ s: "bad", text: "không hỏi được cụm broker (mất đa số?)" });
@@ -1046,14 +1086,36 @@ document.getElementById("trace-close").addEventListener("click", () => {
 });
 
 // ---------------------------------------------------------------------------
+// Cổng không trả lời (lỗi mạng, quá 4 giây vì bị pause, nginx báo 502/503/504) thì thử ngay cổng kế tiếp, tối đa
+// một vòng. Không tự quay về cổng cũ khi nó sống lại, để khỏi chuyển qua chuyển lại.
+async function fetchOverview() {
+  for (let i = 0; ; i++) {
+    try {
+      return await fetchWithTimeout("api/overview", 4000);
+    } catch (e) {
+      if (i >= gates.length - 1 || (e.status && e.status < 502)) throw e;
+      gateLost = gates[gi];
+      gi = nextGate(gates, gi);
+      renderGate();
+    }
+  }
+}
+
+let busy = false;   // một lần làm mới có thể kéo dài quá 2 giây khi đang chuyển cổng: không chạy chồng
 async function tick() {
+  if (busy) return;
+  busy = true;
+  try { await refresh(); } finally { busy = false; }
+}
+
+async function refresh() {
   const err = document.getElementById("conn-error");
   let o = null;
   try {
-    o = await getJSON("api/overview");
+    o = await fetchOverview();
     err.style.display = "none";
   } catch (e) {
-    err.textContent = `Không đọc được dữ liệu (${e.message}). Nếu đang mở qua nginx, mọi bản sao có thể đều đang mất liên lạc.`;
+    err.textContent = `Không đọc được dữ liệu (${e.message}). Nếu đang mở qua cổng vào, mọi cổng vào hoặc mọi bản sao có thể đều đang mất liên lạc; sẽ thử lại.`;
     err.style.display = "block";
   }
   if (o) {
@@ -1078,7 +1140,7 @@ async function tick() {
     renderBranches(shown.nodes, sync, peers?.statuses);
     renderNodeTable(shown.nodes, sync, peers?.statuses);
     setDot("he-thong", worse(worse(renderTopology(peers, shown), replicaState), sync.down ? "bad" : "ok"));
-    renderSysAlert(systemIssues(peers, sync, Date.now()));
+    renderSysAlert(systemIssues(peers, sync, Date.now(), shown.nodes));
   }
 }
 
@@ -1121,13 +1183,32 @@ function selftest() {
   check("relay tồn đọng -> warn", relayEdge({ relay: {}, outbox_backlog: 2 }).s === "warn");
 
   const sync = { down: false };
-  check("chi nhánh mất heartbeat -> bad", branchState({ alive: false, last_seen: iso(40) }, sync, undefined).s === "bad");
-  check("còn sống mà relay lỗi -> đồng bộ dừng", branchState({ alive: true }, sync, { relay: { failing_since: iso(5) } }).label === "Còn sống, đồng bộ dừng");
+  // Trạng thái chi nhánh theo kết luận đa số (vòng 5, PT-13)
+  const views = (A, B, C) => ({ A, B, C });
+  const dead = branchState({ alive: false, state: "OFFLINE", verdict: "OFFLINE", views: views("OFFLINE", "OFFLINE", "ONLINE"), last_seen: iso(40) }, sync, undefined);
+  check("đa số OFFLINE -> bad, ghi số bản sao", dead.s === "bad" && dead.label.startsWith("Mất liên lạc") && dead.label.includes("2/3"));
+  check("còn sống mà relay lỗi -> đồng bộ dừng", branchState({ alive: true, state: "ONLINE", verdict: "ONLINE" }, sync, { relay: { failing_since: iso(5) } }).label === "Còn sống, đồng bộ dừng");
+  const sus = branchState({ alive: true, state: "SUSPECT", verdict: "SUSPECT" }, sync, undefined);
+  check("đa số chưa kết luận -> warn 'Nghi ngờ, chưa đủ đa số'", sus.s === "warn" && sus.label === "Nghi ngờ, chưa đủ đa số");
+  const iso1 = branchState({ alive: false, state: "OFFLINE", verdict: "SUSPECT", views: views("OFFLINE", null, null) }, sync, undefined);
+  check("K3: bản sao bị cô lập thấy OFFLINE một mình -> chỉ nghi ngờ", iso1.s === "warn" && iso1.label === "Nghi ngờ, chưa đủ đa số");
+  check("K14 biến thể: riêng mình thấy OFFLINE, đa số ONLINE -> ok", branchState({ alive: false, state: "OFFLINE", verdict: "ONLINE" }, sync, undefined).s === "ok");
 
   const sp = (a, b, c) => ({ digests: { A: a, B: b, C: c } });
   check("đủ 3 broker, đủ bản sao -> không sự cố", systemIssues(sp(dg([1, 2, 3]), dg([1, 2, 3]), dg([1, 2, 3])), sync, now).length === 0);
   const iss = systemIssues(sp(dg([1, 3]), dg([1, 3]), null), sync, now);
   check("mất broker B, bản sao C chết -> hai sự cố", iss.length === 2 && iss[0].text.startsWith("broker B") && iss[1].text.includes("bản sao C"));
+  const cn = systemIssues(null, sync, now, [{ branch_id: 1, verdict: "ONLINE" }, { branch_id: 2, verdict: "OFFLINE", views: views("OFFLINE", "OFFLINE", "OFFLINE") }]);
+  check("đa số kết luận CN2 OFFLINE -> sự cố ở Tổng quan", cn.length === 1 && cn[0].s === "bad" && cn[0].text.includes("CN2") && cn[0].text.includes("3/3"));
+
+  // Cổng vào (vòng 5): danh sách bắt đầu bằng cổng đang mở, bỏ trùng; hết lượt thì quay vòng
+  const L = "http://localhost", B8 = "http://localhost:8012", C8 = "http://localhost:8022";
+  const listed = `${L},${B8},${C8}`;
+  check("cổng đang mở đứng đầu", JSON.stringify(gateList(L, listed)) === JSON.stringify([L, B8, C8]));
+  check("mở từ cổng B thì B đầu, bỏ trùng", JSON.stringify(gateList(B8, listed)) === JSON.stringify([B8, L, C8]));
+  check("mở thẳng bản sao (không có danh sách) -> chỉ một cổng", JSON.stringify(gateList("http://localhost:8000", null)) === JSON.stringify(["http://localhost:8000"]));
+  check("cổng kế tiếp quay vòng", nextGate([L, B8, C8], 0) === 1 && nextGate([L, B8, C8], 2) === 0 && nextGate([L], 0) === 0);
+  check("lỗi muộn của cổng cũ không làm nhảy thêm cổng", nextGate([L, B8, C8], 1, 0) === 1);
 
   const failed = results.filter(([, ok]) => !ok);
   const el = document.getElementById("selftest");
@@ -1140,8 +1221,13 @@ function selftest() {
 }
 if (new URLSearchParams(location.search).get("selftest") === "1") selftest();
 
-tick();
-setInterval(tick, 2000);
+(async () => {
+  // Đọc danh sách cổng vào MỘT lần lúc mở trang, từ chính cổng đang mở. Mở thẳng một bản sao thì 404: chỉ một cổng.
+  try { gates = gateList(location.origin, await getJSON("/lb/gateways.json")); } catch { /* không qua nginx */ }
+  renderGate();
+  tick();
+  setInterval(tick, 2000);
+})();
 </script>
 </body>
 </html>

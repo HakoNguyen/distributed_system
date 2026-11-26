@@ -73,3 +73,14 @@ CREATE TABLE sync_peer (
     last_error    TEXT,
     cells_patched BIGINT      NOT NULL DEFAULT 0   -- tổng số ô đã vá nhờ nơi này (chỉ ô thật sự thiếu)
 );
+
+-- Góc nhìn của bản sao KHÁC về từng chi nhánh (vòng 5, PT-13), kéo qua GET /api/views mỗi 5 giây.
+-- Góc nhìn của chính bản sao này không lưu: tính từ node_status. Cũ quá 15 giây (received_at) thì bỏ.
+CREATE TABLE peer_view (
+    peer               TEXT        NOT NULL,   -- tên bản sao đã đánh giá: 'A'
+    branch_id          INT         NOT NULL,
+    state              TEXT        NOT NULL CHECK (state IN ('ONLINE', 'SUSPECT', 'OFFLINE')),
+    seconds_since_seen INT         NOT NULL,   -- tuổi heartbeat theo đồng hồ của peer, chỉ để hiển thị
+    received_at        TIMESTAMPTZ NOT NULL DEFAULT now(),  -- giờ bản sao NÀY nhận góc nhìn
+    PRIMARY KEY (peer, branch_id)
+);

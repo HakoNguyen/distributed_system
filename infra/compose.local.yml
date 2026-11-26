@@ -4,36 +4,45 @@
 #     -f infra/compose.yml -f infra/compose.local.yml up -d
 #
 # "Mạng overlay" là docker network chung minigo-wan (make local-up tạo). Container nào
-# nói chuyện với node khác thì nối vào đó; CSDL và console chỉ ở mạng riêng của node.
+# nói chuyện với node khác thì nối vào đó; CSDL chỉ ở mạng riêng của node.
 #
 # Compose tự thêm tên service (replica_api) làm alias trên MỌI network, nên trên
 # minigo-wan tên đó trỏ về cả ba node. Vì vậy mỗi node có alias riêng (replica-b, redpanda-b...),
 # gắn trên cả mạng riêng lẫn minigo-wan: rút mạng node B thì CN2 vẫn gọi được bản sao B.
 # (DNS của Docker không phân biệt hoa thường: alias replica-B gọi bằng replica-b.)
+#
+# IP cố định trên minigo-wan (vòng 5): service thứ n của node có IP ${WAN_IP_PREFIX}<n> (node B: 10.210.0.21...),
+# nằm trong 10.210.0.0/25; IP động của mạng chỉ cấp trong 10.210.0.128/25 (scripts/net.sh). Vì vậy make heal nối
+# lại đúng IP cũ (broker cần: kết nối RPC gắn với IP) mà không container nào khác lấy mất được.
+# n: 1 branch_api, 2 replica_api, 3 relay, 4 sink, 5 redpanda, 6 nginx, 7 topic-init, 8 console.
 # =====================================================================
 
 services:
   branch_api:
     networks:
       default: { aliases: ["branch-${NODE_NAME}"] }
-      wan: { aliases: ["branch-${NODE_NAME}"] }
+      wan: { aliases: ["branch-${NODE_NAME}"], ipv4_address: "${WAN_IP_PREFIX:?Chưa đặt WAN_IP_PREFIX}1" }
 
   # dns_opt: gossip gọi bản sao của node bị cut thì báo lỗi sau ~1 giây (xem relay, sink bên dưới)
   replica_api:
     networks:
       default: { aliases: ["replica-${NODE_NAME}"] }
-      wan: { aliases: ["replica-${NODE_NAME}"] }
+      wan: { aliases: ["replica-${NODE_NAME}"], ipv4_address: "${WAN_IP_PREFIX}2" }
     dns_opt: ["timeout:1", "attempts:1"]
 
   # Tên của container đã dừng (broker bị tắt ở K7) bị DNS của Docker Desktop hỏi ra ngoài, mất ~8 giây
   # mới báo "không có"; trong lúc đó thư viện Kafka treo lô đang gửi. Bỏ cuộc sau 1 giây (đo: còn ~2 giây).
   # Máy thật gọi nhau bằng IP nên không cần.
   relay:
-    networks: [default, wan]
+    networks:
+      default: {}
+      wan: { ipv4_address: "${WAN_IP_PREFIX}3" }
     dns_opt: ["timeout:1", "attempts:1"]
 
   sink:
-    networks: [default, wan]
+    networks:
+      default: {}
+      wan: { ipv4_address: "${WAN_IP_PREFIX}4" }
     dns_opt: ["timeout:1", "attempts:1"]
 
   # Mỗi node một broker (profile broker). Không publish cổng ra host: 3 broker cùng máy sẽ đụng
@@ -42,17 +51,24 @@ services:
     ports: !reset []
     networks:
       default: { aliases: ["redpanda-${NODE_NAME}"] }
-      wan: { aliases: ["redpanda-${NODE_NAME}"] }
+      wan: { aliases: ["redpanda-${NODE_NAME}"], ipv4_address: "${WAN_IP_PREFIX}5" }
+
+  # Cổng vào ở mọi node (vòng 5); cổng host theo NGINX_PORT: A 80, B 8012, C 8022
+  nginx:
+    networks:
+      default: {}
+      wan: { ipv4_address: "${WAN_IP_PREFIX}6" }
 
   # Chỉ node A (profile core). topic-init, console cần gọi broker của node khác.
   topic-init:
-    networks: [default, wan]
+    networks:
+      default: {}
+      wan: { ipv4_address: "${WAN_IP_PREFIX}7" }
 
   console:
-    networks: [default, wan]
-
-  nginx:
-    networks: [default, wan]
+    networks:
+      default: {}
+      wan: { ipv4_address: "${WAN_IP_PREFIX}8" }
 
 networks:
   wan:

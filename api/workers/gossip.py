@@ -1,4 +1,5 @@
-"""Kênh trực tiếp giữa các bản sao (gossip) và đối soát với chi nhánh khi mất broker (vòng 3).
+"""Kênh trực tiếp giữa các bản sao (gossip) và đối soát với chi nhánh khi mất broker (vòng 3); kéo góc nhìn của
+bản sao khác về các chi nhánh cho bộ phát hiện lỗi (vòng 5, view_loop).
 
 Chạy thành luồng nền trong replica_api (api/main.py khởi động): mỗi bản sao khác một luồng gossip, để một
 bản sao chết không làm chậm các bản khác, thêm một luồng đối soát. Mọi lời gọi mạng nằm ở đây và xong TRƯỚC
@@ -9,7 +10,7 @@ import time
 
 import httpx
 
-from common.config import GOSSIP_EVERY_S, NODE_NAME, PEER_TIMEOUT_S, PEERS, RECONCILE_EVERY_S
+from common.config import GOSSIP_EVERY_S, NODE_NAME, PEER_TIMEOUT_S, PEERS, RECONCILE_EVERY_S, VIEWS_EVERY_S
 from common.db import pool
 from services import replica
 
@@ -77,8 +78,26 @@ def reconcile_loop() -> None:
         time.sleep(RECONCILE_EVERY_S)
 
 
+def view_loop(name: str, url: str) -> None:
+    """Mỗi VIEWS_EVERY_S giây: kéo góc nhìn của bản sao `name` về các chi nhánh (vòng 5, PT-13). Gọi lỗi thì không
+    ghi gì: góc nhìn cũ tự hết hạn sau VIEW_STALE_S giây và không còn được tính vào đa số."""
+    client = httpx.Client(timeout=PEER_TIMEOUT_S)
+    while True:
+        try:
+            r = client.get(f"{url}/api/views")
+            r.raise_for_status()
+            replica.record_peer_view(name, r.json())  # mạng xong rồi mới mở transaction ghi
+        except ValueError as e:  # dữ liệu hỏng (JSON lỗi, sai model, sai tên bản sao): ghi log; lỗi mạng thì im lặng
+            print(f"{TAG} Bỏ góc nhìn hỏng từ {name} ({e})"[:300])
+        except Exception:
+            pass  # bản sao kia chết hoặc mất mạng: đã thấy ở cột gossip (sync_peer)
+        time.sleep(VIEWS_EVERY_S)
+
+
 def start() -> None:
     for name, url in PEERS:
         threading.Thread(target=gossip_loop, args=(name, url), daemon=True).start()
+        threading.Thread(target=view_loop, args=(name, url), daemon=True).start()
     threading.Thread(target=reconcile_loop, daemon=True).start()
-    print(f"{TAG} Gossip với {[n for n, _ in PEERS]} mỗi {GOSSIP_EVERY_S} giây; đối soát khi mất broker")
+    print(f"{TAG} Gossip với {[n for n, _ in PEERS]} mỗi {GOSSIP_EVERY_S} giây, góc nhìn mỗi {VIEWS_EVERY_S} giây;"
+          " đối soát khi mất broker")

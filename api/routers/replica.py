@@ -64,6 +64,13 @@ def snapshot():
         return {"node": NODE_NAME, "cells": replica.query_snapshot(conn)}
 
 
+@router.get("/api/views")
+def views():
+    """Góc nhìn của bản sao này về từng chi nhánh (ONLINE/SUSPECT/OFFLINE), để bản sao khác kết luận theo đa số (PT-13)."""
+    with pool.connection() as conn:
+        return replica.query_views(conn)
+
+
 @router.get("/api/trace")
 def trace(branch_id: int, movement_id: int, product_id: int):
     """Truy vết: bản sao này nhận sự kiện qua Redpanda, được vá bằng gossip/đối soát, hay chưa biết."""

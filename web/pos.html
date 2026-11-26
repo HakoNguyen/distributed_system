@@ -160,8 +160,41 @@ const ms = (x) => String(Math.round(x * 10) / 10).replace(".", ",");
 const newRequestId = () =>
   (crypto.randomUUID ? crypto.randomUUID() : `${Date.now()}-${Math.random().toString(16).slice(2)}`);
 
+// ---------------------------------------------------------------------------
+// Cổng vào (vòng 5): mở qua nginx dưới /cnX/ thì gọi API qua cổng đang dùng; cổng không trả lời (lỗi mạng, quá
+// 4 giây) thì chuyển sang cổng kế tiếp trong GATEWAYS. Lượt bán lỗi mạng giữ request_id (settle), bấm Thanh toán
+// lại thì gửi qua cổng mới mà không trừ hai lần (PT-08). Mở thẳng chi nhánh (:8001) thì như cũ. Hàm thuần: selftest.
+// ---------------------------------------------------------------------------
+const posPrefix = (path) => (path.match(/^\/cn\d+\//) || [""])[0];
+const apiUrl = (gate, prefix, path) => (gate ? `${gate}${prefix}${path}` : path);
+function gateList(origin, listed) {
+  return [...new Set([origin, ...(listed || "").split(",").map((g) => g.trim().replace(/\/$/, "")).filter(Boolean)])];
+}
+// Cổng `failed` vừa lỗi: chỉ chuyển nếu nó vẫn là cổng đang dùng (i). Nhiều lời gọi tới cùng cổng chết hết giờ cùng
+// lúc (làm mới mỗi 1,5 giây cộng lượt bán) thì chỉ lời gọi đầu tiên chuyển, không nhảy qua mọi cổng.
+const nextGate = (gates, i, failed = i) => (failed === i ? (i + 1) % gates.length : i);
+const PREFIX = posPrefix(location.pathname);
+let gates = [location.origin], gi = 0;
+
+async function call(path, opts = {}) {
+  const ctl = new AbortController();
+  const t = setTimeout(() => ctl.abort(), 4000);
+  const at = gi;
+  try {
+    return await fetch(apiUrl(at === 0 ? "" : gates[at], PREFIX, path), { cache: "no-store", ...opts, signal: ctl.signal });
+  } catch (e) {
+    if (gates.length > 1) {
+      if (at === gi) toast(`Cổng vào ${gates[at]} không trả lời, chuyển sang ${gates[nextGate(gates, gi)]}. ` +
+                           "Dòng chưa chắc đã gửi giữ nguyên mã, bấm Thanh toán lại.", true);
+      gi = nextGate(gates, gi, at);
+      e.gateSwitched = true;
+    }
+    throw e;
+  } finally { clearTimeout(t); }
+}
+
 async function post(url, body) {
-  const r = await fetch(url, { method: "POST", headers: { "Content-Type": "application/json" }, body: body ? JSON.stringify(body) : undefined });
+  const r = await call(url, { method: "POST", headers: { "Content-Type": "application/json" }, body: body ? JSON.stringify(body) : undefined });
   const data = await r.json().catch(() => ({}));
   if (!r.ok) throw Object.assign(new Error(r.status), { status: r.status, data });
   return data;
@@ -368,8 +401,8 @@ let lastRendered = "";  // chỉ vẽ lại danh mục khi số liệu đổi
 async function refresh() {
   try {
     const [inv, st] = await Promise.all([
-      fetch("api/inventory", { cache: "no-store" }).then((r) => r.json()),
-      fetch("api/status", { cache: "no-store" }).then((r) => r.json()),
+      call("api/inventory").then((r) => r.json()),
+      call("api/status").then((r) => r.json()),
     ]);
     const snapshot = JSON.stringify(inv);
     if (snapshot !== lastRendered) {
@@ -378,7 +411,8 @@ async function refresh() {
     }
     renderLink(st);
   } catch (e) {
-    toast("Không đọc được dữ liệu của chính chi nhánh. Kiểm tra container api và db.", true);
+    // call() vừa chuyển cổng thì đã tự báo; lần làm mới sau đi cổng mới
+    if (!e.gateSwitched) toast("Không đọc được dữ liệu của chính chi nhánh. Kiểm tra container api và db.", true);
   }
 }
 
@@ -393,6 +427,12 @@ function selftest() {
   check("server từ chối thì bỏ request_id, mở khoá", stock.rid === null && !stock.uncertain && stock.msg.includes("chỉ còn 2"));
   check("lỗi kiểm số lượng của StockChange", settle(line, { status: 422, data: { detail: [{}] } }).msg.includes("1 đến 1000"));
   check("tìm theo mã hoặc tên", match({ product_id: 7, name: "Gạo thơm" }, "7") && match({ product_id: 7, name: "Gạo thơm" }, "gạo") && !match({ product_id: 17, name: "Sữa" }, "7"));
+  // Cổng vào (vòng 5): POS mở qua nginx dưới /cnX/ thì gọi API qua cổng đang dùng; mở thẳng thì đường tương đối như cũ
+  check("tiền tố /cn2/ khi mở qua cổng vào, rỗng khi mở thẳng", posPrefix("/cn2/") === "/cn2/" && posPrefix("/") === "");
+  check("ghép URL qua cổng vào", apiUrl("http://localhost:8012", "/cn2/", "api/sale") === "http://localhost:8012/cn2/api/sale" && apiUrl("", "", "api/sale") === "api/sale");
+  check("cổng đang mở đứng đầu, bỏ trùng", gateList("http://localhost:8012", "http://localhost,http://localhost:8012").join() === "http://localhost:8012,http://localhost");
+  check("cổng kế tiếp quay vòng", nextGate(["a", "b"], 1) === 0 && nextGate(["a"], 0) === 0);
+  check("lỗi muộn của cổng cũ không làm nhảy thêm cổng", nextGate(["a", "b", "c"], 1, 0) === 1);
   const failed = r.filter(([, ok]) => !ok);
   const el = document.getElementById("selftest");
   el.style.display = "block";
@@ -403,6 +443,8 @@ function selftest() {
 if (new URLSearchParams(location.search).get("selftest") === "1") selftest();
 
 (async () => {
+  // Danh sách cổng vào đọc một lần, chỉ khi mở qua nginx (/cnX/)
+  if (PREFIX) try { gates = gateList(location.origin, await fetch("/lb/gateways.json").then((r) => r.json())); } catch { /* chỉ một cổng */ }
   const info = await fetch("api/info").then((r) => r.json());
   document.documentElement.style.setProperty("--c", COLORS[info.branch_id] || "#18212A");
   document.getElementById("title").textContent = `CN${info.branch_id} ${info.branch_name}`;

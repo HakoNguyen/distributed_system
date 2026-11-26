@@ -19,14 +19,24 @@ trong image: sửa xong phải build lại, `make local-up` hoặc `make up`).
   không thì giữ nguyên phản hồi cũ và gắn nhãn bản sao trễ. Phần chỉ có khi mở qua nginx: bảng bản sao và sơ đồ gọi
   `/lb/replicas.json`, `/replica/<X>/api/digest`, `/cn<N>/api/status`; truy vết gọi `/cn<N>/api/movement/{id}` và
   `/replica/<X>/api/trace`. Mở thẳng một bản sao thì chỉ có góc nhìn của bản sao đó.
-- Logic thuần (`compareViews`, `relayEdge`, `sinkEdge`, `brokerState`, `gossipEdge`, `branchState`, `systemIssues`) nhận `now` hoặc
+- Cổng vào (vòng 5): nginx chạy ở mọi node. Mở qua nginx thì trang đọc `/lb/gateways.json` một lần; cổng đang dùng
+  không trả lời thì gọi cổng kế tiếp (`gateList`, `nextGate`; khác origin, nginx bật CORS), không tự quay về. Dashboard:
+  mọi lời gọi đi qua `getJSON` → `url()` (còn ở cổng đầu thì URL giữ nguyên), `api/overview` chờ tối đa 4 giây,
+  chuyển cổng khi lỗi mạng, quá giờ hay 502–504; thanh bên ô "Cổng vào". POS: mọi lời gọi qua `call()` (chờ 4 giây,
+  chuyển cổng khi lỗi mạng hay quá giờ), URL = `apiUrl(cổng, posPrefix(pathname), "api/sale")`; mở thẳng chi nhánh
+  thì không có tiền tố, như cũ. Lượt bán lỗi giữa chừng giữ `request_id` (PT-08), không tự gửi lại POST.
+- Trạng thái chi nhánh theo kết luận đa số `verdict` (PT-13) ở bảng chi nhánh, ô "Chi nhánh hoạt động", `#sys-alert`;
+  bảng kỹ thuật chi nhánh (tab Hệ thống) có thêm góc nhìn từng bản sao (`views`) và kết luận. SUSPECT ghi "Nghi ngờ,
+  chưa đủ đa số". `alive` (góc nhìn riêng của bản sao đang trả lời) vẫn dùng cho nhãn "số cũ" và sơ đồ.
+- Logic thuần (`compareViews`, `relayEdge`, `sinkEdge`, `brokerState`, `gossipEdge`, `branchState`, `systemIssues`,
+  `gateList`, `nextGate`; POS `settle`, `match`, `posPrefix`, `apiUrl`, `gateList`, `nextGate`) nhận `now` hoặc
   dữ liệu làm tham số, kiểm bằng `?selftest=1` (chạy tay trong trình duyệt, không nằm trong `make check`). Thêm logic
   thì thêm `check(...)`.
 - Màu và font đặt bằng biến CSS ở `:root`.
 - Màn hình hẹp: cột grid chứa bảng phải là `minmax(0, 1fr)` (không dùng `1fr` trần), bảng rộng cuộn trong
   `.table-wrap`; nếu không, bảng `white-space: nowrap` kéo cả trang tràn ngang. Kiểm ở cỡ 375px.
-- Tổng quan có dải `#sys-alert` (`systemIssues`): broker nào không chạy, bản sao nào không liên lạc được, đồng bộ
-  dừng; trùng nguồn với chấm đỏ của tab Hệ thống, để trang đầu không báo "ổn" khi hệ đang suy giảm.
+- Tổng quan có dải `#sys-alert` (`systemIssues`): chi nhánh đa số kết luận mất liên lạc hoặc đang nghi ngờ, broker
+  nào không chạy, bản sao nào không liên lạc được, đồng bộ dừng; trùng nguồn với chấm đỏ của tab Hệ thống, để trang đầu không báo "ổn" khi hệ đang suy giảm.
 - Tab Sự kiện xếp theo lúc bản sao nhận (`received_at`), nên cột giờ cũng là lúc nhận, kèm ngày khi không phải hôm
   nay; giờ chi nhánh ghi nằm ở tooltip và truy vết.
 - `routers/*.py` trả trang với `Cache-Control: no-cache`: build lại image là trình duyệt thấy giao diện mới.

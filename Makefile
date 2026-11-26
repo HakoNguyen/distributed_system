@@ -6,7 +6,7 @@ COMPOSE = docker compose --env-file $(ENV_FILE) -f infra/compose.yml
 S ?=
 N ?= 100
 
-.PHONY: up down reset ps logs test config check local-up local-down local-reset cut heal
+.PHONY: up down reset ps logs test config check local-up local-down local-reset cut heal pause unpause kill start
 
 # Dựng và chạy mọi container của máy này (máy A thêm redpanda, console, nginx)
 up:
@@ -50,6 +50,11 @@ cut:
 
 heal:
 	sh scripts/net.sh heal $(N)
+
+# Một máy, K13, K14: "chậm" (pause: vẫn sống, không trả lời) hay "chết" (kill) một container của node N.
+# make pause N=b S=branch_api; make unpause N=b S=branch_api; make kill N=a S=nginx; make start N=a S=nginx
+pause unpause kill start:
+	docker $@ minigo-$(N)-$(S)-1
 
 # File compose hợp lệ với env mẫu (máy thật và 3 node một máy); không cần .env, không chạy container
 config:

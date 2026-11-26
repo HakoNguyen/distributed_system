@@ -1,5 +1,6 @@
 """Model Pydantic cho request của cả hai vai."""
 from datetime import datetime
+from typing import Literal
 
 from pydantic import BaseModel, Field
 
@@ -34,3 +35,10 @@ class SnapshotCell(BaseModel):
     qty_on_hand: int = Field(ge=0)
     last_movement: int = Field(gt=0)
     node_time: datetime | None = None
+
+
+class BranchView(BaseModel):
+    """Góc nhìn của một bản sao khác về một chi nhánh, nhận qua GET /api/views (vòng 5, PT-13). Kiểm trước khi ghi."""
+    branch_id: int
+    state: Literal["ONLINE", "SUSPECT", "OFFLINE"]
+    seconds_since_seen: int = Field(ge=0)

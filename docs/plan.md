@@ -14,6 +14,7 @@ Mục tiêu trước mắt: xử lý hai câu hỏi của thầy (mục 3), trê
 | 2 | `infra`, `branch`, `replica`, `web` | `broker/redpanda-cluster` | Cụm 3 broker; trạng thái đồng bộ trên POS và dashboard | PT-03, PT-06, PT-11 | K7a, K7b, K7c | xong, đã merge (PR #3); 16 test, K1–K7c đạt trên 3 node một máy |
 | 3 | `replica`, `branch`, `web` | `replica/gossip-reconcile` | Gossip giữa bản sao; đối soát với chi nhánh | PT-04, PT-05, PT-07, PT-10 | K8, K9 | xong, đã merge (PR #4); 43 test, K1–K9 đạt trên 3 node một máy |
 | 4 | `web`, `replica`, `branch` | `web/sync-dashboard` | Topology sống, đọc đơn điệu, truy vết sự kiện, POS | — | chạy tay K1–K9; K11, K12 | xong, đã merge (PR #5); 58 test, selftest dashboard 22/22, POS 5/5; K1–K9, K11, K12 đạt trên 3 node một máy |
+| 4b | `web` | `web/ui-polish` | Chỉnh giao diện trước vòng 5: tràn ngang trên điện thoại, cột giờ tab Sự kiện, dải sự cố hệ thống ở Tổng quan, bớt nhiễu, ghi máy A/B/C trên sơ đồ, trang không bị cache | — | chạy tay trên 3 node | đã code (26/11/2026), selftest 24/24, chờ commit |
 | 5 | `infra`, `replica`, `web` | `ha/entry-failure-detector` | HA cổng vào (nginx ở mọi node, client tự chuyển); bộ phát hiện lỗi có trạng thái, kết luận theo đa số bản sao | PT-13 | K13, K14 | chưa làm |
 | 6 | `branch`, `replica`, `web` | `ha/hinted-handoff` | Chi nhánh sập vẫn bán: ghi hộ ở bản sao, chi nhánh phục hồi ở RECOVERING rồi kéo về áp theo thứ tự | PT-14 | K15 | chưa làm |
 | 7 | `infra`, `docs` | `infra/production-local` | Standby đồng bộ cho CSDL chi nhánh; vệ sinh vận hành; giám sát (tuỳ chọn); kiến trúc mục tiêu production trên giấy | PT-12 | K10a, K10b | chưa làm |
@@ -322,6 +323,11 @@ Xong khi: K10a không mất lượt bán nào đã báo thành công; K10b đo �
   mất đa số thì sau ~2 giây không hỏi được metadata (sơ đồ ghi "không hỏi được", không biết broker nào còn); node bị
   cô lập (K3, K7c) vẫn hỏi được broker thiểu số của nó nhưng nhận danh sách cũ, nên dashboard bỏ `brokers_up` của sink
   có `broker_ok = false`; vài chục giây sau khi một broker dừng, các sink có thể thấy danh sách khác nhau.
+- Phát hiện lúc làm 4b (chưa sửa, nên gộp vào vòng 5 vì cùng đụng `infra/`): (1) `make heal` nối lại mạng bằng
+  `--ip`, gắn cứng IP cho container; build lại thì container khác có thể nhận IP đó, container bị gắn cứng (đã gặp:
+  broker B, `topic-init`) không khởi động được, báo "Address already in use"; tạm xử lý bằng `docker rm` container đó
+  rồi `make local-up`. (2) `topic-init` chạy lại khi topic đã có thì lặp mãi mỗi 3 giây (`rpk topic create` trả mã
+  lỗi nên `until` không dừng), vô hại nhưng tốn log.
 - Vòng 5: trang mở từ cổng vào A gọi cổng vào B là khác origin; cần CORS ở nginx hoặc cách khác. Kiểm ở `/plan-task`
   vòng 5. Cổng host của nginx ở từng node (chế độ một máy) cũng chọn ở đó.
 - Vòng 5: ngưỡng SUSPECT, OFFLINE (theo chu kỳ heartbeat 5 giây) và cách tính đa số khi một bản sao đã chết (đa số

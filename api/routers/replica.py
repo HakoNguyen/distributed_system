@@ -20,7 +20,8 @@ router = APIRouter()
 
 @router.get("/", include_in_schema=False)
 def dashboard():
-    return FileResponse(WEB / "dashboard.html")
+    # no-cache: build lại image thì trình duyệt hỏi lại ngay, không hiện giao diện cũ lúc demo
+    return FileResponse(WEB / "dashboard.html", headers={"Cache-Control": "no-cache"})
 
 
 @router.get("/health")

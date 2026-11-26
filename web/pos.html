@@ -24,8 +24,12 @@
   .who { display: flex; align-items: baseline; gap: .7rem; }
   header h1 { margin: 0; font-size: 1.3rem; font-weight: 700; }
   header .role { color: var(--muted); }
-  #links { display: flex; flex-wrap: wrap; gap: .4rem; font-size: .82rem; }
-  #links span { border: 1px solid var(--rule); border-radius: 999px; padding: .1rem .6rem; color: var(--muted); }
+  #links { display: flex; flex-wrap: wrap; align-items: center; gap: .4rem; font-size: .85rem; }
+  #links::before { content: "Kết nối tới trung tâm"; color: var(--muted); margin-right: .2rem; }
+  #links span { display: inline-flex; align-items: center; gap: .35rem; border: 1px solid var(--rule); border-radius: 999px;
+                padding: .15rem .65rem; color: var(--ink); background: var(--card); }
+  #links span::before { content: ""; width: .5rem; height: .5rem; border-radius: 50%; background: var(--ok); }
+  #links span.down::before { background: var(--alert); }
   #links span b { color: var(--ink); font-weight: 600; }
   #links span.down { border-color: var(--alert); color: var(--alert); }
   #links span.down b { color: var(--alert); }

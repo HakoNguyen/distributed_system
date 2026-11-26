@@ -1,27 +1,40 @@
 # =====================================================================
-# Nginx: CỔNG VÀO DUY NHẤT của hệ thống, chạy trên máy A.
-# Người dùng chỉ cần nhớ http://<IP máy A>/ — không cần biết phía sau có
-# bao nhiêu bản sao, nằm ở máy nào (tính trong suốt vị trí).
+# Nginx: CỔNG VÀO, chạy ở MỌI máy (vòng 5), cấu hình giống hệt nhau: vào cổng nào cũng tới được
+# mọi bản sao và mọi chi nhánh (tính trong suốt vị trí). Một cổng chết thì dashboard, POS đang mở
+# tự chuyển sang cổng khác trong GATEWAYS (failover phía client, như bootstrap.servers của Kafka).
 #
 # ${REPLICA_A}... ${BRANCH_C} là địa chỉ host:port, thay bằng giá trị trong .env
 # lúc container khởi động:
 #   máy thật:  REPLICA_B=100.64.0.2:8000   BRANCH_B=100.64.0.2:8001 (cổng host)
 #   một máy:   REPLICA_B=replica-b:8000    BRANCH_B=branch-b:8000   (cổng trong container)
-# Tên được phân giải MỘT lần lúc nginx khởi động: một máy thì node B, C phải chạy
-# trước node A (make local-up lo việc này).
+# Tên được phân giải ĐỘNG (`resolve`, DNS của Docker 127.0.0.11, cần nginx >= 1.27.3): nginx khởi
+# động được cả khi node khác chưa chạy hoặc đang bị rút mạng; tên chưa có thì đường đó trả 502.
 # Chỉ có 2 máy thật: chạy được, nhưng bản sao C hiện "Không liên lạc được" và thỉnh thoảng một
 # request chậm khoảng 1 giây (mỗi worker nginx tự thử lại C sau 10 giây).
 # Muốn gọn: thêm # trước dòng "server ${REPLICA_C}" và bỏ "C" ở /lb/replicas.json.
 # =====================================================================
 
+# DNS nội bộ của Docker; hỏi lại tên mỗi 5 giây (IP đổi sau make heal hay build lại vẫn đúng)
+resolver 127.0.0.11 valid=5s ipv6=off;
+
 # Nhóm các bản sao trung tâm. Mặc định nginx chia lần lượt (round-robin).
+# zone: bộ nhớ chung giữa các worker, bắt buộc khi dùng `resolve`.
 upstream replicas {
+    zone replicas 64k;
     # max_fails=1 fail_timeout=10s: gọi một bản sao thất bại 1 lần thì
     # tạm gạch tên nó 10 giây, sau đó thử lại xem nó sống lại chưa.
-    server ${REPLICA_A}  max_fails=1 fail_timeout=10s;   # máy A
-    server ${REPLICA_B}  max_fails=1 fail_timeout=10s;   # máy B (qua mạng overlay)
-    server ${REPLICA_C}  max_fails=1 fail_timeout=10s;   # [MÁY C]
+    server ${REPLICA_A}  resolve max_fails=1 fail_timeout=10s;   # máy A
+    server ${REPLICA_B}  resolve max_fails=1 fail_timeout=10s;   # máy B (qua mạng overlay)
+    server ${REPLICA_C}  resolve max_fails=1 fail_timeout=10s;   # [MÁY C]
 }
+
+# Từng bản sao, từng chi nhánh riêng (đi thẳng, không chia tải)
+upstream replica_a { zone replica_a 64k; server ${REPLICA_A} resolve; }
+upstream replica_b { zone replica_b 64k; server ${REPLICA_B} resolve; }
+upstream replica_c { zone replica_c 64k; server ${REPLICA_C} resolve; }
+upstream branch_a  { zone branch_a  64k; server ${BRANCH_A}  resolve; }
+upstream branch_b  { zone branch_b  64k; server ${BRANCH_B}  resolve; }
+upstream branch_c  { zone branch_c  64k; server ${BRANCH_C}  resolve; }
 
 server {
     listen 80;
@@ -36,6 +49,15 @@ server {
     # Ghi vào mọi phản hồi địa chỉ bản sao đã trả lời, để kiểm tra bằng curl -I
     add_header X-Upstream $upstream_addr always;
 
+    # CORS (vòng 5): trang mở từ cổng này gọi được cổng khác khi chuyển cổng. Không có cookie hay
+    # xác thực nên cho mọi origin; production thì liệt kê đúng các origin (docs/spec.md mục 6).
+    # Không location nào được tự đặt add_header, nếu không các dòng này bị bỏ ở location đó.
+    add_header Access-Control-Allow-Origin  * always;
+    add_header Access-Control-Allow-Methods "GET, POST, OPTIONS" always;
+    add_header Access-Control-Allow-Headers "Content-Type" always;
+    # POS gửi JSON nên trình duyệt hỏi trước bằng OPTIONS
+    if ($request_method = OPTIONS) { return 204; }
+
     # ---------------- Dashboard: chia tải + tự chuyển khi lỗi ----------------
     location / {
         proxy_pass http://replicas;
@@ -46,22 +68,29 @@ server {
         proxy_next_upstream_tries 3;
     }
 
-    # ---------------- Đi thẳng tới từng bản sao, để so sánh chúng ----------------
+    # ---------------- Danh sách cho trình duyệt ----------------
     location = /lb/replicas.json {
         default_type application/json;
         return 200 '["A","B","C"]';
     }
-    location /replica/A/ { proxy_pass http://${REPLICA_A}/; }
-    location /replica/B/ { proxy_pass http://${REPLICA_B}/; }
-    location /replica/C/ { proxy_pass http://${REPLICA_C}/; }
+    # Mọi cổng vào (GATEWAYS, giống nhau ở mọi máy): trang đọc một lần lúc mở, để biết chuyển sang đâu
+    location = /lb/gateways.json {
+        default_type application/json;
+        return 200 '"${GATEWAYS}"';
+    }
+
+    # ---------------- Đi thẳng tới từng bản sao, để so sánh chúng ----------------
+    location /replica/A/ { proxy_pass http://replica_a/; }
+    location /replica/B/ { proxy_pass http://replica_b/; }
+    location /replica/C/ { proxy_pass http://replica_c/; }
 
     # ---------------- Màn hình quầy của từng chi nhánh ----------------
-    # Quản lý ở trụ sở mở http://<IP máy A>/cn2/ mà không cần biết CN2 ở máy nào.
+    # Quản lý ở trụ sở mở http://<IP máy bất kỳ>/cn2/ mà không cần biết CN2 ở máy nào.
     # Dữ liệu của một chi nhánh chỉ nằm ở chi nhánh đó, nên không có bản sao
     # dự phòng: máy chi nhánh mất mạng thì trang này báo rõ thay vì treo.
-    location /cn1/ { proxy_pass http://${BRANCH_A}/; error_page 502 504 = @branch_offline; }
-    location /cn2/ { proxy_pass http://${BRANCH_B}/; error_page 502 504 = @branch_offline; }
-    location /cn3/ { proxy_pass http://${BRANCH_C}/; error_page 502 504 = @branch_offline; }
+    location /cn1/ { proxy_pass http://branch_a/; error_page 502 504 = @branch_offline; }
+    location /cn2/ { proxy_pass http://branch_b/; error_page 502 504 = @branch_offline; }
+    location /cn3/ { proxy_pass http://branch_c/; error_page 502 504 = @branch_offline; }
 
     location @branch_offline {
         default_type "text/html; charset=utf-8";

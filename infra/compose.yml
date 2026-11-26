@@ -1,8 +1,8 @@
 # =====================================================================
 # MỘT file compose cho MỌI máy. Máy nào chạy gì là do file .env quyết định:
-#   - Mọi máy: 1 chi nhánh (branch_*, relay) + 1 bản sao trung tâm (replica_*, sink)
+#   - Mọi máy: 1 chi nhánh (branch_*, relay) + 1 bản sao trung tâm (replica_*, sink) + nginx (cổng vào, vòng 5)
 #   - Profile "broker" (mọi máy): 1 broker Redpanda; ba máy thành cụm 3 broker
-#   - Profile "core" (chỉ máy A): topic-init, console, nginx
+#   - Profile "core" (chỉ máy A): topic-init, console
 #     COMPOSE_PROFILES=core,broker ở máy A, =broker ở máy B, C.
 #
 # Chạy từ gốc repo: make up
@@ -181,7 +181,8 @@ services:
       - |
         rf=$$(echo "$$BROKER_SEEDS" | tr ',' '\n' | grep -c .)
         # LogAppendTime: timestamp thông điệp = giờ broker leader ghi (sink lưu event_log.kafka_ts để truy vết)
-        until out=$$(rpk topic create inventory.movement -p 3 -r $$rf -c write.caching=false -c message.timestamp.type=LogAppendTime -X brokers=$$KAFKA_BROKERS 2>&1) &&
+        # Điều kiện dừng là grep (sau `;`): topic đã có thì rpk trả mã lỗi nhưng in TOPIC_ALREADY_EXISTS, vẫn là xong
+        until out=$$(rpk topic create inventory.movement -p 3 -r $$rf -c write.caching=false -c message.timestamp.type=LogAppendTime -X brokers=$$KAFKA_BROKERS 2>&1);
               echo "$$out" | grep -qE 'inventory.movement +(OK|TOPIC_ALREADY_EXISTS)'; do
           echo "Chờ cụm broker: $$out"; sleep 3
         done
@@ -197,13 +198,15 @@ services:
       - "8080:8080"
     restart: unless-stopped
 
-  # Cổng vào duy nhất: http://<IP máy A>/
+  # Cổng vào ở MỌI máy (vòng 5): http://<IP máy bất kỳ>/. Ba nginx cấu hình giống nhau; một cổng chết thì
+  # dashboard, POS tự chuyển sang cổng khác trong GATEWAYS. Không thuộc profile nào.
   nginx:
-    profiles: [core]
-    image: nginx:1.27-alpine
-    # Địa chỉ host:port của bản sao và POS từng node. Máy thật: 100.64.0.2:8000; một máy: replica-b:8000.
-    # Compose kiểm `:?` cả khi profile core tắt, nên mọi file env đều phải có đủ 6 biến này.
+    # Cần nginx >= 1.27.3: tham số `resolve` trong upstream (phân giải tên động), nhờ vậy nginx khởi động được cả
+    # khi node khác chưa chạy hoặc đang bị rút mạng. Ghim bản cụ thể để build lại không đổi hành vi.
+    image: nginx:1.27.5-alpine
+    # Địa chỉ host:port của bản sao và POS từng node, GIỐNG NHAU ở mọi máy. Máy thật: 100.64.0.2:8000; một máy: replica-b:8000.
     environment:
+      GATEWAYS: ${GATEWAYS:?Chưa đặt GATEWAYS trong .env}
       REPLICA_A: ${REPLICA_A:?Chưa đặt REPLICA_A trong .env}
       REPLICA_B: ${REPLICA_B:?Chưa đặt REPLICA_B trong .env}
       REPLICA_C: ${REPLICA_C:?Chưa đặt REPLICA_C trong .env}

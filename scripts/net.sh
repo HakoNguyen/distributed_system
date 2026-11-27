@@ -131,6 +131,14 @@ check() {
     bad "$t: mọi 'server \${...}' trong upstream phải có 'resolve' (nginx không chết khi node khác chưa chạy)"
   grep -v '^ *#' "$t" | grep -q 'proxy_pass http://\${' &&
     bad "$t: proxy_pass phải trỏ vào upstream (có resolve), không trỏ thẳng \${REPLICA_X} (phân giải một lần lúc khởi động)"
+  # 5b. Vòng 6: chi nhánh chết thì /cnX/ (đường gốc) trả chính trang POS (@pos_page) để quầy ghi hộ được
+  for n in 1 2 3; do
+    grep -v '^ *#' "$t" | grep -E "location = /cn$n/ " | grep -q '@pos_page' ||
+      bad "$t: 'location = /cn$n/' phải có error_page ... @pos_page (vòng 6, ghi hộ)"
+  done
+  grep -v '^ *#' "$t" | grep -q 'location @pos_page' || bad "$t thiếu 'location @pos_page' (vòng 6)"
+  grep -q 'web/pos.html:/usr/share/nginx/pos.html' infra/compose.yml ||
+    bad "infra/compose.yml: nginx phải mount ../web/pos.html vào /usr/share/nginx/pos.html (vòng 6)"
 
   dup=$(echo $ports | tr ' ' '\n' | sort | uniq -d)
   [ -z "$dup" ] || bad "cổng host trùng giữa các node: $dup"

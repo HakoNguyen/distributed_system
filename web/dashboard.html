@@ -552,15 +552,20 @@ function branchState(n, sync, st) {
   const down = verdict === "OFFLINE", suspect = verdict === "SUSPECT";
   const relayBad = !!st?.relay?.failing_since;   // st: /cn<id>/api/status, chỉ có khi mở qua nginx
   const syncOff = !down && !suspect && (sync.down || relayBad);
+  const recovering = !down && !!n.recovering;   // vòng 6: chi nhánh tự báo đang áp ghi hộ, chưa nhận bán
   return {
-    s: down ? "bad" : suspect || syncOff ? "warn" : "ok", relayBad,
+    s: down ? "bad" : recovering || suspect || syncOff ? "warn" : "ok", relayBad,
     label: down ? `Mất liên lạc${n.last_seen ? " " + ago(n.last_seen).replace(" trước", "") : ""}${offCount(n)}`
-      : suspect ? "Nghi ngờ, chưa đủ đa số" : syncOff ? "Còn sống, đồng bộ dừng" : "Hoạt động",
+      : recovering ? "Đang phục hồi (áp ghi hộ)" : suspect ? "Nghi ngờ, chưa đủ đa số" : syncOff ? "Còn sống, đồng bộ dừng" : "Hoạt động",
     send: st === undefined ? "–" : st === null ? "không hỏi được" : relayBad ? `lỗi từ ${clock(st.relay.failing_since)}` : "được",
   };
 }
 
-function renderBranches(nodes, sync, statuses) {
+// Ghi hộ (vòng 6): "chờ 5 · đã áp 3 · từ chối 1" của một chi nhánh; null nếu chưa có lượt nào
+const handoffText = (h) => h && (h.pending || h.applied || h.rejected)
+  ? { s: h.rejected ? "bad" : h.pending ? "warn" : "muted", text: `chờ ${h.pending} · đã áp ${h.applied} · từ chối ${h.rejected}` } : null;
+
+function renderBranches(nodes, sync, statuses, handoff = {}) {
   const el = document.getElementById("branches");
   if (!nodes.length) {
     el.innerHTML = `<tbody><tr class="empty-row"><td>Chưa chi nhánh nào gửi heartbeat tới bản sao này. Kiểm tra dòng REPLICA_URLS trong file .env của các máy, và chắc rằng cổng 8000 của máy này đã mở.</td></tr></tbody>`;
@@ -569,16 +574,17 @@ function renderBranches(nodes, sync, statuses) {
   }
   let worst = "ok";
   const body = nodes.map((n) => {
-    const b = branchState(n, sync, statuses?.[n.branch_id]);
+    const b = branchState(n, sync, statuses?.[n.branch_id]), h = handoffText(handoff[n.branch_id]);
     worst = worse(worst, b.s);
     return `<tr style="--c:${color(n.branch_id)}">
       <td class="name"><span class="bname">CN${n.branch_id} ${esc(n.branch_name)}</span></td>
       <td class="name"><span class="pill ${b.s}">${b.label}</span></td>
       <td class="${n.outbox_backlog > 0 ? "warn" : "muted"}">${n.outbox_backlog}</td>
       <td title="Biến động mới nhất của chi nhánh mà bản sao này đã có, và lúc bản sao cập nhật nó">#${n.last_movement ?? "–"} <span class="muted">· ${ago(n.snapshot_updated_at)}</span></td>
+      <td class="${h?.s ?? "muted"}" title="Lượt bán ghi hộ ở trung tâm khi chi nhánh mất liên lạc (vòng 6): chờ chi nhánh áp, đã áp, bị từ chối vì không đủ tồn thật">${h?.text ?? "–"}</td>
     </tr>`;
   }).join("");
-  el.innerHTML = `<thead><tr><th class="name">Chi nhánh</th><th class="name">Trạng thái</th><th>Chờ gửi</th><th>Biến động gần nhất</th></tr></thead><tbody>${body}</tbody>`;
+  el.innerHTML = `<thead><tr><th class="name">Chi nhánh</th><th class="name">Trạng thái</th><th>Chờ gửi</th><th>Biến động gần nhất</th><th>Ghi hộ</th></tr></thead><tbody>${body}</tbody>`;
   setDot("tong-quan", worst);
 }
 
@@ -879,14 +885,27 @@ function svgEdge(d, st, flow, extra = "", dot = "var(--ok)") {
 }
 
 // Sự cố hệ thống để báo ở Tổng quan (hàm thuần, kiểm bằng ?selftest=1). peers null: mở thẳng một bản sao, không biết.
-function systemIssues(peers, sync, now, nodes = []) {
+// Ghi hộ (vòng 6): cộng số lượt theo chi nhánh qua digest của các bản sao (mở qua nginx: mọi bản sao; mở thẳng: một)
+function handoffTotals(digests) {
+  const out = {};
+  Object.values(digests).forEach((d) => Object.entries(d?.handoff || {}).forEach(([b, c]) => {
+    const t = out[b] ||= { pending: 0, applied: 0, rejected: 0 };
+    t.pending += c.pending; t.applied += c.applied; t.rejected += c.rejected;
+  }));
+  return out;
+}
+
+function systemIssues(peers, sync, now, nodes = [], handoff = {}) {
   const out = [];
   if (sync?.down) out.push({ s: "bad", text: "đồng bộ qua Redpanda đang dừng" });
   // Kết luận đa số về chi nhánh (PT-13): có cả khi mở thẳng một bản sao (góc nhìn kéo qua /api/views)
   nodes.forEach((n) => {
     if (n.verdict === "OFFLINE") out.push({ s: "bad", text: `CN${n.branch_id} mất liên lạc${offCount(n)}` });
+    else if (n.recovering) out.push({ s: "warn", text: `CN${n.branch_id} đang phục hồi (áp ghi hộ, chưa nhận bán)` });
     else if (n.verdict === "SUSPECT") out.push({ s: "warn", text: `CN${n.branch_id} nghi ngờ, chưa đủ đa số` });
   });
+  // Vòng 6: lượt ghi hộ còn chờ chi nhánh áp (lượt bị từ chối hiện ở bảng chi nhánh, cột Ghi hộ)
+  Object.entries(handoff).forEach(([b, h]) => { if (h.pending) out.push({ s: "warn", text: `CN${b}: ${h.pending} lượt ghi hộ chờ chi nhánh áp` }); });
   if (!peers) return out;
   const brokers = [1, 2, 3].map((id) => brokerState(peers.digests, id, now));
   if (brokers.every((b) => b.s === "unknown")) out.push({ s: "bad", text: "không hỏi được cụm broker (mất đa số?)" });
@@ -1137,10 +1156,11 @@ async function refresh() {
   if (shown) {
     const sync = syncState(shown.digest);
     renderKpis(shown, sync);
-    renderBranches(shown.nodes, sync, peers?.statuses);
+    const handoff = handoffTotals(peers ? peers.digests : { [shown.served_by]: shown.digest });
+    renderBranches(shown.nodes, sync, peers?.statuses, handoff);
     renderNodeTable(shown.nodes, sync, peers?.statuses);
     setDot("he-thong", worse(worse(renderTopology(peers, shown), replicaState), sync.down ? "bad" : "ok"));
-    renderSysAlert(systemIssues(peers, sync, Date.now(), shown.nodes));
+    renderSysAlert(systemIssues(peers, sync, Date.now(), shown.nodes, handoff));
   }
 }
 
@@ -1209,6 +1229,15 @@ function selftest() {
   check("mở thẳng bản sao (không có danh sách) -> chỉ một cổng", JSON.stringify(gateList("http://localhost:8000", null)) === JSON.stringify(["http://localhost:8000"]));
   check("cổng kế tiếp quay vòng", nextGate([L, B8, C8], 0) === 1 && nextGate([L, B8, C8], 2) === 0 && nextGate([L], 0) === 0);
   check("lỗi muộn của cổng cũ không làm nhảy thêm cổng", nextGate([L, B8, C8], 1, 0) === 1);
+  // Vòng 6: ghi hộ
+  const rec = branchState({ alive: true, state: "ONLINE", verdict: "ONLINE", recovering: true }, sync, undefined);
+  check("chi nhánh tự báo recovering -> warn 'Đang phục hồi'", rec.s === "warn" && rec.label.startsWith("Đang phục hồi"));
+  check("OFFLINE vẫn ưu tiên hơn recovering cũ", branchState({ alive: false, state: "OFFLINE", verdict: "OFFLINE", recovering: true, views: views("OFFLINE", "OFFLINE", null) }, sync, undefined).s === "bad");
+  const tot = handoffTotals({ A: { handoff: { 2: { pending: 3, applied: 1, rejected: 0 } } }, B: { handoff: { 2: { pending: 2, applied: 0, rejected: 1 } } }, C: null });
+  check("cộng số ghi hộ qua các bản sao, bỏ bản sao chết", tot[2].pending === 5 && tot[2].applied === 1 && tot[2].rejected === 1);
+  const hi = systemIssues(null, sync, now, [{ branch_id: 2, verdict: "ONLINE", recovering: true }], { 2: { pending: 5, applied: 0, rejected: 1 } });
+  check("dải sự cố: đang phục hồi và lượt chờ áp, không báo lượt đã từ chối", hi.length === 2 && hi[0].text.includes("phục hồi") && hi[1].text.includes("5 lượt"));
+  check("chữ cột Ghi hộ", handoffText({ pending: 0, applied: 5, rejected: 1 }).s === "bad" && handoffText({ pending: 0, applied: 0, rejected: 0 }) === null);
 
   const failed = results.filter(([, ok]) => !ok);
   const el = document.getElementById("selftest");

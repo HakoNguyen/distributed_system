@@ -10,6 +10,8 @@ Các kênh giao tiếp:
 | Gossip HTTP | `replica_api` → `/api/digest`, `/api/snapshot` của các bản sao khác, mỗi 10 giây | Đồng bộ, chỉ kéo; timeout 2 giây |
 | Đối soát HTTP | `replica_api` → `/api/snapshot` của chi nhánh còn sống, chỉ khi mất broker quá 15 giây | Đồng bộ, chỉ đọc (PT-07); timeout 2 giây |
 | Góc nhìn HTTP | `replica_api` → `/api/views` của các bản sao khác, mỗi 5 giây (vòng 5, PT-13) | Đồng bộ, chỉ kéo; timeout 2 giây |
+| Ghi hộ HTTP | POS → nginx → `/replica/<X>/api/handoff` khi chi nhánh OFFLINE (vòng 6, PT-14) | Đồng bộ; chống trùng bằng `request_id` |
+| Phục hồi HTTP | `branch_api` (`recovery_loop`) → `GET /api/handoff`, `POST /api/handoff/ack` của MỌI bản sao, mỗi 2 giây | Đồng bộ, chi nhánh tự kéo (PT-07); timeout 2 giây; ack sau khi commit |
 
 Tài liệu tự sinh: `http://localhost:8001/docs` (chi nhánh), `http://localhost:8000/docs` (bản sao).
 
@@ -34,12 +36,21 @@ Tài liệu tự sinh: `http://localhost:8001/docs` (chi nhánh), `http://localh
 `/api/status` có `relay: {last_ok_at, failing_since, last_error}` (bảng `relay_status`): `failing_since` khác NULL
 thì POS hiện "Gửi lên Redpanda: lỗi từ HH:MM:SS".
 
+`/api/status` có `recovery` (vòng 6, PT-14): `{state, since, pending, applied, rejected, incomplete, unreachable,
+last_run_at, last_error, rejected_items}`. `state` ∈ `ONLINE`, `RECOVERING`; `since` = lúc vào trạng thái đó;
+`pending` = số lượt ghi hộ còn chờ ở lần kéo gần nhất; `applied`, `rejected` = số lượt đã áp, đã từ chối từ khi
+`branch_api` khởi động; `incomplete` = đã tự ONLINE vì hết 60 giây mà còn bản sao không gọi được; `unreachable` = tên
+các bản sao không gọi được ở lần kéo gần nhất; `last_run_at`, `last_error` = lần chạy gần nhất của `recovery_loop` và
+lỗi của lần đó (NULL = chạy được); `rejected_items` = 20 dòng `handoff_rejected` mới nhất (`request_id`,
+`product_id`, `qty`, `reason`, `qty_on_hand`, `rejected_at`).
+
 | Mã lỗi | Khi nào |
 |---|---|
 | 404 `product_not_found` | Không có mã hàng |
 | 404 `movement_not_found` | `/api/movement/{movement_id}`: không có biến động đó ở chi nhánh này |
 | 409 `version_conflict` | Gửi `version` mà tồn đã bị sửa; kèm `current_version` |
 | 422 `insufficient_stock` | Bán quá tồn; kèm `qty_on_hand` |
+| 503 `branch_recovering` | `/api/sale`, `/api/receipt`, `/api/sale/random` khi chi nhánh đang RECOVERING (vòng 6), hoặc `recovery_loop` chưa chạy trong 10 giây gần nhất (`stale: true`); kèm `stale`. Không ghi gì; lời gọi đọc vẫn được |
 
 ## 2. Bản sao trung tâm (`ROLE=replica`, cổng 8000)
 
@@ -49,7 +60,10 @@ Mọi phản hồi có header `X-Served-By: replica-<X>`.
 |---|---|---|
 | GET | `/` | Dashboard (`web/dashboard.html`) |
 | GET | `/health` | Kiểm tra sống |
-| POST | `/api/heartbeat` | Nhận heartbeat. Body: `{branch_id, branch_name, node_time_ms, outbox_backlog, rtt_ms, branch_url}` (`branch_url` phải bắt đầu bằng `http://` hoặc `https://`) |
+| POST | `/api/heartbeat` | Nhận heartbeat. Body: `{branch_id, branch_name, node_time_ms, outbox_backlog, rtt_ms, branch_url, recovering}` (`branch_url` phải bắt đầu bằng `http://` hoặc `https://`; `recovering` mặc định `false`, vòng 6) |
+| POST | `/api/handoff` | Ghi hộ một lượt bán cho chi nhánh đang OFFLINE (vòng 6, PT-14). Body: `{branch_id, product_id, qty, request_id}` (`qty` 1–1000, `request_id` bắt buộc). Trả `{node, handoff_id, branch_id, product_id, qty, status, qty_on_hand}` (`qty_on_hand` = tồn tạm tính sau lượt này); gửi lại cùng `request_id` trả lượt cũ kèm `replayed: true` |
+| GET | `/api/handoff?branch_id=2` | Ghi hộ của một chi nhánh ở bản sao này: `{node, branch_id, accepting, counts: {pending, applied, rejected}, pending: [{handoff_id, request_id, product_id, qty}], stock: [{product_id, name, unit, reorder_point, qty_on_hand, version}]}`. `accepting` = kết luận đa số của bản sao này là OFFLINE (còn nhận ghi hộ); `pending` xếp theo `handoff_id`; `stock` cùng dạng `/api/inventory` của chi nhánh, `qty_on_hand` = tồn tạm tính, `version` = null. Chi nhánh kéo khi phục hồi, POS đọc khi ghi hộ. Chỉ đọc |
+| POST | `/api/handoff/ack` | Chi nhánh báo kết quả áp, sau khi đã commit. Body: `{branch_id, results: [{handoff_id, status, movement_id, reason}]}`, `status` ∈ `APPLIED`, `REJECTED`. Chỉ đổi lượt còn PENDING của đúng chi nhánh đó; trả `{node, updated}` |
 | GET | `/api/overview` | Mọi thứ dashboard cần trong một lần gọi: `served_by`, `nodes`, `inventory`, `events`, `digest` |
 | GET | `/api/digest` | Dấu vân tay, tổng tồn, `last_movement_by_branch`, bộ đếm và trạng thái broker của sink, `sync_peers` |
 | GET | `/api/snapshot` | Mọi ô của bảng tổng hợp, để bản sao khác gossip: `{node, cells: [{branch_id, product_id, qty_on_hand, last_movement, node_time}]}` |
@@ -72,7 +86,19 @@ mỗi ô `by_branch[b]` có thêm `source` (`kafka`, `gossip`, `reconcile`; `rec
 `/api/nodes` (và `nodes` trong overview): mỗi chi nhánh có `alive` (góc nhìn của bản sao này không phải OFFLINE, như
 trước vòng 5), `state` (góc nhìn của bản sao này), `views` (`{"A": "ONLINE", "B": null, "C": "OFFLINE"}`: góc nhìn của
 từng bản sao cấu hình; `null` = chưa có hoặc cũ quá 15 giây) và `verdict` (kết luận theo đa số, PT-13). Dashboard tô
-trạng thái chi nhánh theo `verdict`.
+trạng thái chi nhánh theo `verdict`. Vòng 6 thêm `recovering` (chi nhánh tự báo trong heartbeat gần nhất): dashboard
+ghi "Đang phục hồi" khi `recovering` và `verdict` khác OFFLINE.
+
+Mã lỗi `/api/handoff` (vòng 6):
+
+| Mã lỗi | Khi nào |
+|---|---|
+| 404 `product_not_found` | Bản sao không có ô (chi nhánh, mã hàng) trong snapshot |
+| 409 `branch_not_offline` | Kết luận đa số của bản sao này về chi nhánh không phải OFFLINE (PT-13): không ghi hộ |
+| 422 `insufficient_stock` | Tồn tạm tính không đủ; kèm `qty_on_hand` (tồn tạm tính) |
+
+`digest` (trong `/api/digest`, `/api/overview`) có thêm `handoff`: `{"2": {pending, applied, rejected}}`, số lượt ghi
+hộ ở bản sao này theo chi nhánh (chỉ chi nhánh có ghi hộ). Mở qua nginx thì dashboard cộng qua digest của mọi bản sao.
 
 `/api/trace` trả `{node, branch_id, movement_id, product_id, event, cell, via}`:
 - `event`: dòng `event_log` của sự kiện (`move_type`, `qty_delta`, `qty_after`, `node_time`, `received_at`,
@@ -128,4 +154,5 @@ cổng này gọi được cổng khác khi chuyển cổng. Không dùng cookie
 | `/lb/replicas.json` | nginx trả thẳng | Danh sách tên bản sao cho bảng so sánh |
 | `/lb/gateways.json` | nginx trả thẳng | Một chuỗi JSON, các cổng vào trong `GATEWAYS` cách nhau dấu phẩy: `"http://localhost,http://localhost:8012,http://localhost:8022"`. Dashboard và POS đọc một lần lúc mở trang |
 | `/replica/<X>/...` | đúng bản sao X | Để dashboard so dấu vân tay từng bản |
-| `/cn1/`, `/cn2/`, `/cn3/` | POS của chi nhánh tương ứng | Chi nhánh mất liên lạc thì trả trang 503 báo rõ |
+| `/cn1/`, `/cn2/`, `/cn3/` (đúng đường gốc) | POS của chi nhánh tương ứng | Chi nhánh không trả lời (502, 504) thì nginx trả chính trang POS từ file mount `/usr/share/nginx/pos.html` (`@pos_page`, vòng 6) để quầy ghi hộ được |
+| `/cn1/...`, `/cn2/...`, `/cn3/...` (đường con, API) | Chi nhánh tương ứng | Chi nhánh mất liên lạc thì trả trang 503 báo rõ (`@branch_offline`) |

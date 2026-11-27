@@ -1,4 +1,8 @@
 """Hàm dựng dữ liệu và đọc trạng thái dùng chung cho test."""
+import os
+
+import psycopg
+
 from common.db import pool
 from services.branch import seed_if_empty
 
@@ -100,4 +104,60 @@ def peer_view_rows() -> list[dict]:
     with pool.connection() as conn:
         return conn.execute(
             "SELECT peer, branch_id, state, seconds_since_seen FROM peer_view ORDER BY peer, branch_id"
+        ).fetchall()
+
+
+# ---------------------------------------------------------------------------
+# Ghi hộ (vòng 6, PT-14)
+# ---------------------------------------------------------------------------
+def set_qty(product_id: int, qty: int) -> None:
+    """Đặt tồn chi nhánh của một mã hàng (sau seed_branch), không qua sổ cái: chỉ để dựng tình huống."""
+    with pool.connection() as conn:
+        conn.execute("UPDATE inventory SET qty_on_hand = %s WHERE product_id = %s", (qty, product_id))
+
+
+def branch_qty(product_id: int) -> int:
+    with pool.connection() as conn:
+        return conn.execute("SELECT qty_on_hand FROM inventory WHERE product_id = %s", (product_id,)).fetchone()["qty_on_hand"]
+
+
+def handoff_pull(node: str, items: list[tuple[int, str, int, int]], accepting: bool = False) -> dict:
+    """Phản hồi GET /api/handoff của bản sao `node` (docs/api.md mục 2); items = (handoff_id, request_id, product_id, qty)."""
+    return {"node": node, "branch_id": 1, "accepting": accepting,
+            "counts": {"pending": len(items), "applied": 0, "rejected": 0},
+            "pending": [{"handoff_id": h, "request_id": r, "product_id": p, "qty": q} for h, r, p, q in items],
+            "stock": []}
+
+
+def rejected_rows() -> list[dict]:
+    with pool.connection() as conn:
+        return conn.execute(
+            "SELECT request_id, product_id, qty, reason, qty_on_hand FROM handoff_rejected ORDER BY rejected_at, request_id"
+        ).fetchall()
+
+
+def replica_cell(branch_id: int, product_id: int, qty: int, last_movement: int = 1) -> None:
+    """Một ô snapshot ở bản sao, như sink đã áp."""
+    with pool.connection() as conn:
+        conn.execute(
+            """INSERT INTO inventory_snapshot (branch_id, product_id, qty_on_hand, last_movement)
+               VALUES (%s, %s, %s, %s)""",
+            (branch_id, product_id, qty, last_movement),
+        )
+
+
+def handoff_rows() -> list[dict]:
+    with pool.connection() as conn:
+        return conn.execute(
+            "SELECT handoff_id, branch_id, request_id, product_id, qty, status, movement_id, reason FROM handoff ORDER BY handoff_id"
+        ).fetchall()
+
+
+def committed_moves(request_ids: list[str]) -> list[tuple]:
+    """(request_id, move_type, qty_delta) trong sổ cái nhìn từ MỘT KẾT NỐI KHÁC: chỉ thấy dữ liệu đã commit."""
+    with psycopg.connect(os.environ["DATABASE_URL"]) as other:
+        return other.execute(
+            """SELECT request_id, move_type, qty_delta FROM stock_movement
+               WHERE request_id = ANY(%s) ORDER BY movement_id""",
+            (request_ids,),
         ).fetchall()

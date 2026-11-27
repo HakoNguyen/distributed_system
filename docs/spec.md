@@ -23,6 +23,7 @@ Một chuỗi cửa hàng tiện lợi có nhiều chi nhánh ở nhiều thành
 | Bản sao tự vá lẫn nhau (anti-entropy) | Gossip: các bản sao so dấu vân tay, kéo snapshot, merge theo từng ô | K8 |
 | Phục hồi từ nguồn sự thật | Mất broker quá 15 giây thì bản sao đối soát thẳng với chi nhánh qua API | K9 |
 | Đọc đơn điệu (monotonic reads) | Dashboard nhớ phiên bản (`last_movement`) từng ô đã hiện; bản sao trả lời cũ hơn thì giữ số cũ và gắn nhãn "bản sao B trễ N sự kiện" | K11 |
+| Chi nhánh sập vẫn bán (hinted handoff, store-and-forward) | POS ghi hộ lượt bán lên một bản sao khi đa số kết luận chi nhánh OFFLINE; chi nhánh khởi động lại ở RECOVERING, tự kéo về áp đúng một lần theo thứ tự, lượt vượt tồn thật thành REJECTED và hiện ra (PT-14) | K15 |
 | Quan sát được đường đi của dữ liệu | Sơ đồ topology sống; truy vết một sự kiện qua chi nhánh, broker (timestamp Kafka), từng bản sao | K12, K1–K9 trên giao diện |
 
 ## 3. Kiến trúc
@@ -159,8 +160,25 @@ kèm `branch_url`: mất broker quá 15 giây thì bản sao dùng địa chỉ 
 góc nhìn cũ quá 15 giây. **Kết luận theo đa số** trên tổng số bản sao cấu hình (3, cần 2): đủ 2 góc nhìn OFFLINE thì
 OFFLINE, đủ 2 góc nhìn ONLINE thì ONLINE, còn lại SUSPECT ("nghi ngờ, chưa đủ đa số"); góc nhìn thiếu hoặc cũ không
 tính là OFFLINE. Nhờ vậy bản sao bị cô lập (K3) không tự kết luận được chi nhánh khác đã chết. Timeout không phân biệt
-được chậm với chết (K14). `RECOVERING` (chi nhánh tự báo đang phục hồi) dành cho vòng 6. Đối soát vẫn theo góc nhìn
-của chính bản sao (chi nhánh không OFFLINE), không theo đa số.
+được chậm với chết (K14). Đối soát vẫn theo góc nhìn của chính bản sao (chi nhánh không OFFLINE), không theo đa số.
+
+**Ghi hộ và RECOVERING** (vòng 6, PT-14, K15). Server chi nhánh sập thì quầy bán tiếp bằng **ghi hộ** (hinted
+handoff): POS mở qua cổng vào (`/cnX/` lỗi thì nginx trả chính trang POS, `@pos_page`) thấy chi nhánh lỗi 2 lần liên
+tiếp **và** kết luận đa số của bản sao sẽ ghi hộ (`/replica/<X>/api/nodes`) là OFFLINE thì gửi lượt bán (chỉ SALE)
+lên MỘT bản sao (`/replica/<X>/api/handoff`, thứ tự A, B, C, chỉ chuyển bản sao khi lỗi mạng hoặc 5xx, giữ
+`request_id`). Kết luận mới là SUSPECT thì POS chờ (khoá Thanh
+toán), không ghi hộ. Bản sao tự kiểm lại: chỉ nhận khi kết luận của chính nó là OFFLINE (409 `branch_not_offline`), và
+khi "tồn tạm tính" = snapshot trừ các lượt ghi hộ PENDING ở bản sao đó còn đủ.
+Chi nhánh khởi động luôn ở **RECOVERING**: chưa nhận bán, nhập (503 `branch_recovering`); luồng `recovery_loop` mỗi
+2 giây **tự kéo** ghi hộ từ mọi bản sao (`GET /api/handoff`, PT-07 giữ nguyên), áp theo thứ tự (thứ tự bản sao trong
+`REPLICA_URLS`, rồi `handoff_id` do bản sao cấp; không dùng đồng hồ) qua đúng đường bán hàng (`change_stock`,
+`request_id` chống trùng), lượt không đủ tồn thật thì REJECTED; commit xong mới báo bản sao (`POST /api/handoff/ack`).
+Lên **ONLINE** khi mọi bản sao trả lời, không bản nào còn lượt PENDING và không bản nào còn nhận ghi hộ (`accepting`:
+kết luận của bản sao đó vẫn là OFFLINE). Hết 60 giây mà vẫn có bản sao không gọi được thì tự ONLINE kèm cảnh báo
+`incomplete`. Đang ONLINE mà một bản sao gọi được có PENDING hoặc còn `accepting` thì quay lại RECOVERING; lượt bán chỉ
+được nhận khi luồng phục hồi đã chạy trong 10 giây gần nhất (chặn lượt bán chen vào ngay sau `docker unpause`).
+RECOVERING là cờ chi nhánh tự báo trong heartbeat (`recovering`), tách khỏi ONLINE/SUSPECT/OFFLINE theo timeout:
+kết luận đa số (PT-13) không đổi.
 
 ## 5. Mức nhất quán
 
@@ -213,7 +231,8 @@ của chính bản sao (chi nhánh không OFFLINE), không theo đa số.
 - **Đối soát chỉ bật khi mất broker quá 15 giây** và chỉ với chi nhánh còn heartbeat; chi nhánh mất liên lạc cả HTTP
   thì không đối soát được. Sink chết (không còn kiểm broker) thì không đối soát; gossip lo phần vá.
 - **Dữ liệu mỗi chi nhánh chỉ có một bản chính**, ở chính máy chi nhánh. Bản sao trung tâm chỉ là bản tổng hợp để
-  đọc. Máy B hỏng ổ cứng thì mất các lượt bán chưa kịp gửi đi.
+  đọc (ghi hộ, vòng 6, chỉ giữ tạm lượt bán khi chi nhánh chết, không phải bản sao của tồn). Máy B hỏng ổ cứng thì mất
+  các lượt bán chưa kịp gửi đi.
 - **Sơ đồ topology chỉ là góc nhìn ghép từ những gì hỏi được** (vòng 4): mở qua nginx thì ghép digest của mọi bản
   sao và `/cn<N>/api/status` của mọi chi nhánh; mở thẳng một bản sao thì chỉ có góc nhìn của bản sao đó, phần còn lại
   tô xám "không biết". Trạng thái từng broker lấy từ metadata mà sink thấy (`sink_stats.brokers_up`), chỉ tính sink
@@ -225,6 +244,27 @@ của chính bản sao (chi nhánh không OFFLINE), không theo đa số.
   `kafka_ts`, topic `LogAppendTime`; bản sao: `received_at`, `updated_at`): chỉ để hiển thị, không so thứ tự (PT-05).
   Trên máy thật các đồng hồ lệch nhau nên hiệu giữa hai mốc khác máy có thể âm. Ô vá bằng gossip hoặc đối soát không
   có dòng nhật ký, nên với bản sao đó chỉ biết "đã vá tới #N lúc nào", không biết mốc riêng của từng lượt bán.
+- **Ghi hộ: hai nơi cùng ghi khi mạng bị chia cắt** (vòng 6, K15 biến thể). Phân vùng mạng làm POS (qua cổng vào)
+  không gọi được chi nhánh trong khi chi nhánh vẫn sống và vẫn bán ở quầy mở thẳng: đa số bản sao kết luận OFFLINE,
+  POS ghi hộ, hai nơi cùng ghi. Có thể bán quá tồn; chỉ phát hiện lúc chi nhánh áp lại (lượt thừa thành REJECTED, hiện
+  trên POS và dashboard). PT-13 làm giảm khả năng này (một đường hỏng riêng lẻ không đủ) nhưng không loại bỏ: chi
+  nhánh bị cô lập không biết đa số đã kết luận nó chết. Cách triệt để là **lease kèm fencing token** (chi nhánh chỉ
+  được ghi khi còn lease do đa số cấp, mỗi lease một số tăng dần, lượt ghi kèm số cũ bị từ chối); ghi vào "kiến trúc
+  mục tiêu production" (vòng 7). Đo ở K15 biến thể: sau `heal`, chi nhánh vào RECOVERING, lượt thừa thành REJECTED.
+- **Tồn tạm tính chỉ tính ghi hộ ở chính bản sao đó**: POS dồn ghi hộ về một bản sao; chỉ khi bản sao đó lỗi giữa
+  chừng thì ghi hộ rải sang bản sao khác, và bản sao sau không trừ các lượt PENDING ở bản sao trước, nên có thể nhận
+  quá tồn. Tồn tạm tính còn dựa vào snapshot, mà snapshot thiếu các lượt bán chi nhánh chưa kịp gửi lên trước khi
+  chết. Cả hai trường hợp đều chỉ lộ ra lúc áp lại: lượt thừa thành REJECTED. Dashboard cộng số ghi hộ qua digest các
+  bản sao nên một lượt nằm ở hai bản sao bị đếm hai lần.
+- **Ngoại lệ của PT-14: hết 60 giây phục hồi** (`RECOVERY_TIMEOUT_S`). Chi nhánh khởi động lại mà vẫn có bản sao không
+  gọi được thì sau 60 giây tự ONLINE kèm cảnh báo `incomplete` (POS, dashboard), để một bản sao chết không làm quầy
+  dừng mãi. Ghi hộ còn nằm ở bản sao đó (nếu có) được áp muộn khi gọi lại được, nghĩa là sau các lượt bán mới; có thể
+  bị REJECTED. Chờ mãi thì đúng hơn nhưng quầy dừng theo bản sao.
+- **Chỉ POS mở qua cổng vào mới ghi hộ được**: mở thẳng chi nhánh (`:8001`) thì chi nhánh chết là không mở được trang.
+  Khởi động lại (cả `docker pause`/`unpause`, `make heal` sau khi đa số đã kết luận OFFLINE) thì chi nhánh ở
+  RECOVERING vài giây tới khi mọi bản sao thôi kết luận OFFLINE, kể cả khi không có ghi hộ nào (đo ở `docs/demo.md`
+  K4, K14). Trạng thái phục hồi nằm trong bộ nhớ `branch_api`: chỉ `branch_db` chết còn `branch_api` sống thì chi
+  nhánh phát hiện ghi hộ trong lần kéo kế tiếp (≤ 2 giây), không có kịch bản riêng.
 - **Nginx chỉ tự thử lại yêu cầu idempotent (GET).** Lệnh bán (POST) qua nginx mà thất bại thì không được thử lại
   tự động. POS tự bảo vệ bằng `request_id`.
 
@@ -262,3 +302,4 @@ dòng ở đây trước khi code.
 | PT-10 | Mọi kênh cập nhật snapshot (sink, gossip, đối soát) dùng chung một luật merge giao hoán, lũy đẳng theo từng ô | `merge_cells` (`api/services/replica.py`), gọi từ `apply_event`, `merge_replica_snapshot`, `merge_branch_snapshot` |
 | PT-11 | Mất đa số broker không làm dừng bán; trạng thái "đồng bộ dừng" phải hiện trên POS và dashboard | `record_relay_result` (`relay_status`), `record_broker_check` (`sink_stats`), `web/pos.html`, `web/dashboard.html` |
 | PT-13 | Một chi nhánh chỉ bị coi là OFFLINE khi đa số bản sao, tính trên **tổng số bản sao cấu hình** (2/3), cùng thấy OFFLINE; góc nhìn thiếu hoặc cũ quá 15 giây không tính là OFFLINE. Một bản sao mất liên lạc riêng lẻ chỉ đổi góc nhìn của chính nó | `branch_state`, `majority_state`, `query_nodes` (`api/services/replica.py`); góc nhìn bản sao khác kéo qua `GET /api/views` (`view_loop` trong `api/workers/gossip.py`), lưu ở `peer_view` |
+| PT-14 | Mỗi lượt ghi hộ được áp vào chi nhánh **đúng một lần**, theo thứ tự ghi hộ (thứ tự bản sao trong `REPLICA_URLS`, rồi `handoff_id`), **trước khi** chi nhánh nhận lượt bán mới; lượt không áp được thì REJECTED và hiện ra (POS, dashboard), không mất lặng lẽ. Ngoại lệ duy nhất: hết 60 giây (`RECOVERY_TIMEOUT_S`) mà vẫn có bản sao không gọi được thì chi nhánh lên ONLINE kèm cảnh báo `incomplete`; ghi hộ còn ở bản sao đó được áp muộn khi gọi lại được, theo cùng luật (mục 6) | `require_online`, `next_recovery_state`, `collect_handoffs`, `apply_handoffs`, `recovery_once` (`api/services/branch.py`), gọi từ `api/workers/recovery.py`; `store_handoff`, `record_handoff_ack` (`api/services/replica.py`) |

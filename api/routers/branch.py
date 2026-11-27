@@ -65,6 +65,8 @@ def status():
         "sync_stuck": b["n"] > 0 and oldest >= STUCK_AFTER_S,
         # Relay ghi lại lần gửi cuối: failing_since khác None -> "Gửi lên Redpanda: lỗi từ HH:MM:SS"
         "relay": branch.relay_status(),
+        # Ghi hộ (vòng 6): ONLINE / RECOVERING, số đã áp, đã từ chối, lần chạy cuối của luồng phục hồi
+        "recovery": branch.recovery_status(),
         "links": [
             {"name": l["name"], "ok": l["ok"], "rtt_ms": l["rtt_ms"],
              "seconds_since_ok": None if l["last_ok"] is None
@@ -84,11 +86,13 @@ def timed(fn, *args):
 
 @router.post("/api/sale")
 def sale(req: StockChange):
+    branch.require_online()  # RECOVERING: áp xong ghi hộ rồi mới nhận bán mới (PT-14)
     return timed(branch.change_stock, req.product_id, -req.qty, "SALE", req.version, req.request_id)
 
 
 @router.post("/api/receipt")
 def receipt(req: StockChange):
+    branch.require_online()
     return timed(branch.change_stock, req.product_id, +req.qty, "RECEIPT", req.version,
                  req.request_id)
 
@@ -96,4 +100,5 @@ def receipt(req: StockChange):
 @router.post("/api/sale/random")
 def random_sales(count: int = 20):
     """Bán nhanh `count` đơn ngẫu nhiên, mỗi đơn 1–3 đơn vị. Dùng khi demo."""
+    branch.require_online()
     return branch.random_sales(count)

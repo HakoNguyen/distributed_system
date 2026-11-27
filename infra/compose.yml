@@ -216,6 +216,8 @@ services:
     volumes:
       # Ảnh nginx tự thay ${REPLICA_B}... trong file .template rồi chép vào conf.d
       - ./nginx/default.conf.template:/etc/nginx/templates/default.conf.template:ro
+      # Vòng 6: chi nhánh chết thì /cnX/ trả chính trang POS từ file này (@pos_page) để quầy ghi hộ qua bản sao
+      - ../web/pos.html:/usr/share/nginx/pos.html:ro
     ports:
       - "${NGINX_PORT:-80}:80"
     depends_on:

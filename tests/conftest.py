@@ -4,6 +4,7 @@ Chạy bằng `make test`: pytest chạy trong container, CSDL là `test_db` (in
 Một CSDL chứa cả schema chi nhánh lẫn bản sao (tên bảng không trùng), nên test được cả hai vai.
 """
 import os
+import time
 from pathlib import Path
 
 import pytest
@@ -22,6 +23,7 @@ from fastapi.testclient import TestClient  # noqa: E402
 from common.db import pool  # noqa: E402
 from routers import branch as branch_router  # noqa: E402
 from routers import replica as replica_router  # noqa: E402
+from services import branch as branch_service  # noqa: E402
 
 
 @pytest.fixture(scope="session")
@@ -46,7 +48,7 @@ def database():
 @pytest.fixture
 def db(database):
     """Mỗi test bắt đầu với CSDL trống, chỉ còn danh mục sản phẩm và các bảng một dòng
-    (bộ đếm của sink, trạng thái relay)."""
+    (bộ đếm của sink, trạng thái relay); chi nhánh ở ONLINE."""
     with pool.connection() as conn:
         tables = [r["tablename"] for r in conn.execute(
             "SELECT tablename FROM pg_tables WHERE schemaname = 'public' AND tablename <> 'product'"
@@ -54,6 +56,9 @@ def db(database):
         conn.execute(f"TRUNCATE {', '.join(tables)} RESTART IDENTITY CASCADE")
         conn.execute("INSERT INTO sink_stats (id) VALUES (1)")
         conn.execute("INSERT INTO relay_status (id) VALUES (1)")
+    # Chi nhánh trong test: ONLINE, luồng phục hồi vừa chạy (vòng 6), nên test gọi /api/sale như trước
+    branch_service.recovery.update(state="ONLINE", incomplete=False, checked_at=time.monotonic(), last_run_at=None,
+                                   last_error=None, unreachable=[], pending=0, applied=0, rejected=0)
 
 
 def _client(router) -> TestClient:

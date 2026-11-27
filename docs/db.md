@@ -24,6 +24,7 @@ Chỉ chứa tồn kho của chính chi nhánh đó, không biết gì về chi 
 | `stock_movement` | Sổ cái biến động, **chỉ ghi thêm** | `movement_id` BIGSERIAL tăng dần trong chi nhánh; `move_type` ∈ INIT, SALE, RECEIPT; `request_id` UNIQUE |
 | `outbox` | Hộp thư đi: sự kiện chờ relay gửi | `event_id` = `movement_id`; `sent_at IS NULL` = chưa gửi; chỉ mục riêng cho dòng chưa gửi |
 | `relay_status` | Trạng thái gửi của relay, hiện lên POS | Đúng một dòng (`id = 1`); `last_ok_at`, `failing_since` (NULL = đang gửi được), `last_error` |
+| `handoff_rejected` | Lượt ghi hộ chi nhánh đã từ chối lúc áp lại (vòng 6, PT-14) | `request_id` khoá chính; `product_id`, `qty`, `reason` (`insufficient_stock`, `product_not_found`), `qty_on_hand` (tồn lúc từ chối), `rejected_at`. Quyết định đã chốt: kéo lại lượt đó thì vẫn REJECTED, kể cả khi tồn đã tăng |
 
 Quy tắc ghi (`api/services/branch.py`):
 - Sửa `inventory`, thêm `stock_movement`, thêm `outbox` luôn trong **một** transaction.
@@ -32,6 +33,21 @@ Quy tắc ghi (`api/services/branch.py`):
 - Gửi lại cùng `request_id` thì trả kết quả cũ, không trừ lần hai.
 - Lần chạy đầu, mỗi mã hàng có một biến động `INIT` đi qua outbox như mọi lượt bán, nên trung tâm nhận tồn ban đầu
   qua đúng con đường sự kiện.
+
+Quy tắc áp ghi hộ (vòng 6, PT-14; `recovery_once` trong `api/services/branch.py`, `workers/recovery.py` truyền vào
+hàm kéo `pull` và hàm báo `ack` như `relay_batch(send)`):
+- Kéo `GET /api/handoff?branch_id=<mình>` của mọi bản sao **ngoài transaction**; dữ liệu nhận được kiểm bằng model
+  `HandoffItem`, sai thì coi như không gọi được bản sao đó.
+- `collect_handoffs`: gộp các lượt PENDING, xếp theo (thứ tự bản sao trong `REPLICA_URLS`, `handoff_id`), mỗi
+  `request_id` một lượt (lượt nằm ở hai bản sao vì POS chuyển bản sao giữa chừng thì áp một lần, báo cả hai).
+- `apply_handoffs`: theo đúng thứ tự, mỗi lượt: đã có trong `handoff_rejected` → REJECTED như cũ; không thì
+  `change_stock(-qty, 'SALE', request_id)` (MỘT transaction: tồn, sổ cái, outbox, PT-02; `request_id` đã có thì trả
+  kết quả cũ, PT-08) → APPLIED; 422/404 → ghi `handoff_rejected` (transaction riêng) → REJECTED. Lỗi khác (mất CSDL)
+  thì dừng, không áp các lượt sau, để giữ thứ tự.
+- Chỉ sau khi các lượt đã commit mới gọi `ack` cho từng bản sao giữ lượt đó. Ack mất thì lần kéo sau lượt đó còn
+  PENDING, áp lại không trừ thêm, rồi báo lại.
+- Trạng thái ONLINE / RECOVERING nằm trong bộ nhớ `branch_api` (`recovery`), tính bằng hàm thuần `next_recovery_state`
+  (`docs/spec.md` mục 4). Mọi lỗi trong một lần chạy bị bắt, ghi vào `last_error`; luồng không dừng.
 
 Quy tắc của relay (`relay_batch`, `record_relay_result`):
 - Đọc lô `outbox` chưa gửi, gửi lên Redpanda **ngoài transaction**, chỉ khi cả lô được xác nhận mới
@@ -51,12 +67,14 @@ Không giữ bản chính của tồn kho; chỉ giữ bảng tổng hợp dựn
 | `sink_stats` | Bộ đếm của sink: đã áp, bản trùng đã bỏ qua; trạng thái đường đọc Redpanda | Đúng một dòng (`id = 1`) |
 | `sync_peer` | Lần trao đổi trực tiếp cuối với từng nơi: bản sao khác (gossip) hoặc chi nhánh (đối soát) | Một dòng một nơi, tạo ở lần trao đổi đầu |
 | `peer_view` | Góc nhìn của bản sao KHÁC về từng chi nhánh (vòng 5, PT-13), kéo qua `GET /api/views` | Khoá chính `(peer, branch_id)`; `state` ∈ ONLINE, SUSPECT, OFFLINE; góc nhìn của chính bản sao này không lưu, tính từ `node_status` |
+| `handoff` | Lượt bán ghi hộ cho chi nhánh đang OFFLINE (vòng 6, PT-14), chờ chi nhánh tự kéo về áp | `handoff_id` BIGSERIAL (thứ tự nhận ở bản sao này); UNIQUE `(branch_id, request_id)`; `status` ∈ PENDING, APPLIED, REJECTED |
 
 Cột từng bảng:
 
 | Bảng | Cột |
 |---|---|
-| `node_status` | `branch_id` (khoá chính), `branch_name`, `last_seen` (giờ trung tâm lúc nhận), `node_time` (giờ chi nhánh), `outbox_backlog`, `rtt_ms`, `branch_url` (địa chỉ POS chi nhánh tự báo trong heartbeat, dùng để đối soát) |
+| `node_status` | `branch_id` (khoá chính), `branch_name`, `last_seen` (giờ trung tâm lúc nhận), `node_time` (giờ chi nhánh), `outbox_backlog`, `rtt_ms`, `branch_url` (địa chỉ POS chi nhánh tự báo trong heartbeat, dùng để đối soát), `recovering` (chi nhánh tự báo đang RECOVERING, vòng 6; không đổi `state`, `verdict`) |
+| `handoff` | `handoff_id`, `branch_id`, `request_id`, `product_id`, `qty` (1–1000), `status`, `movement_id` (APPLIED: biến động chi nhánh tạo ra), `reason` (REJECTED: `insufficient_stock`, `product_not_found`), `created_at` (giờ bản sao nhận, chỉ để hiển thị), `decided_at` (lúc nhận ack) |
 | `inventory_snapshot` | `branch_id`, `product_id` (khoá chính kép), `qty_on_hand`, `last_movement`, `node_time` (giờ chi nhánh của biến động đó), `updated_at` (giờ trung tâm cập nhật), `source` (kênh đã ghi giá trị hiện tại: `kafka`, `gossip`, `reconcile`; không nằm trong dấu vân tay) |
 | `sync_peer` | `peer` (khoá chính: tên bản sao `A`, hoặc `CN2` cho chi nhánh), `channel` (`gossip` hoặc `reconcile`), `last_ok_at` (lần cuối gọi được và merge xong), `failing_since` (lỗi đầu tiên của đợt lỗi hiện tại; NULL = đang gọi được), `last_error`, `cells_patched` (tổng số ô đã vá nhờ nơi này) |
 | `peer_view` | `peer` (tên bản sao khác `A`), `branch_id` (khoá chính kép), `state` (`ONLINE`, `SUSPECT`, `OFFLINE`, theo đánh giá của `peer`), `seconds_since_seen` (tuổi heartbeat theo đồng hồ của `peer`, chỉ để hiển thị), `received_at` (giờ bản sao NÀY nhận góc nhìn; cũ quá 15 giây thì bỏ) |
@@ -97,6 +115,20 @@ Quy tắc ghi của kênh trực tiếp (vòng 3; `workers/gossip.py` gọi mạ
   `OFFLINE`, đủ chừng đó `ONLINE` thì `ONLINE`, còn lại `SUSPECT`.
 - `query_nodes`: thêm `state` (góc nhìn của mình), `views` (`{tên bản sao: state hoặc null}`, đủ mọi bản sao cấu hình),
   `verdict` (kết luận đa số). `alive` giữ nguyên nghĩa: góc nhìn của mình không phải `OFFLINE`.
+
+**Ghi hộ** (vòng 6, PT-14; ngữ cảnh ở `docs/spec.md` mục 4):
+- `store_handoff(req)`: MỘT transaction. Khoá ô `inventory_snapshot (branch_id, product_id)` bằng `FOR UPDATE` (hai
+  lượt ghi hộ cùng mã xếp hàng lần lượt, như PT-09), kiểm kết luận đa số của chính bản sao này về chi nhánh là
+  OFFLINE (không thì 409 `branch_not_offline`), tồn tạm tính = `qty_on_hand` của ô trừ Σ `qty` các lượt PENDING cùng
+  ô ở bản sao này; không đủ thì 422 `insufficient_stock`; không có ô thì 404 `product_not_found`. Rồi `INSERT ... ON
+  CONFLICT (branch_id, request_id) DO NOTHING`: gửi lại cùng `request_id` trả lượt cũ kèm `replayed`.
+- `query_handoff(conn, branch_id)`: chỉ đọc. `accepting` = kết luận đa số của bản sao này về chi nhánh là OFFLINE;
+  `pending` xếp theo `handoff_id`; `stock` = tồn tạm tính từng mã.
+- `record_handoff_ack(ack)`: MỘT câu `UPDATE handoff SET status, movement_id, reason, decided_at = now() WHERE
+  branch_id = ... AND handoff_id = ... AND status = 'PENDING'`: ack trùng hay ack muộn không đổi lượt đã chốt.
+- Bản sao không ghi gì vào CSDL chi nhánh (PT-07): chỉ đổi bảng của chính nó khi chi nhánh báo.
+- Ghi hộ không đổi `inventory_snapshot` và dấu vân tay: số tồn chỉ đổi khi chi nhánh áp xong và sự kiện đi qua
+  Redpanda như mọi lượt bán.
 
 **Ô được vá không có dòng `event_log`**: gossip và đối soát chỉ mang số tồn mới nhất của ô, không mang các lượt
 bán ở giữa, nên không bịa dòng nhật ký. Hệ quả: `query_events` (danh sách sự kiện trên dashboard) thiếu các lượt đó

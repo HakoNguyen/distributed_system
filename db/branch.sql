@@ -47,3 +47,15 @@ CREATE TABLE relay_status (
     last_error    TEXT          -- lỗi gần nhất
 );
 INSERT INTO relay_status (id) VALUES (1);
+
+-- Lượt ghi hộ chi nhánh đã TỪ CHỐI lúc tự kéo về áp (vòng 6, PT-14): không đủ tồn thật hoặc không có mã hàng.
+-- Quyết định đã chốt: kéo lại lượt đó (ack bị mất) thì vẫn REJECTED, kể cả khi tồn đã tăng.
+-- Lượt áp được không cần bảng riêng: nằm trong stock_movement theo request_id.
+CREATE TABLE handoff_rejected (
+    request_id  TEXT        PRIMARY KEY,
+    product_id  INT         NOT NULL,
+    qty         INT         NOT NULL,
+    reason      TEXT        NOT NULL CHECK (reason IN ('insufficient_stock', 'product_not_found')),
+    qty_on_hand INT,                                -- tồn lúc từ chối (NULL nếu không có mã hàng)
+    rejected_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);

@@ -28,12 +28,15 @@ code, không sửa kỳ vọng.
   `BRANCH_X` là `<IP overlay máy X>:8000`, `:8001`; mọi service nối `minigo-wan` có `ipv4_address` trong
   `10.210.0.2`–`.127`, không trùng giữa các node; template nginx có `resolver 127.0.0.11`, mọi `server ${...}` có
   `resolve`, `proxy_pass` chỉ trỏ upstream, có CORS và `/lb/gateways.json`. Chế độ máy thật: `config -q` với `may-a/b/c.env`;
-  vòng 8 gom các kịch bản chính vào `scripts/chaos-check.sh`.
+  vòng 6: template có `location = /cnX/` với `@pos_page` cho cả 3 chi nhánh, có `location @pos_page`, compose mount
+  `web/pos.html` vào nginx; vòng 8 gom các kịch bản chính vào `scripts/chaos-check.sh`.
 - Giao diện (vòng 4): repo không có công cụ test JavaScript. Logic thuần của `web/dashboard.html` (đọc đơn điệu
   `compareViews`; màu cạnh `relayEdge`, `sinkEdge`, `brokerState`, `gossipEdge`; trạng thái chi nhánh `branchState`)
   và của `web/pos.html` (kết quả gửi một dòng phiếu `settle`, giữ hay bỏ `request_id`; tìm hàng `match`) kiểm bằng
   `?selftest=1` (vòng 5 thêm: chọn cổng vào `gateList`, `nextGate`; POS `posPrefix`, `apiUrl`; trạng thái chi nhánh
-  theo `verdict`; `systemIssues` báo chi nhánh OFFLINE): mở `http://localhost/?selftest=1` hoặc `http://localhost/cn2/?selftest=1`, thanh bên / dưới phiếu
+  theo `verdict`; `systemIssues` báo chi nhánh OFFLINE; vòng 6 thêm: POS `posMode`, `branchFromPrefix`, `settle` giữ
+  `request_id` khi `branch_recovering`, `branch_not_offline`, 502; dashboard `handoffTotals`, `handoffText`, "Đang phục
+  hồi", `systemIssues` báo phục hồi và ghi hộ chờ áp): mở `http://localhost/?selftest=1` hoặc `http://localhost/cn2/?selftest=1`, thanh bên / dưới phiếu
   ghi "Selftest: n/n đạt" (và in ra console). **Chạy tay, không nằm trong `make check`.** Phần hiển thị kiểm bằng kịch bản chạy tay K1–K9, K11, K12. Phần server phục vụ truy vết
   (`/api/trace`, `/api/movement/{movement_id}`, `kafka_ts`, `brokers_up`, `last_movement`) có pytest như mọi phần khác.
 
@@ -52,6 +55,7 @@ code, không sửa kỳ vọng.
 | PT-09 | `tests/branch/test_change_stock.py::test_oversell_is_rejected_and_leaves_no_event` | xanh |
 | PT-10 | `tests/replica/test_merge_cells.py` (4 test: giao hoán, lũy đẳng, không ghi đè ô mới hơn hoặc bằng, đếm ô vá và `source`); `tests/replica/test_gossip.py`: vá sau 2 lần kiểm (`test_first_mismatch_only_remembers_cells_ahead`, `test_sink_catching_up_between_checks_patches_nothing`, `test_cell_still_behind_after_two_checks_is_patched_with_latest_value`, `test_normal_sink_lag_never_counts_as_patched`), ghi trao đổi (`test_replica_snapshot_merge_records_exchange_and_counts_patched`, `test_peer_error_keeps_last_ok_and_first_failure`, `test_invalid_cell_from_peer_is_rejected_and_writes_nothing`), đối soát (`test_branch_snapshot_merge_marks_reconcile`, 4 test `reconcile_targets`: chưa kiểm/đang được, mất < 15 giây, chỉ chi nhánh sống có `branch_url`, sink chết), endpoint và dashboard (`test_snapshot_endpoint_lists_cells`, `test_heartbeat_stores_branch_url`, `test_heartbeat_rejects_non_http_branch_url`, `test_digest_and_inventory_expose_sync_state`, `test_source_is_not_part_of_fingerprint`); truy vết ô vá không có dòng `event_log` (vòng 4, `tests/replica/test_trace.py`: `test_cell_patched_by_gossip_has_no_log_row`, `test_older_event_covered_by_gossip_patch`) | xanh |
 | PT-13 | `tests/replica/test_failure_detector.py` (vòng 5, 25 trường hợp): ngưỡng theo tuổi heartbeat (`test_state_thresholds_follow_heartbeat_age`: 0 và 7,9 giây ONLINE, 8 và 14,9 SUSPECT, 15 và 60 OFFLINE); đa số trên tổng số bản sao (`test_two_of_three_offline_is_offline`, `test_one_of_three_offline_is_not_offline`, `test_two_offline_with_dead_replica_is_still_offline`, `test_isolated_replica_cannot_conclude_offline`, `test_no_quorum_either_way_is_suspect`, `test_two_online_with_dead_replica_is_online`); endpoint (`test_views_endpoint_reports_own_state`, `test_views_endpoint_writes_nothing`); góc nhìn bản sao khác (`test_peer_view_upserts_latest_state`, `test_invalid_peer_view_writes_nothing`: trạng thái lạ, tuổi âm, thiếu trường, một dòng hỏng thì không ghi dòng nào); `query_nodes` (`test_nodes_show_own_state_views_and_verdict`, `test_only_this_replica_lost_contact_keeps_verdict_online`, `test_stale_peer_view_is_ignored`, `test_isolated_replica_without_peer_views_is_only_suspect`, `test_peer_view_of_other_branch_does_not_leak`). Các test `reconcile_targets` cũ giữ nguyên: đối soát vẫn theo góc nhìn riêng (K9 không đổi) | xanh |
+| PT-14 | `tests/branch/test_handoff.py` (vòng 6, 33 trường hợp): áp đúng một lần (`test_apply_twice_deducts_once`, `test_applied_handoff_goes_out_like_a_sale`), thứ tự (`test_apply_follows_handoff_order_within_replica`, `test_handoff_id_not_list_position_decides_order`, `test_replicas_applied_in_configured_order`), vượt tồn thật thành REJECTED và quyết định chốt (`test_real_oversell_becomes_rejected_and_is_recorded`, `test_rejected_decision_is_final_even_after_restock`, `test_unknown_product_is_rejected`), gom nhiều bản sao (`test_collect_from_many_replicas_no_duplicate_no_loss`), ack sau commit (`test_ack_only_after_commit_and_to_every_holder`, `test_unexpected_error_stops_and_acks_only_done`, `test_ack_failure_for_one_replica_does_not_block_others`), dữ liệu hỏng (`test_invalid_data_from_replica_is_not_applied`), luồng không chết (`test_recovery_once_survives_any_error_and_records_last_run`), RECOVERING chặn ghi (`test_sale_rejected_while_recovering` ×3, `test_sale_rejected_when_recovery_loop_is_stale`, `test_reads_still_work_while_recovering`), chuyển trạng thái (`test_recovery_state_transitions`, 13 trường hợp), `/api/status` (`test_status_shows_recovery_and_rejected_items`); `tests/replica/test_handoff.py` (15 trường hợp): nhận khi OFFLINE, tồn tạm tính, 409 khi chưa OFFLINE, 404, trùng `request_id`, bắt buộc `request_id`, kéo về theo `handoff_id` kèm `accepting`, `counts`, `stock`, `accepting` tắt khi chi nhánh về, ack một lần, ack sai chi nhánh, lượt đã chốt không trừ tồn tạm tính, `recovering` trong `nodes`, `digest.handoff`. Logic POS (`posMode`, `settle` giữ `request_id`) và dashboard kiểm bằng `?selftest=1` | xanh |
 | PT-11 | `tests/branch/test_relay.py`: `test_relay_error_keeps_first_failing_since`, `test_relay_success_clears_failure`, `test_sale_still_works_and_status_shows_relay_failure`; `tests/replica/test_broker_status.py`: `test_broker_loss_keeps_first_lost_time`, `test_broker_recovery_clears_lost_time_and_sets_lag`, `test_lag_kept_when_broker_unreachable`, `test_stats_endpoint_exposes_broker_state`, `test_brokers_up_recorded_even_when_check_fails`, `test_brokers_up_cleared_when_metadata_unreachable` (vòng 4) | xanh |
 
 ## 3. Kịch bản demo
@@ -77,7 +81,7 @@ Các bước chạy tay ở [demo.md](demo.md). "Đạt" ghi kèm ngày và các
 | K10b | Đánh đổi nhân bản đồng bộ / bất đồng bộ | 7 | chưa có |
 | K13 | Mất cổng vào, client tự chuyển | 5 | đạt trên 3 node một máy (27/11/2026, Edge headless qua DevTools): `make kill N=a S=nginx` thì dashboard chuyển sang `localhost:8012` sau 2,7 giây, vẫn làm mới mỗi 2 giây, vệt `C A B`, bảng bản sao 3 dòng khớp; `make pause` thì chuyển sau ~6 giây; POS qua cổng A bị pause: lượt bán giữ `request_id`, gửi lại qua 8012 thành công, tồn 141 → 140, một dòng sổ cái (PT-08), kể cả sau `unpause` |
 | K14 | Chậm hay chết, kết luận theo đa số | 5 | đạt trên 3 node một máy (27/11/2026): pause CN2: kết luận SUSPECT ở giây 7–10, OFFLINE ở 13–17, unpause về ONLINE ≤ 4 giây; kill CN2: SUSPECT ở 3–7, OFFLINE ở 11–14, container không tự bật lại, start về ONLINE ≤ 6 giây; biến thể `tre.sh on 0 replica-a 100`: góc nhìn A SUSPECT rồi OFFLINE, kết luận ONLINE ở cả 3 bản sao suốt 30 giây; dashboard: thẻ "Mất liên lạc … (3/3 bản sao)", dải sự cố, ô 2/3 |
-| K15 | Chi nhánh sập vẫn bán (ghi hộ) | 6 | chưa có |
+| K15 | Chi nhánh sập vẫn bán (ghi hộ) | 6 | đạt trên 3 node một máy (27/11/2026, Edge headless qua DevTools): dừng `branch_api`, `branch_db` của B; POS qua cổng A "chờ" rồi ghi hộ sau 17 giây, 5 đơn ở bản sao A; tải lại POS vẫn mở (`@pos_page`); bật lại: RECOVERING 1,3 giây sau `start`, áp đủ 5, ONLINE ở giây 5,3; tồn mỗi mã giảm đúng 2, 5 dòng sổ cái; đặt lại PENDING (gửi lại lần hai): tồn, sổ cái không đổi; 3 dấu vân tay khớp. Biến thể REJECTED: tồn thật 2, ghi hộ 10 thì REJECTED, hiện trên POS và cột Ghi hộ "từ chối 1". Biến thể hai nơi cùng ghi (`make kill N=b S=nginx`, `make cut N=b`): sau `heal`, RECOVERING ở giây 4, lượt thừa REJECTED, ONLINE ở giây 8,4 |
 
 K1–K5 chạy lại với cụm 3 broker (vòng 2, 19/11/2026): đều đạt. K4: outbox CN2 về 0 sau 5–9 giây, 3 bản sao khớp sau
 2–27 giây; K5: RTT 5 → 607 ms, bán tại chỗ 2,4–4,4 ms.
@@ -129,3 +133,17 @@ sự kiện ở CN2", 0 lần lùi phiên bản; K12 truy vết #221 `kafka` ở
 node A, C, heal B, dừng broker B, dựng lại A, bật broker B: không còn `Address already in use`, cụm `Healthy: true`;
 `make local-up` lần hai: `topic-init` in `TOPIC_ALREADY_EXISTS` rồi thoát 0. Cỡ 375px: bốn tab dashboard và POS
 không tràn ngang.
+
+Vòng 6 `ha/hinted-handoff` (27/11/2026, 3 node một máy, sau `make local-reset`): `make check` 131 test xanh (83 cũ +
+33 `tests/branch/test_handoff.py` + 15 `tests/replica/test_handoff.py`), `make config` đạt (thêm kiểm `@pos_page`);
+selftest dashboard 38/38, POS 19/19 (Edge headless). K15 ở bảng trên. Chạy lại K1–K14 bằng API và trình duyệt, đều
+đạt: K1 khớp sau 1 giây; K2 vệt `A C B`, `/cn1/`–`/cn3/` đúng chi nhánh; K3 vệt chỉ còn `A C`, `/cn2/` trả trang POS
+(`@pos_page`, mới ở vòng 6), `/cn2/api/status` 503, A kết luận CN2 OFFLINE, B bị cô lập chỉ SUSPECT, quầy B vẫn ONLINE
+và bán được; K4 outbox về 0, khớp ngay, CN2 RECOVERING từ giây 4,6 tới 6,3 sau `heal`; K5 RTT tới A 605 ms, bán tại
+chỗ 9,7 ms; K6 bản trùng 0 → 95, dấu vân tay không đổi; K7a outbox về 0, khớp; K7b POS "lỗi từ", bản sao A
+`broker_ok` false, khớp nhờ đối soát, bật lại outbox về 0; K7c B, C khớp khi A bị cắt, CN1 RECOVERING từ giây 2,1 tới
+5,9 sau `heal`; K8 B vá 6 ô nhờ C, khớp sau 8 giây; K9 khớp khi cả 3 broker dừng, bật lại outbox về 0; K11 6/32 mẫu
+giữ số cũ "Bản sao B trễ 5 sự kiện ở CN2", 0 lần lùi phiên bản; K12 truy vết `kafka` ở cả 3 bản sao; K13 dashboard
+chuyển sang `localhost:8012` sau 2 giây, POS cũng chuyển; K14 pause, kill: SUSPECT ở giây 8–9, OFFLINE ở 16–17,
+`unpause`: RECOVERING tới giây 5,0, `start`: RECOVERING từ giây 1,3 tới 5,6. Cỡ 375px: bốn tab dashboard và POS
+(kể cả dải ghi hộ bị từ chối) không tràn ngang.

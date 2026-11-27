@@ -5,7 +5,7 @@ Mục tiêu trước mắt: xử lý hai câu hỏi của thầy (mục 3), trê
 
 ## 1. Tiến độ
 
-**Vòng tiếp theo: vòng 6.** Mỗi lần chỉ làm một vòng, đúng thứ tự: vòng sau dựa trên hạ tầng của vòng trước.
+**Vòng tiếp theo: vòng 6b** (vòng 6 đã code, chờ commit). Mỗi lần chỉ làm một vòng, đúng thứ tự: vòng sau dựa trên hạ tầng của vòng trước.
 
 | Vòng | Phạm vi | Nhánh | Việc | Quy tắc | Kịch bản | Trạng thái |
 |---|---|---|---|---|---|---|
@@ -15,8 +15,9 @@ Mục tiêu trước mắt: xử lý hai câu hỏi của thầy (mục 3), trê
 | 3 | `replica`, `branch`, `web` | `replica/gossip-reconcile` | Gossip giữa bản sao; đối soát với chi nhánh | PT-04, PT-05, PT-07, PT-10 | K8, K9 | xong, đã merge (PR #4); 43 test, K1–K9 đạt trên 3 node một máy |
 | 4 | `web`, `replica`, `branch` | `web/sync-dashboard` | Topology sống, đọc đơn điệu, truy vết sự kiện, POS | — | chạy tay K1–K9; K11, K12 | xong, đã merge (PR #5); 58 test, selftest dashboard 22/22, POS 5/5; K1–K9, K11, K12 đạt trên 3 node một máy |
 | 4b | `web` | `web/ui-polish` | Chỉnh giao diện trước vòng 5: tràn ngang trên điện thoại, cột giờ tab Sự kiện, dải sự cố hệ thống ở Tổng quan, bớt nhiễu, ghi máy A/B/C trên sơ đồ, trang không bị cache | — | chạy tay trên 3 node | xong, đã merge (PR #7); selftest dashboard 24/24, POS 5/5; 58 test |
-| 5 | `infra`, `replica`, `web` | `ha/entry-failure-detector` | HA cổng vào (nginx ở mọi node, client tự chuyển); bộ phát hiện lỗi có trạng thái, kết luận theo đa số bản sao | PT-13 | K13, K14 | đã code (27/11/2026), chờ commit; 83 test, selftest dashboard 33/33, POS 10/10; K1–K14 đạt trên 3 node một máy; sửa hai lỗi hạ tầng (IP gắn cứng sau `heal`, `topic-init` lặp) |
-| 6 | `branch`, `replica`, `web` | `ha/hinted-handoff` | Chi nhánh sập vẫn bán: ghi hộ ở bản sao, chi nhánh phục hồi ở RECOVERING rồi kéo về áp theo thứ tự | PT-14 | K15 | chưa làm |
+| 5 | `infra`, `replica`, `web` | `ha/entry-failure-detector` | HA cổng vào (nginx ở mọi node, client tự chuyển); bộ phát hiện lỗi có trạng thái, kết luận theo đa số bản sao | PT-13 | K13, K14 | xong, đã merge (PR #8); 83 test, selftest dashboard 33/33, POS 10/10; K1–K14 đạt trên 3 node một máy; sửa hai lỗi hạ tầng (IP gắn cứng sau `heal`, `topic-init` lặp) |
+| 6 | `branch`, `replica`, `web` | `ha/hinted-handoff` | Chi nhánh sập vẫn bán: ghi hộ ở bản sao, chi nhánh phục hồi ở RECOVERING rồi kéo về áp theo thứ tự | PT-14 | K15 | đã code (27/11/2026), chờ commit; 131 test, selftest dashboard 38/38, POS 19/19; K1–K15 (cả biến thể REJECTED, hai nơi cùng ghi) đạt trên 3 node một máy |
+| 6b | `web`, `replica`, `branch` | `web/failure-alerts` | Cảnh báo đủ mọi trường hợp lỗi trên dashboard và POS, nhật ký sự cố, danh mục cảnh báo trong `docs/` | — | K3–K15 hiện đúng cảnh báo | chưa làm |
 | 7 | `infra`, `docs` | `infra/production-local` | Standby đồng bộ cho CSDL chi nhánh; vệ sinh vận hành; giám sát (tuỳ chọn); kiến trúc mục tiêu production trên giấy | PT-12 | K10a, K10b | chưa làm |
 | 8 | `replica`, `scripts`, `docs` | `chore/hardening` | `dead_letter`, `scripts/chaos-check.sh` có đo thời gian gián đoạn, chốt tài liệu | PT-06 | `chaos-check.sh` | chưa làm |
 
@@ -251,6 +252,24 @@ năng này nhưng không loại bỏ. Cách triệt để (lease kèm fencing to
 
 Xong khi: K15 đạt cả biến thể REJECTED; K1–K14 vẫn đạt; `make check` xanh.
 
+### Vòng 6b – Cảnh báo mọi trường hợp lỗi (`web/failure-alerts`)
+
+Vòng 6 chỉ hiện đủ trạng thái của chính tính năng ghi hộ (đang ghi hộ, đang phục hồi, REJECTED, chưa gom đủ). Vòng
+này làm cho **mọi** trường hợp lỗi đã có trong K3–K15 đều có cảnh báo rõ trên dashboard và POS, có ghi lại để xem lại
+sau, và có danh mục trong tài liệu để lúc bảo vệ chỉ được "lỗi này hiện ở đâu, nói gì".
+
+| Việc | File |
+|---|---|
+| Danh mục cảnh báo: mỗi loại lỗi (chi nhánh mất liên lạc / nghi ngờ, đang phục hồi, ghi hộ chờ áp / bị từ chối / chưa gom đủ, broker, cụm mất đa số, sink dừng, gossip lỗi, đối soát, bản sao không liên lạc được, cổng vào chuyển, relay lỗi) một dòng: điều kiện, nơi hiện (dashboard, POS), mức (đỏ, vàng), chữ hiện ra, kịch bản Kxx | `docs/spec.md` hoặc `docs/demo.md` (mục mới) |
+| Dashboard và POS hiện đủ danh mục; cảnh báo tự tắt khi hết lỗi | `web/dashboard.html`, `web/pos.html` |
+| Nhật ký sự cố: lúc bắt đầu, lúc hết của từng cảnh báo, xem lại được sau khi lỗi đã qua | `web/dashboard.html`; nếu cần lưu phía server thì `api/services/replica.py`, `db/replica.sql` |
+
+Test viết trước: hàm thuần sinh cảnh báo từ trạng thái (selftest dashboard, POS) cho từng dòng của danh mục; phần
+server (nếu có) theo pytest. Kịch bản: chạy lại K3–K15, mỗi kịch bản hiện đúng cảnh báo trong danh mục, hết lỗi thì
+cảnh báo tắt và còn trong nhật ký.
+
+Xong khi: K3–K15 hiện đúng cảnh báo; K1–K15 vẫn đạt; `make check` xanh.
+
 ### Vòng 7 – Production local (`infra/production-local`)
 
 Đưa các thực hành production vào chạy trên một máy, chỉ dùng phần mềm mã nguồn mở, không cloud, không dịch vụ trả
@@ -341,10 +360,19 @@ Xong khi: K10a không mất lượt bán nào đã báo thành công; K10b đo �
   RestartCount 0); K14 dùng kill cho ca "chết hẳn".
 - Vòng 5, máy thật: nginx mọi máy gọi `REPLICA_*`, `BRANCH_*` bằng IP overlay, kể cả máy của chính nó (cùng giả định
   "container gọi được IP overlay của chính máy mình" ở trên); chưa kiểm vì chỉ có một máy.
-- Vòng 6: ghi hộ rải trên nhiều bản sao (nginx chia lần lượt) hay dồn về một bản sao; chi nhánh gom từ mọi bản sao
-  thế nào khi một bản sao đang chết. Chọn ở `/plan-task` vòng 6.
-- Vòng 6: RECOVERING mà không gọi được bản sao nào thì làm gì (chờ, hay hết thời hạn thì tự ONLINE kèm cảnh báo như
-  repo tham khảo).
+- ~~Vòng 6: ghi hộ rải trên nhiều bản sao hay dồn về một bản sao; chi nhánh gom thế nào khi một bản sao đang chết~~
+  **Chốt ở vòng 6**: dồn về một bản sao (`/replica/<X>/api/handoff`, thứ tự A, B, C), chỉ chuyển khi bản sao đó lỗi
+  mạng hoặc 5xx, giữ `request_id`; chi nhánh kéo từ mọi bản sao cấu hình, bản sao không gọi được thì chưa ONLINE.
+- ~~Vòng 6: RECOVERING mà không gọi được bản sao nào thì làm gì~~ **Chốt ở vòng 6**: chờ tối đa 60 giây
+  (`RECOVERY_TIMEOUT_S`), rồi tự ONLINE kèm cảnh báo `incomplete`, kéo tiếp; ngoại lệ ghi trong PT-14 và
+  `docs/spec.md` mục 6.
+- Vòng 6, phát hiện lúc chạy tay: (1) POS lấy kết luận qua `/api/nodes` (nginx chia lần lượt) thì có lúc bản sao trả
+  lời đã thấy OFFLINE mà bản sao sẽ ghi hộ chưa thấy, lượt ghi hộ bị 409; đã sửa: POS hỏi kết luận ở đúng bản sao sẽ
+  ghi hộ (`/replica/<X>/api/nodes`). (2) Một máy, `make cut N=b`: cổng A gọi `branch-b` đã bị gỡ khỏi mạng thì phân
+  giải tên mất ~8 giây, POS quá 4 giây nên chuyển sang cổng B (cùng máy với chi nhánh, vẫn gọi được) và bán tại chỗ;
+  muốn thấy "hai nơi cùng ghi" ở chế độ một máy phải dừng thêm nginx B (máy thật: rút mạng máy B thì trình duyệt máy
+  khác cũng mất cổng B). (3) `query_nodes` tính `clock_offset_ms` bằng `::int`: đồng hồ chi nhánh lệch quá ~24 ngày
+  thì tràn số (lộ ra khi test gửi heartbeat có `node_time_ms` cố định); chưa sửa, không thuộc vòng 6.
 - Vòng 7: chuỗi kết nối nhiều host của libpq (`target_session_attrs=read-write`) đủ để `psycopg_pool` tự nối sang
   primary mới sau promote mà không đổi code; kiểm ở `/plan-task` vòng 7.
 - Vòng 7: promote bằng tay (`make promote`), không dùng Patroni hay repmgr. Tự động failover CSDL ghi vào "kiến trúc

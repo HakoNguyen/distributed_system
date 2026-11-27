@@ -18,6 +18,7 @@ Tiến độ và thứ tự làm: [docs/plan.md](docs/plan.md).
 | Đọc đơn điệu (monotonic reads) | Dashboard chỉ nhận phản hồi mà mọi ô có `movement_id` không cũ hơn số đang hiện; bản sao trễ thì giữ số cũ và gắn nhãn | K11 |
 | Truy vết sự kiện | Bấm một sự kiện: mốc ở chi nhánh, ở broker (timestamp Kafka), ở từng bản sao (qua Redpanda hay vá bằng gossip, đối soát) | K12 |
 | Cổng vào không có điểm chết | Nginx ở mọi máy, cấu hình giống nhau; trang đang mở tự chuyển sang cổng khác khi cổng đang dùng chết (như `bootstrap.servers` của Kafka) | K13 |
+| Chi nhánh sập vẫn bán (ghi hộ) | POS ghi hộ lượt bán lên một bản sao khi đa số kết luận chi nhánh OFFLINE; chi nhánh khởi động lại ở RECOVERING, tự kéo về áp đúng một lần, theo thứ tự; lượt vượt tồn thật thành REJECTED và hiện trên POS, dashboard (PT-14) | K15 |
 | Phát hiện lỗi theo đa số | Mỗi bản sao tự đánh giá chi nhánh ONLINE → SUSPECT → OFFLINE theo tuổi heartbeat; chỉ kết luận OFFLINE khi 2/3 bản sao cùng thấy (PT-13) | K14 |
 
 Dashboard có **sơ đồ topology sống**: 3 node, mỗi node chi nhánh, broker, bản sao; cạnh relay → cụm, cụm → sink,
@@ -30,7 +31,7 @@ Mọi máy chạy cùng một file compose; máy nào chạy gì do file `.env` 
 | Container | Cổng | Máy | Vai trò |
 |---|---|---|---|
 | `branch_db` | | mọi máy | PostgreSQL của chi nhánh: tồn, sổ cái, outbox |
-| `branch_api` | 8001 | mọi máy | FastAPI `ROLE=branch`: màn hình POS, bán, nhập; gửi heartbeat |
+| `branch_api` | 8001 | mọi máy | FastAPI `ROLE=branch`: màn hình POS, bán, nhập; gửi heartbeat; khởi động ở RECOVERING, tự kéo ghi hộ từ các bản sao |
 | `relay` | | mọi máy | Đẩy outbox lên cụm Redpanda, ghi trạng thái gửi cho POS |
 | `replica_db` | | mọi máy | PostgreSQL của bản sao: bảng tồn toàn chuỗi dựng từ sự kiện |
 | `replica_api` | 8000 | mọi máy | FastAPI `ROLE=replica`: dashboard, nhận heartbeat; gossip với bản sao khác, đối soát với chi nhánh khi mất broker |
@@ -44,7 +45,7 @@ Mọi máy chạy cùng một file compose; máy nào chạy gì do file `.env` 
 docs/      đặc tả, CSDL, API, kịch bản demo, kế hoạch (nguồn sự thật)
 db/        SQL khởi tạo: product.sql (dùng chung), branch.sql, replica.sql
 common/    cấu hình, pool CSDL, model
-api/       main.py, routers/ (mỏng), services/ (SQL và quy tắc), workers/ (relay, sink, heartbeat, gossip)
+api/       main.py, routers/ (mỏng), services/ (SQL và quy tắc), workers/ (relay, sink, heartbeat, gossip, recovery)
 web/       pos.html, dashboard.html (HTML + JS thuần, không build; dashboard tự kiểm bằng ?selftest=1)
 infra/     compose.yml, compose.local.yml (3 node một máy), compose.test.yml, nginx/, env/ (máy thật, local)
 tests/     pytest trên PostgreSQL thật, chạy trong container

@@ -137,6 +137,7 @@ K1–K9 ở mục 5 giữ nguyên, chỉ đổi thao tác:
 | K9 dừng cả 3 broker | `docker compose stop redpanda` trên cả 3 máy | `docker stop minigo-a-redpanda-1 minigo-b-redpanda-1 minigo-c-redpanda-1`; bật lại: `docker start ...` |
 | K13 mất cổng vào A | Rút mạng máy A, hoặc `docker compose stop nginx` trên máy A | `make kill N=a S=nginx` (chết) hoặc `make pause N=a S=nginx` (treo); bật lại `make start` / `make unpause`. **Không dùng `make cut N=a`**: cổng host không đi qua `minigo-wan`, trình duyệt cùng máy vẫn gọi được nginx A |
 | K14 chi nhánh B chậm / chết | `docker compose pause branch_api` / `docker compose kill branch_api` trên máy B | `make pause N=b S=branch_api` / `make kill N=b S=branch_api`; biến thể: `docker exec minigo-b-branch_api-1 sh tre.sh on 0 replica-a 100` (mất 100% gói tới riêng bản sao A), bỏ: `... sh tre.sh off` |
+| K15 chi nhánh B sập (ghi hộ) | `docker compose kill branch_api branch_db` trên máy B; bật lại: `docker compose start branch_db`, rồi `branch_api` | `make kill N=b S=branch_api`, `make kill N=b S=branch_db`; bật lại: `make start N=b S=branch_db`, chờ healthy, `make start N=b S=branch_api`. Biến thể REJECTED: trước đó `make kill N=b S=relay`; biến thể hai nơi cùng ghi: `make kill N=b S=nginx` rồi `make cut N=b` (xem K15) |
 | Xem gossip, đối soát | `curl localhost:8000/api/digest` (trường `sync_peers`) | `curl localhost:8010/api/digest`; log: `docker logs minigo-b-replica_api-1 \| grep gossip` |
 | Xem cụm broker | `docker compose exec redpanda rpk cluster health` | `docker exec minigo-a-redpanda-1 rpk cluster health`, `... rpk topic describe inventory.movement -p` |
 | Xem container, log | `make ps`, `make logs S=relay` | `docker ps --filter name=minigo-b`, `docker logs -f minigo-b-relay-1` |
@@ -205,7 +206,7 @@ docker compose exec branch_api sh tre.sh on 300 100.64.0.1
 # bỏ:                ... sh tre.sh off
 ```
 
-## 5. Kịch bản K1–K9, K11–K14
+## 5. Kịch bản K1–K9, K11–K15
 
 (K10 dành cho vòng 7.) Từ vòng 4 hai màn hình được làm lại theo thao tác nghiệp vụ. Dashboard trụ sở có thanh bên
 (menu, bản sao đang trả lời, trạng thái đồng bộ tóm tắt) và bốn tab; tab đang mở nằm trong địa chỉ
@@ -263,6 +264,7 @@ Bảng tóm tắt: **kịch bản nào chứng minh tính chất gì, nhìn ở 
 | K11 | Đọc đơn điệu | Dừng sink B, bán ở CN2, xem dashboard qua nginx | Dải vàng đầu trang; vệt served-by ở thanh bên; tab Tồn kho, cột CN2 | Lần B trả lời: số CN2 **không lùi**, ô vàng trong vệt, "Bản sao B trễ N sự kiện ở CN2"; gossip vá B thì nhãn tự mất |
 | K12 | Truy vết sự kiện | Tab Sự kiện, bấm một sự kiện | Khung truy vết bên phải | Mốc chi nhánh ghi, broker ghi (phân hoạch, offset, timestamp Kafka), relay đánh dấu đã gửi, từng bản sao nhận qua Redpanda hay được vá bằng gossip/đối soát |
 | K13 | Mất cổng vào, client tự chuyển | Mở dashboard và POS qua cổng A, giết hoặc treo nginx A | Ô "Cổng vào" ở thanh bên; dòng "cập nhật" ở đầu trang; thông báo dưới phiếu POS | Trang tự chuyển sang cổng B, vẫn làm mới; lượt bán dở gửi lại qua cổng B không trừ hai lần |
+| K15 | Chi nhánh sập vẫn bán (ghi hộ) | Dừng `branch_api`, `branch_db` của B; bán 5 đơn ở POS qua cổng vào; bật lại | POS `localhost/cn2/` (dải trạng thái, dải đỏ "bị từ chối"); bảng chi nhánh (cột Ghi hộ), dải sự cố | POS "chờ" → "Đang ghi hộ qua trung tâm (bản sao A)"; bật lại: "Chi nhánh đang phục hồi", rồi bán tại chỗ; cột Ghi hộ "chờ 5" → "đã áp 5"; 3 dấu vân tay khớp. Biến thể: lượt vượt tồn thật thành REJECTED |
 | K14 | Chậm hay chết, kết luận theo đa số | Pause rồi kill `branch_api` của B; biến thể chỉ cắt CN2 → bản sao A | Bảng chi nhánh (Tổng quan), dải sự cố; tab Hệ thống, bảng kỹ thuật chi nhánh cột "Góc nhìn từng bản sao", "Kết luận (đa số)" | Cả hai ca đi Nghi ngờ rồi Mất liên lạc; biến thể: góc nhìn A "mất", kết luận vẫn "sống" |
 
 Trên sơ đồ đồng bộ khi chạy lại K1–K9 (22/11/2026, 3 node một máy, `make local-reset` sau vòng 4). Đã kiểm trên
@@ -318,7 +320,9 @@ Chi tiết từng kịch bản:
 - Dashboard **vẫn chạy bình thường**. Vệt served-by chỉ còn `A A A`: nginx phát hiện bản sao B không trả lời và tự chuyển hết sang A. Thỉnh thoảng một lần làm mới chậm khoảng 1 giây, vì nginx chờ B 1 giây rồi mới bỏ cuộc và thử lại (xem `proxy_connect_timeout` trong `infra/nginx/default.conf.template`).
 - Ô bản sao: dòng B ghi **Không liên lạc được**.
 - Sau 15 giây, thẻ CN2 tô sọc đỏ "Mất liên lạc … giây", cột CN2 chuyển xám nghiêng kèm nhãn "số cũ". CN1 vẫn chạy bình thường.
-- Mở `http://localhost/cn2/`: trang báo rõ "Không liên lạc được với chi nhánh này" thay vì treo.
+- Mở `http://localhost/cn2/`: từ vòng 6 nginx trả chính trang POS (`@pos_page`); trang báo "Không gọi được chi nhánh"
+  rồi, khi đa số kết luận OFFLINE, chuyển sang ghi hộ qua trung tâm (xem K15 biến thể hai nơi cùng ghi). Đường API
+  `/cn2/api/...` vẫn trả trang 503 "Không liên lạc được với chi nhánh này".
 
 **Thấy trên máy B:**
 - POS **vẫn bán được**. Dải trạng thái chuyển đỏ "Chưa gửi được lên trung tâm từ … giây", số sự kiện chờ trong outbox tăng dần. Chip "Bản sao máy A: mất liên lạc".
@@ -338,6 +342,10 @@ Chi tiết từng kịch bản:
 2. Dashboard máy A: các sự kiện của CN2 hiện ra, cột **Trễ** tô vàng (trên 5 giây); thẻ CN2 hết đỏ.
 3. Ô bản sao: dòng B hiện **Đang đuổi theo, thiếu N sự kiện**, N giảm dần, rồi chuyển sang **Khớp từng ô**, cùng dấu vân tay với A.
 4. Vệt served-by có lại chữ `B`: nginx tự đưa bản sao B trở lại sau tối đa 10 giây (`fail_timeout=10s`).
+5. Từ vòng 6: POS máy B báo **"Chi nhánh đang phục hồi"** vài giây (bán trả 503 `branch_recovering`) rồi bán lại bình
+   thường, dù không có lượt ghi hộ nào. Lý do: lúc vừa cắm lại, bản sao A, C vẫn kết luận CN2 OFFLINE (còn nhận ghi hộ),
+   nên chi nhánh chờ tới khi không bản sao nào còn nhận ghi hộ (PT-14). Không phải lỗi. Đo 27/11/2026 (3 node một
+   máy, `make heal N=b`): RECOVERING từ giây 4,6 tới giây 6,3; `make heal N=a` (K7c): CN1 RECOVERING từ giây 2,1 tới 5,9.
 
 **Nói:** Ba cơ chế tự phục hồi chạy cùng lúc mà không ai can thiệp:
 - **Outbox** giữ sự kiện của chi nhánh, relay gửi tiếp từ đúng chỗ dừng.
@@ -630,6 +638,67 @@ ONLINE ở cả 3 sau ≤ 4 giây. kill: góc nhìn SUSPECT ở giây 3–7, OFF
 B, C ghi nhận góc nhìn đó sau ≤ 5 giây; kết luận ONLINE suốt 30 giây ở cả 3; `tre.sh off` thì góc nhìn A về ONLINE
 sau ~6 giây.
 
+Từ vòng 6, sau `unpause` và sau `start` chi nhánh ở **RECOVERING** vài giây dù không có ghi hộ (đa số còn kết luận
+OFFLINE, tức còn nhận ghi hộ; chi nhánh chờ tới khi hết, PT-14); POS báo "Chi nhánh đang phục hồi", dashboard ghi
+"Đang phục hồi (áp ghi hộ)". Không phải lỗi. Đo 27/11/2026 (3 node một máy, lấy mẫu `/api/status` mỗi 0,5 giây, mốc 0
+= lúc chạy lệnh): `unpause`: RECOVERING ngay, ONLINE ở giây 5,0; `start` sau `kill`: RECOVERING ở giây 1,3, ONLINE ở
+giây 5,6. Pause, kill: kết luận SUSPECT ở giây 8–9, OFFLINE ở giây 16–17 như vòng 5.
+
+### K15. Chi nhánh sập vẫn bán: ghi hộ (hinted handoff)
+
+Mở sẵn: POS CN2 **qua cổng vào** `http://localhost/cn2/` (POS mở thẳng `:8011` thì chi nhánh chết là mất trang);
+dashboard `http://localhost/`, tab Tổng quan (bảng chi nhánh có cột "Ghi hộ", dải sự cố). Theo dõi bằng lệnh:
+`curl -s localhost:8011/api/status` (trường `recovery`), `curl -s "localhost/replica/A/api/handoff?branch_id=2"`.
+
+**Làm:**
+1. `make kill N=b S=branch_api`, `make kill N=b S=branch_db` (server chi nhánh sập; relay B vẫn chạy).
+2. Chờ POS chuyển sang ghi hộ (khoảng 15–20 giây), bán 5 đơn (5 lần Thanh toán).
+3. (Tuỳ chọn) Tải lại trang POS: vẫn mở được, nginx trả trang từ `@pos_page`.
+4. `make start N=b S=branch_db`, chờ `docker inspect -f {{.State.Health.Status}} minigo-b-branch_db-1` ra `healthy`,
+   rồi `make start N=b S=branch_api`.
+5. Gửi lại lần hai (giả lập ack bị mất): đặt lại các lượt ở bản sao A về PENDING:
+   `docker exec minigo-a-replica_db-1 psql -U app -d kho -c "UPDATE handoff SET status='PENDING', movement_id=NULL, decided_at=NULL WHERE branch_id=2"`.
+   Chi nhánh kéo lại, áp lại: tồn và số dòng sổ cái không đổi.
+
+**Thấy:**
+- POS: ngay sau khi dừng, dải đỏ "Không gọi được chi nhánh. Trung tâm: vẫn thấy chi nhánh sống / nghi ngờ, chưa đủ đa
+  số. Chưa ghi hộ", nút Thanh toán bị khoá. Khi đa số kết luận OFFLINE: dải vàng "Đang ghi hộ qua trung tâm (bản sao
+  A): n lượt chờ chi nhánh áp lại. Tồn hiển thị là tồn tạm tính; chỉ bán, không nhập"; nút Nhập hàng và Bán 20 đơn bị
+  khoá; mỗi lần Thanh toán ghi "Đã ghi hộ … qua bản sao A".
+- Dashboard: CN2 "Mất liên lạc … (3/3 bản sao)", cột Ghi hộ "chờ 5 · đã áp 0 · từ chối 0", dải sự cố "CN2: 5 lượt ghi
+  hộ chờ chi nhánh áp".
+- Bật lại: POS "Chi nhánh đang phục hồi: đã áp 5 lượt ghi hộ, từ chối 0, còn 0 chờ. Chưa nhận bán mới", rồi về bán tại
+  chỗ; dashboard CN2 "Đang phục hồi (áp ghi hộ)" rồi "Hoạt động", cột Ghi hộ "đã áp 5". Tồn 5 mã giảm đúng số đã ghi
+  hộ, 5 dòng sổ cái mang đúng 5 `request_id`; 3 dấu vân tay khớp.
+- Bước 5: chi nhánh RECOVERING khoảng 2 giây rồi ONLINE; tồn, số dòng sổ cái không đổi (PT-08, PT-14).
+
+**Biến thể REJECTED** (lượt ghi hộ vượt tồn thật): `make kill N=b S=relay` trước bước 1, rồi bán tại quầy
+(`localhost:8011`) cho một mã còn 2; trung tâm vẫn thấy số cũ vì relay dừng. Dừng `branch_api`, `branch_db`; ở POS
+qua cổng vào ghi hộ 10 cái mã đó (tồn tạm tính đủ nên bản sao nhận). Bật `relay`, `branch_db`, `branch_api`. Thấy:
+lượt đó REJECTED; POS có dải đỏ "Lượt ghi hộ bị TỪ CHỐI khi chi nhánh áp lại: … ×10 (tồn thật chỉ còn 2, lúc …)";
+dashboard cột Ghi hộ "từ chối 1"; tồn mã đó vẫn 2.
+
+**Biến thể hai nơi cùng ghi** (bằng chứng cho giới hạn ở `docs/spec.md` mục 6): `make kill N=b S=nginx` (một máy:
+để trình duyệt không vòng qua cổng 8012 của chính máy B; máy thật rút mạng máy B là mất luôn cổng đó), `make cut N=b`.
+POS qua cổng A vào ghi hộ; quầy mở thẳng `localhost:8011` vẫn bán (chi nhánh ONLINE, không gọi được A, C). Bán tại
+quầy cho một mã còn 1, rồi ở POS cổng A ghi hộ 3 cái mã đó (trung tâm vẫn thấy số cũ). `make heal N=b`,
+`make start N=b S=nginx`. Thấy: chi nhánh vào RECOVERING, lượt thừa thành REJECTED, rồi ONLINE; 3 dấu vân tay khớp.
+
+**Nói:** Server chi nhánh là nơi duy nhất giữ bản chính của tồn, nên khi nó sập, trung tâm **giữ hộ** lượt bán
+(store-and-forward, hinted handoff như Dynamo) chứ không ghi thay. Chỉ ghi hộ khi **đa số** bản sao kết luận OFFLINE
+(PT-13), và chính bản sao nhận cũng kiểm lại. Chi nhánh sống lại thì **tự kéo** về (bản sao không ghi vào CSDL chi
+nhánh, PT-07), áp qua đúng đường bán hàng (`request_id` chống trừ hai lần), theo thứ tự `handoff_id` do bản sao cấp
+(không dựa vào đồng hồ); chưa áp xong thì chưa bán mới (PT-14). Đổi lại là chọn A trong CAP: tồn tạm tính có thể sai
+(snapshot thiếu lượt chưa kịp gửi, mạng chia cắt làm hai nơi cùng ghi), chỉ phát hiện lúc áp lại; lượt thừa thành
+REJECTED và hiện ra, không mất lặng lẽ. Cách triệt để là lease kèm fencing token (kiến trúc mục tiêu, vòng 7).
+
+Đo ngày 27/11/2026 (3 node một máy, Edge headless điều khiển qua DevTools): POS chuyển "chờ" sau ~4 giây, "ghi hộ" sau
+17 giây kể từ lúc dừng; 5 đơn ghi hộ ở bản sao A; bật lại: RECOVERING sau 1,3 giây, áp đủ 5 lượt, ONLINE sau 5,3 giây
+(tính từ `make start` `branch_api`); tồn 5 mã giảm đúng 2, 5 dòng sổ cái; gửi lại lần hai: RECOVERING ~2 giây, tồn
+không đổi, vẫn 5 dòng; 3 dấu vân tay khớp. Biến thể REJECTED: mã 11 tồn thật 2, ghi hộ 10 thì REJECTED, lượt kèm theo
+(mã 8) vẫn áp; tồn mã 11 vẫn 2. Biến thể hai nơi cùng ghi: POS cổng A ghi hộ sau 15 giây kể từ `cut`; sau `heal`, chi
+nhánh RECOVERING ở giây 4, lượt thừa REJECTED, ONLINE ở giây 8,4; 3 dấu vân tay khớp.
+
 ## 6. Câu hỏi thường gặp khi bảo vệ
 
 | Câu hỏi | Từ khoá | Trả lời ngắn |
@@ -638,7 +707,8 @@ sau ~6 giây.
 | Làm sao biết dữ liệu hai nơi giống nhau? | Nhất quán cuối, dấu vân tay | Có mạng lại thì tự đồng bộ bù; so mã băm toàn bộ snapshot giữa các bản sao. |
 | Gửi lặp hai lần có trừ tồn hai lần không? | Lũy đẳng | Bản sao dùng khoá `(branch_id, movement_id)`; thấy rồi thì bỏ qua. Chi nhánh dùng `request_id`. |
 | Sao người dùng không cần biết IP từng máy? | Trong suốt vị trí | Nginx là cổng vào, tự chọn bản sao và chia tải; ba nginx giống hệt nhau nên vào máy nào cũng thấy cả hệ. |
-| Hệ có HA không? Còn điểm chết duy nhất nào? | Sẵn sàng cao, failover phía client, bộ phát hiện lỗi, đa số (quorum) | Bỏ được ở các tầng: broker là cụm 3 (K7a), bản sao trung tâm có 3 và nginx chia tải (K3), **cổng vào** có 3 nginx, trang đang mở tự chuyển cổng như `bootstrap.servers` của Kafka (K13). Phát hiện chi nhánh chết bằng timeout nên không phân biệt chậm với chết (K14); để không kết luận sai khi chỉ một bản sao mất liên lạc, chỉ coi OFFLINE khi **đa số 2/3 bản sao** cùng thấy (PT-13), bản sao bị cô lập chỉ "nghi ngờ". Còn lại: dữ liệu mỗi chi nhánh chỉ một bản chính (server chi nhánh chết thì quầy dừng; vòng 6 ghi hộ, vòng 7 standby CSDL); trang mở mới khi cổng quen thuộc đã chết phải tự gõ cổng khác (production: DNS nhiều địa chỉ hoặc VIP). Một máy vẫn là một miền lỗi. |
+| Hệ có HA không? Còn điểm chết duy nhất nào? | Sẵn sàng cao, failover phía client, bộ phát hiện lỗi, đa số (quorum) | Bỏ được ở các tầng: broker là cụm 3 (K7a), bản sao trung tâm có 3 và nginx chia tải (K3), **cổng vào** có 3 nginx, trang đang mở tự chuyển cổng như `bootstrap.servers` của Kafka (K13). Phát hiện chi nhánh chết bằng timeout nên không phân biệt chậm với chết (K14); để không kết luận sai khi chỉ một bản sao mất liên lạc, chỉ coi OFFLINE khi **đa số 2/3 bản sao** cùng thấy (PT-13), bản sao bị cô lập chỉ "nghi ngờ". Còn lại: dữ liệu mỗi chi nhánh chỉ một bản chính (server chi nhánh chết thì quầy bán tiếp bằng ghi hộ qua trung tâm, K15; vòng 7 standby CSDL); trang mở mới khi cổng quen thuộc đã chết phải tự gõ cổng khác (production: DNS nhiều địa chỉ hoặc VIP). Một máy vẫn là một miền lỗi. |
+| Chi nhánh sập thì sao? | Ghi hộ (hinted handoff, store-and-forward), RECOVERING, chọn A trong CAP | Quầy mở qua cổng vào vẫn bán (K15): đa số bản sao kết luận OFFLINE thì POS gửi lượt bán lên **một** bản sao, bản sao kiểm "tồn tạm tính" và giữ hộ. Chi nhánh bật lại ở RECOVERING, **tự kéo** ghi hộ về (bản sao không ghi vào CSDL chi nhánh), áp đúng một lần nhờ `request_id`, theo `handoff_id` (không dựa vào đồng hồ), xong mới bán mới (PT-14). Lượt không đủ tồn thật thành REJECTED và hiện trên POS, dashboard. Giá phải trả: mạng chia cắt thì hai nơi cùng ghi, có thể bán quá tồn, chỉ biết lúc áp lại; cách triệt để là lease kèm fencing token. |
 | Trung tâm sập thì cửa hàng có sập không? | Tách rời qua broker | Chi nhánh và trung tâm nói chuyện qua Redpanda, không cần chạy cùng lúc. |
 | Redpanda gặp sự cố thì xử lý thế nào? | Phòng, chống, phục hồi | **Phòng**: cụm 3 broker, RF=3, mất 1 broker tự bầu leader mới (K7a). **Chống**: mất đa số thì quầy vẫn bán, outbox giữ sự kiện, POS và dashboard báo "đồng bộ dừng từ HH:MM:SS" (K7b). Mất đa số quá 15 giây thì bản sao **đối soát thẳng với chi nhánh** qua API (chỉ đọc), số tồn vẫn đúng (K9). **Phục hồi**: có lại đa số thì relay gửi bù, sink đọc tiếp từ offset, không ai làm gì (K7b, K7c). Mất hẳn dữ liệu broker: số tồn dựng lại từ bản sao khác (gossip, K8) hoặc từ chi nhánh (đối soát, K9); chỉ mất nhật ký các sự kiện chưa kịp đọc. Redpanda là đường nhanh, không phải nguồn sự thật: nguồn sự thật là sổ cái chi nhánh. |
 | ReplicaA và ReplicaB trao đổi thông tin bằng cơ chế gì? | Nhân bản máy trạng thái qua log chung; gossip (anti-entropy); CRDT theo từng ô | Ba kênh, một luật merge. (1) Gián tiếp: cùng đọc một log trên Redpanda (mỗi bên một consumer group), áp lũy đẳng nên ra cùng trạng thái. (2) Trực tiếp: mỗi 10 giây gọi `/api/digest` của nhau; dấu vân tay lệch ở 2 lần kiểm liên tiếp thì kéo `/api/snapshot` và vá ô còn thiếu (K8). (3) Mất broker thì mỗi bên đọc thẳng chi nhánh (K9). Luật "`movement_id` lớn hơn thắng" theo từng ô giao hoán, lũy đẳng, nên đến từ kênh nào, theo thứ tự nào cũng hội tụ (PT-10). |
@@ -657,6 +727,7 @@ sau ~6 giây.
 | Độ trễ mạng (RTT) | Bật Clumsy trễ 300ms: RTT ≥ 500ms nhưng POS vẫn "xử lý tại chỗ" < 20ms | Chip RTT trên POS B, thẻ CN2 |
 | Chống trùng (Idempotency) | Phát lại toàn bộ sự kiện: số bản trùng tăng vọt, dấu vân tay không đổi | Tab `http://localhost:8000` |
 | Cổng vào không còn điểm chết (K13) | Dashboard, POS đang mở qua máy A; tắt nginx (hoặc rút mạng) máy A: trang tự chuyển sang cổng máy B, vẫn làm mới, lượt bán gửi lại không trừ hai lần | Ô "Cổng vào" ở thanh bên, POS |
+| Chi nhánh sập vẫn bán (K15) | Dừng server chi nhánh B: POS qua cổng vào ghi hộ; bật lại: RECOVERING, áp đủ, rồi bán tại chỗ; 3 dấu vân tay khớp; lượt vượt tồn thật REJECTED và hiện ra | POS qua cổng vào, bảng chi nhánh cột Ghi hộ |
 | Phát hiện lỗi theo đa số (K14) | Dừng/tạm dừng chi nhánh B: 3 bản sao đi Nghi ngờ rồi Mất liên lạc; chỉ một bản sao mất liên lạc thì kết luận vẫn "sống" | Tab Hệ thống, bảng kỹ thuật chi nhánh |
 | Chịu lỗi broker (cần 3 máy) | Dừng 1/3 broker: không mất sự kiện, dấu vân tay khớp. Dừng 2/3 rồi bật lại: POS và dashboard báo "đồng bộ dừng", sau đó tự khớp không thao tác tay | POS, dòng "Đồng bộ" trên dashboard, Console |
 | Gossip giữa bản sao (K8) | Bản sao lỡ sự kiện khớp lại trong ≤ 20 giây, cột Gossip "vá N ô"; bán bình thường thì "vá 0 ô" | Bảng bản sao qua nginx, dashboard B |

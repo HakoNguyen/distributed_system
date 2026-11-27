@@ -10,7 +10,7 @@ from fastapi.responses import FileResponse
 
 from common.config import NODE_NAME
 from common.db import pool
-from common.models import Heartbeat
+from common.models import HandoffAck, HandoffSale, Heartbeat
 from services import replica
 
 WEB = Path(__file__).resolve().parent.parent / "web"
@@ -69,6 +69,25 @@ def views():
     """Góc nhìn của bản sao này về từng chi nhánh (ONLINE/SUSPECT/OFFLINE), để bản sao khác kết luận theo đa số (PT-13)."""
     with pool.connection() as conn:
         return replica.query_views(conn)
+
+
+@router.post("/api/handoff")
+def handoff(req: HandoffSale):
+    """POS ghi hộ một lượt bán khi đa số kết luận chi nhánh OFFLINE (vòng 6, PT-14)."""
+    return replica.store_handoff(req)
+
+
+@router.get("/api/handoff")
+def handoff_pending(branch_id: int):
+    """Ghi hộ của một chi nhánh ở bản sao này: chi nhánh kéo về khi phục hồi, POS đọc tồn tạm tính. Chỉ đọc."""
+    with pool.connection() as conn:
+        return replica.query_handoff(conn, branch_id)
+
+
+@router.post("/api/handoff/ack")
+def handoff_ack(ack: HandoffAck):
+    """Chi nhánh báo kết quả áp, sau khi đã commit. Bản sao chỉ sửa bảng của chính nó (PT-07)."""
+    return {"node": NODE_NAME, "updated": replica.record_handoff_ack(ack)}
 
 
 @router.get("/api/trace")

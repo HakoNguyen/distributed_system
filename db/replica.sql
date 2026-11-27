@@ -13,7 +13,8 @@ CREATE TABLE node_status (
     node_time      TIMESTAMPTZ NOT NULL,  -- giờ CỦA CHI NHÁNH ghi trong heartbeat
     outbox_backlog INT         NOT NULL DEFAULT 0, -- số sự kiện chi nhánh chưa gửi được
     rtt_ms         INT,                            -- thời gian một vòng heartbeat, đo ở chi nhánh
-    branch_url     TEXT                            -- địa chỉ POS chi nhánh tự báo; đối soát gọi <branch_url>/api/snapshot
+    branch_url     TEXT,                           -- địa chỉ POS chi nhánh tự báo; đối soát gọi <branch_url>/api/snapshot
+    recovering     BOOLEAN     NOT NULL DEFAULT false -- chi nhánh tự báo đang RECOVERING (vòng 6); không đổi state, verdict
 );
 
 -- Bảng tổng hợp tồn kho toàn chuỗi. Mỗi dòng = một mã hàng ở một chi nhánh.
@@ -84,3 +85,21 @@ CREATE TABLE peer_view (
     received_at        TIMESTAMPTZ NOT NULL DEFAULT now(),  -- giờ bản sao NÀY nhận góc nhìn
     PRIMARY KEY (peer, branch_id)
 );
+
+-- Lượt bán GHI HỘ cho chi nhánh đang OFFLINE (vòng 6, PT-14). POS gửi lên khi kết luận đa số là OFFLINE; chi nhánh
+-- khởi động lại tự kéo về áp (bản sao không ghi vào CSDL chi nhánh, PT-07) rồi báo kết quả để đổi status.
+-- handoff_id = thứ tự nhận ở bản sao này, là thứ tự áp (không dùng created_at: đồng hồ, PT-05).
+CREATE TABLE handoff (
+    handoff_id  BIGSERIAL   PRIMARY KEY,
+    branch_id   INT         NOT NULL,
+    request_id  TEXT        NOT NULL,
+    product_id  INT         NOT NULL,
+    qty         INT         NOT NULL CHECK (qty BETWEEN 1 AND 1000),
+    status      TEXT        NOT NULL DEFAULT 'PENDING' CHECK (status IN ('PENDING', 'APPLIED', 'REJECTED')),
+    movement_id BIGINT,                              -- APPLIED: biến động chi nhánh tạo ra
+    reason      TEXT,                                -- REJECTED: insufficient_stock, product_not_found
+    created_at  TIMESTAMPTZ NOT NULL DEFAULT now(),  -- giờ bản sao nhận, chỉ để hiển thị
+    decided_at  TIMESTAMPTZ,                         -- lúc chi nhánh báo kết quả
+    UNIQUE (branch_id, request_id)                   -- POS gửi lại cùng request_id: chỉ lưu một lần
+);
+CREATE INDEX handoff_pending ON handoff (branch_id, handoff_id) WHERE status = 'PENDING';

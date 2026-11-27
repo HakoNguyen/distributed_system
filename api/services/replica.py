@@ -6,12 +6,13 @@ Nó chỉ đọc/ghi CSDL của chính mình: bảng tổng hợp dựng lại t
 """
 from datetime import datetime, timezone
 
+from fastapi import HTTPException
 from psycopg.types.json import Jsonb
 
 from common.config import (NODE_NAME, NODE_TIMEOUT_S, RECONCILE_AFTER_S, REPLICA_NAMES, SINK_STALE_S,
                            SUSPECT_AFTER_S, VIEW_STALE_S)
 from common.db import pool
-from common.models import BranchView, Heartbeat, SnapshotCell
+from common.models import BranchView, HandoffAck, HandoffSale, Heartbeat, SnapshotCell
 
 
 # ---------------------------------------------------------------------------
@@ -181,13 +182,13 @@ def record_heartbeat(hb: Heartbeat) -> None:
     with pool.connection() as conn:
         conn.execute(
             """INSERT INTO node_status (branch_id, branch_name, last_seen, node_time,
-                                        outbox_backlog, rtt_ms, branch_url)
-               VALUES (%s, %s, now(), %s, %s, %s, %s)
+                                        outbox_backlog, rtt_ms, branch_url, recovering)
+               VALUES (%s, %s, now(), %s, %s, %s, %s, %s)
                ON CONFLICT (branch_id) DO UPDATE
                SET branch_name = EXCLUDED.branch_name, last_seen = now(),
                    node_time = EXCLUDED.node_time, outbox_backlog = EXCLUDED.outbox_backlog,
-                   rtt_ms = EXCLUDED.rtt_ms, branch_url = EXCLUDED.branch_url""",
-            (hb.branch_id, hb.branch_name, node_time, hb.outbox_backlog, hb.rtt_ms, hb.branch_url),
+                   rtt_ms = EXCLUDED.rtt_ms, branch_url = EXCLUDED.branch_url, recovering = EXCLUDED.recovering""",
+            (hb.branch_id, hb.branch_name, node_time, hb.outbox_backlog, hb.rtt_ms, hb.branch_url, hb.recovering),
         )
 
 
@@ -228,6 +229,98 @@ def record_peer_view(peer: str, payload: dict) -> None:
 
 
 # ---------------------------------------------------------------------------
+# 2c. Ghi hộ (vòng 6, PT-14): nhận lượt bán khi đa số kết luận chi nhánh OFFLINE; chi nhánh tự kéo về và báo kết quả.
+#     Bản sao không ghi vào CSDL chi nhánh (PT-07), chỉ sửa bảng handoff của chính nó.
+# ---------------------------------------------------------------------------
+def _verdict(conn, branch_id: int) -> str | None:
+    """Kết luận đa số (PT-13) của bản sao này về một chi nhánh; None nếu chưa từng nhận heartbeat của nó."""
+    return next((n["verdict"] for n in query_nodes(conn) if n["branch_id"] == branch_id), None)
+
+
+def _pending_qty(conn, branch_id: int, product_id: int) -> int:
+    return conn.execute(
+        """SELECT coalesce(sum(qty), 0)::int AS q FROM handoff
+           WHERE branch_id = %s AND product_id = %s AND status = 'PENDING'""",
+        (branch_id, product_id),
+    ).fetchone()["q"]
+
+
+def store_handoff(req: HandoffSale) -> dict:
+    """Lưu một lượt ghi hộ, trong MỘT transaction. Khoá ô snapshot trước (FOR UPDATE): hai lượt cùng mã xếp hàng lần
+    lượt, nên tồn tạm tính không bị hai lượt cùng đọc một số (như PT-09). Gửi lại cùng request_id trả lượt cũ."""
+    with pool.connection() as conn, conn.transaction():
+        cell = conn.execute(
+            "SELECT qty_on_hand FROM inventory_snapshot WHERE branch_id = %s AND product_id = %s FOR UPDATE",
+            (req.branch_id, req.product_id),
+        ).fetchone()
+        old = conn.execute(
+            """SELECT handoff_id, branch_id, product_id, qty, status FROM handoff
+               WHERE branch_id = %s AND request_id = %s""",
+            (req.branch_id, req.request_id),
+        ).fetchone()
+        if old is None and _verdict(conn, req.branch_id) != "OFFLINE":
+            raise HTTPException(409, {"error": "branch_not_offline"})
+        if cell is None:
+            raise HTTPException(404, {"error": "product_not_found"})
+        provisional = cell["qty_on_hand"] - _pending_qty(conn, req.branch_id, req.product_id)
+        if old:
+            return {"node": NODE_NAME, **old, "qty_on_hand": provisional, "replayed": True}
+        if provisional < req.qty:
+            raise HTTPException(422, {"error": "insufficient_stock", "qty_on_hand": provisional})
+        row = conn.execute(
+            """INSERT INTO handoff (branch_id, request_id, product_id, qty) VALUES (%s, %s, %s, %s)
+               RETURNING handoff_id, branch_id, product_id, qty, status""",
+            (req.branch_id, req.request_id, req.product_id, req.qty),
+        ).fetchone()
+    return {"node": NODE_NAME, **row, "qty_on_hand": provisional - req.qty}
+
+
+def query_handoff(conn, branch_id: int) -> dict:
+    """Ghi hộ của một chi nhánh ở bản sao này (GET /api/handoff). Chỉ đọc.
+    accepting = còn nhận ghi hộ (kết luận đa số OFFLINE): chi nhánh chưa được ONLINE khi còn bản sao như vậy."""
+    pending = conn.execute(
+        """SELECT handoff_id, request_id, product_id, qty FROM handoff
+           WHERE branch_id = %s AND status = 'PENDING' ORDER BY handoff_id""",
+        (branch_id,),
+    ).fetchall()
+    counts = conn.execute(
+        """SELECT count(*) FILTER (WHERE status = 'PENDING')::int  AS pending,
+                  count(*) FILTER (WHERE status = 'APPLIED')::int  AS applied,
+                  count(*) FILTER (WHERE status = 'REJECTED')::int AS rejected
+           FROM handoff WHERE branch_id = %s""",
+        (branch_id,),
+    ).fetchone()
+    # Cùng dạng GET /api/inventory của chi nhánh, để POS dùng chung bảng hàng; qty_on_hand = tồn tạm tính
+    stock = conn.execute(
+        """SELECT p.product_id, p.name, p.unit, p.reorder_point,
+                  s.qty_on_hand - coalesce(h.q, 0)::int AS qty_on_hand, NULL::int AS version
+           FROM inventory_snapshot s JOIN product p USING (product_id)
+           LEFT JOIN (SELECT product_id, sum(qty) AS q FROM handoff
+                      WHERE branch_id = %(b)s AND status = 'PENDING' GROUP BY product_id) h USING (product_id)
+           WHERE s.branch_id = %(b)s ORDER BY p.product_id""",
+        {"b": branch_id},
+    ).fetchall()
+    return {"node": NODE_NAME, "branch_id": branch_id, "accepting": _verdict(conn, branch_id) == "OFFLINE",
+            "counts": counts, "pending": pending, "stock": stock}
+
+
+def record_handoff_ack(ack: HandoffAck) -> int:
+    """Chi nhánh báo kết quả áp (sau khi đã commit). MỘT câu UPDATE, chỉ đổi lượt còn PENDING của đúng chi nhánh đó:
+    ack trùng hay ack muộn không đổi lượt đã chốt. Trả số lượt được đổi."""
+    rows = [r.model_dump() for r in ack.results]
+    if not rows:
+        return 0
+    with pool.connection() as conn:
+        return conn.execute(
+            """UPDATE handoff h
+               SET status = r.status, movement_id = r.movement_id, reason = r.reason, decided_at = now()
+               FROM jsonb_to_recordset(%s) AS r(handoff_id bigint, status text, movement_id bigint, reason text)
+               WHERE h.handoff_id = r.handoff_id AND h.branch_id = %s AND h.status = 'PENDING'""",
+            (Jsonb(rows), ack.branch_id),
+        ).rowcount
+
+
+# ---------------------------------------------------------------------------
 # 3. Truy vấn cho dashboard. Mọi hàm nhận `conn` để /api/overview gom vào một kết nối.
 # ---------------------------------------------------------------------------
 def query_nodes(conn):
@@ -235,7 +328,7 @@ def query_nodes(conn):
     bị chia cắt, hai bản sao có thể thấy khác nhau; `views` ghép góc nhìn của mọi bản sao, `verdict` là kết luận theo
     đa số (PT-13)."""
     rows = conn.execute(
-        """SELECT n.branch_id, n.branch_name, n.outbox_backlog, n.rtt_ms, n.last_seen,
+        """SELECT n.branch_id, n.branch_name, n.outbox_backlog, n.rtt_ms, n.last_seen, n.recovering,
                   n.last_seen > now() - make_interval(secs => %s)      AS alive,
                   round(extract(epoch FROM now() - n.last_seen))::int  AS seconds_since_seen,
                   extract(epoch FROM now() - n.last_seen)::float       AS age_s,
@@ -338,6 +431,13 @@ def query_digest(conn):
         """SELECT peer, channel, last_ok_at, failing_since, last_error, cells_patched
            FROM sync_peer ORDER BY channel, peer"""
     ).fetchall()
+    # Ghi hộ ở bản sao này theo chi nhánh (vòng 6), để dashboard cộng qua các bản sao
+    d["handoff"] = {r.pop("branch_id"): r for r in conn.execute(
+        """SELECT branch_id, count(*) FILTER (WHERE status = 'PENDING')::int  AS pending,
+                             count(*) FILTER (WHERE status = 'APPLIED')::int  AS applied,
+                             count(*) FILTER (WHERE status = 'REJECTED')::int AS rejected
+           FROM handoff GROUP BY branch_id ORDER BY branch_id"""
+    ).fetchall()}
     d["node"] = NODE_NAME
     d["fingerprint"] = d["fingerprint"][:8]  # 8 ký tự đầu là đủ để so bằng mắt
     return d

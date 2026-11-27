@@ -1,6 +1,6 @@
 """
 Một ứng dụng FastAPI cho cả hai vai, chọn bằng biến ROLE:
-  ROLE=branch   quầy chi nhánh: POS, bán, nhập; gửi heartbeat tới mọi bản sao
+  ROLE=branch   quầy chi nhánh: POS, bán, nhập; gửi heartbeat tới mọi bản sao; tự kéo ghi hộ khi phục hồi (workers/recovery.py)
   ROLE=replica  bản sao trung tâm: nhận heartbeat, phục vụ dashboard; gossip, đối soát (workers/gossip.py)
 
 Tiến trình nền chạy riêng, cùng image: workers/relay.py (chi nhánh), workers/sink.py (bản sao).
@@ -13,7 +13,7 @@ from common.config import BRANCH_ID, NODE_NAME, ROLE
 from common.db import open_pool, pool
 from routers import branch, replica
 from services.branch import seed_if_empty
-from workers import gossip, heartbeat
+from workers import gossip, heartbeat, recovery
 
 
 @asynccontextmanager
@@ -22,6 +22,7 @@ async def lifespan(app: FastAPI):
     if ROLE == "branch":
         seed_if_empty()
         heartbeat.start()
+        recovery.start()  # vòng 6: khởi động ở RECOVERING, kéo và áp ghi hộ rồi mới nhận bán
     else:
         gossip.start()
     yield

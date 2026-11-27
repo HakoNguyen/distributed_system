@@ -7,14 +7,26 @@ bình thường. Việc báo lên trung tâm là việc của relay (workers/rel
 chạy riêng và không làm chậm việc bán.
 """
 import random
+import time
 from collections.abc import Callable
+from datetime import datetime, timezone
 
 from fastapi import HTTPException
 from psycopg.errors import UniqueViolation
 from psycopg.types.json import Jsonb
 
-from common.config import BRANCH_ID
+from common.config import BRANCH_ID, RECOVERY_STALE_S, RECOVERY_TIMEOUT_S
 from common.db import pool
+from common.models import HandoffItem
+
+# Trạng thái phục hồi của chi nhánh (vòng 6, PT-14), trong bộ nhớ branch_api. Khởi động luôn ở RECOVERING: chưa nhận
+# bán cho tới khi luồng phục hồi (workers/recovery.py) đã kéo và áp xong ghi hộ ở mọi bản sao (docs/spec.md mục 4).
+# started, checked_at: time.monotonic() (đo thời gian chờ trong tiến trình, không so thứ tự sự kiện).
+recovery: dict = {
+    "state": "RECOVERING", "since": datetime.now(timezone.utc), "started": time.monotonic(), "checked_at": None,
+    "last_run_at": None, "last_error": None, "incomplete": False, "unreachable": [],
+    "pending": 0, "applied": 0, "rejected": 0,
+}
 
 
 # ---------------------------------------------------------------------------
@@ -252,3 +264,140 @@ def record_relay_result(error: str | None) -> None:
 def relay_status() -> dict:
     with pool.connection() as conn:
         return conn.execute("SELECT last_ok_at, failing_since, last_error FROM relay_status").fetchone()
+
+
+# ---------------------------------------------------------------------------
+# 5. Ghi hộ (vòng 6, PT-14): tự kéo ghi hộ từ các bản sao, áp theo thứ tự, rồi mới nhận bán mới.
+#    workers/recovery.py gọi mạng; ở đây nhận hàm `pull`, `ack` như relay_batch nhận `send`.
+# ---------------------------------------------------------------------------
+def require_online() -> None:
+    """Router gọi trước mọi lệnh ghi (bán, nhập). RECOVERING, hoặc luồng phục hồi chưa chạy trong RECOVERY_STALE_S giây
+    (vừa docker unpause, chưa kịp hỏi bản sao có ghi hộ không) thì 503: chưa ghi gì, quầy thử lại sau."""
+    stale = recovery["checked_at"] is None or time.monotonic() - recovery["checked_at"] > RECOVERY_STALE_S
+    if recovery["state"] != "ONLINE" or stale:
+        raise HTTPException(503, {"error": "branch_recovering", "stale": stale})
+
+
+def next_recovery_state(state: str, incomplete: bool, pulls: dict[str, dict | None],
+                        elapsed_s: float) -> tuple[str, bool]:
+    """Trạng thái kế tiếp từ kết quả kéo của mọi bản sao (None = không gọi được). Hàm thuần (docs/spec.md mục 4).
+
+    - Bản sao gọi được còn lượt PENDING, hoặc còn nhận ghi hộ (kết luận của nó vẫn OFFLINE): RECOVERING.
+    - Mọi bản sao trả lời và sạch: ONLINE, hết cảnh báo.
+    - Còn bản sao không gọi được: đang ONLINE thì giữ ONLINE (K3: quầy bị cô lập vẫn bán tại chỗ); đang RECOVERING thì
+      chờ, quá RECOVERY_TIMEOUT_S giây thì ONLINE kèm incomplete (ngoại lệ của PT-14).
+    """
+    reached = [p for p in pulls.values() if p is not None]
+    if any(p["pending"] or p["accepting"] for p in reached):
+        return "RECOVERING", incomplete
+    if len(reached) == len(pulls):
+        return "ONLINE", False
+    if state == "ONLINE":
+        return "ONLINE", incomplete
+    if elapsed_s >= RECOVERY_TIMEOUT_S:
+        return "ONLINE", True
+    return "RECOVERING", incomplete
+
+
+def collect_handoffs(pulls: dict[str, dict | None]) -> list[dict]:
+    """Gộp lượt PENDING của mọi bản sao theo thứ tự áp: thứ tự bản sao trong `pulls` (= REPLICA_URLS), rồi handoff_id.
+    Không dùng đồng hồ (PT-05). Cùng request_id ở hai bản sao (POS chuyển bản sao giữa chừng) là MỘT lượt; `holders`
+    nhớ mọi (bản sao, handoff_id) đang giữ nó để báo đủ."""
+    items: dict[str, dict] = {}
+    for name, p in pulls.items():
+        for h in sorted(p["pending"] if p else [], key=lambda h: h["handoff_id"]):
+            item = items.setdefault(h["request_id"], {"request_id": h["request_id"], "product_id": h["product_id"],
+                                                      "qty": h["qty"], "holders": []})
+            item["holders"].append((name, h["handoff_id"]))
+    return list(items.values())
+
+
+def _apply_one(item: dict) -> dict:
+    with pool.connection() as conn:
+        old = conn.execute("SELECT reason FROM handoff_rejected WHERE request_id = %s", (item["request_id"],)).fetchone()
+    if old:  # đã từ chối ở lần trước (ack bị mất): giữ nguyên quyết định
+        return {"status": "REJECTED", "movement_id": None, "reason": old["reason"], "new": False}
+    try:
+        # Đúng đường bán hàng: một transaction (PT-02); request_id đã có thì trả kết quả cũ, không trừ lần hai (PT-08)
+        r = change_stock(item["product_id"], -item["qty"], "SALE", None, item["request_id"])
+        return {"status": "APPLIED", "movement_id": r["movement_id"], "reason": None, "new": not r.get("replayed")}
+    except HTTPException as e:  # 422 insufficient_stock, 404 product_not_found: tồn, sổ cái không đổi
+        reason = e.detail["error"]
+        with pool.connection() as conn:
+            n = conn.execute(
+                """INSERT INTO handoff_rejected (request_id, product_id, qty, reason, qty_on_hand)
+                   VALUES (%s, %s, %s, %s, %s) ON CONFLICT (request_id) DO NOTHING""",
+                (item["request_id"], item["product_id"], item["qty"], reason, e.detail.get("qty_on_hand")),
+            ).rowcount
+        return {"status": "REJECTED", "movement_id": None, "reason": reason, "new": n == 1}
+
+
+def apply_handoffs(items: list[dict]) -> tuple[list[dict], str | None]:
+    """Áp từng lượt theo đúng thứ tự; mỗi lượt tự commit. Lỗi bất ngờ (mất CSDL) thì dừng, không áp các lượt sau (giữ
+    thứ tự); trả (kết quả các lượt đã xong, lỗi hoặc None)."""
+    results = []
+    for item in items:
+        try:
+            results.append({**item, **_apply_one(item)})
+        except Exception as e:
+            return results, f"{type(e).__name__}: {e}"[:200]
+    return results, None
+
+
+def _valid_pull(payload: dict) -> dict:
+    """Dữ liệu nhận từ bản sao: kiểm trước khi áp. Sai thì ném lỗi (coi như không gọi được bản sao đó)."""
+    if payload.get("branch_id") != BRANCH_ID or not isinstance(payload.get("accepting"), bool):
+        raise ValueError("phản hồi ghi hộ sai chi nhánh hoặc thiếu accepting")
+    return {"accepting": payload["accepting"],
+            "pending": [HandoffItem.model_validate(h).model_dump() for h in payload["pending"]]}
+
+
+def recovery_once(pull: Callable[[str], dict], ack: Callable[[str, dict], None], replicas: list[str]) -> None:
+    """Một vòng phục hồi: kéo mọi bản sao, áp, báo kết quả (chỉ sau khi đã commit), đổi trạng thái.
+    Bắt MỌI lỗi và ghi vào last_error: một lần lỗi không làm luồng dừng, nên chốt RECOVERY_STALE_S không chặn quầy."""
+    errors = []
+    try:
+        pulls: dict[str, dict | None] = {}
+        for name in replicas:
+            try:
+                pulls[name] = _valid_pull(pull(name))
+            except Exception:
+                pulls[name] = None  # không gọi được hoặc dữ liệu hỏng
+        items = collect_handoffs(pulls)
+        results, error = apply_handoffs(items)
+        if error:
+            errors.append(error)
+        # Các lượt trong `results` đã commit: giờ mới báo mọi bản sao đang giữ chúng (PT-07: bản sao tự sửa bảng mình)
+        by_replica: dict[str, list[dict]] = {}
+        for r in results:
+            for name, handoff_id in r["holders"]:
+                by_replica.setdefault(name, []).append({"handoff_id": handoff_id, "status": r["status"],
+                                                        "movement_id": r["movement_id"], "reason": r["reason"]})
+        for name, res in by_replica.items():
+            try:
+                ack(name, {"branch_id": BRANCH_ID, "results": res})
+            except Exception as e:  # ack mất thì lần sau lượt đó còn PENDING, áp lại không trừ thêm, báo lại
+                errors.append(f"ack {name}: {type(e).__name__}: {e}")
+        recovery["applied"] += sum(r["status"] == "APPLIED" and r["new"] for r in results)
+        recovery["rejected"] += sum(r["status"] == "REJECTED" and r["new"] for r in results)
+        state, incomplete = next_recovery_state(recovery["state"], recovery["incomplete"], pulls,
+                                                time.monotonic() - recovery["started"])
+        if state != recovery["state"]:
+            recovery.update(state=state, since=datetime.now(timezone.utc), started=time.monotonic())
+        recovery.update(incomplete=incomplete, pending=len(items),
+                        unreachable=[name for name, p in pulls.items() if p is None])
+    except Exception as e:
+        errors.append(f"{type(e).__name__}: {e}")
+    recovery.update(last_error="; ".join(errors)[:300] or None, last_run_at=datetime.now(timezone.utc),
+                    checked_at=time.monotonic())
+
+
+def recovery_status() -> dict:
+    """Trạng thái phục hồi cho POS, dashboard (GET /api/status): cả các lượt ghi hộ đã từ chối, để không mất lặng lẽ."""
+    with pool.connection() as conn:
+        rejected = conn.execute(
+            """SELECT request_id, product_id, qty, reason, qty_on_hand, rejected_at
+               FROM handoff_rejected ORDER BY rejected_at DESC, request_id LIMIT 20"""
+        ).fetchall()
+    keys = ("state", "since", "pending", "applied", "rejected", "incomplete", "unreachable", "last_run_at", "last_error")
+    return {**{k: recovery[k] for k in keys}, "rejected_items": rejected}

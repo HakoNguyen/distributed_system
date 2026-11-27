@@ -37,6 +37,12 @@ HEARTBEAT_EVERY_S = 5
 BRANCH_URL = os.environ.get("BRANCH_URL") or None
 # Sự kiện nằm trong outbox lâu hơn chừng này mà chưa gửi được thì POS báo đỏ
 STUCK_AFTER_S = 5
+# Phục hồi (vòng 6, PT-14): kéo ghi hộ từ mọi bản sao mỗi RECOVERY_EVERY_S giây; RECOVERING quá RECOVERY_TIMEOUT_S mà
+# vẫn có bản sao không gọi được thì tự ONLINE kèm cảnh báo incomplete; luồng phục hồi không chạy trong
+# RECOVERY_STALE_S giây gần nhất thì chưa nhận bán (chặn lượt bán chen vào ngay sau docker unpause).
+RECOVERY_EVERY_S = 2
+RECOVERY_TIMEOUT_S = 60
+RECOVERY_STALE_S = 10
 
 # ---------------- Bản sao trung tâm ----------------
 # Tên máy chạy bản sao này: "A", "B", "C". Hiện lên dashboard để biết

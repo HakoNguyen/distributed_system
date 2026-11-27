@@ -37,6 +37,8 @@
   #link.busy { background: var(--pending-bg); color: var(--pending); }
   #link.down { background: var(--alert-bg); color: var(--alert); }
   #link b { font-weight: 700; }
+  /* Vòng 6: lượt ghi hộ bị từ chối, phục hồi chưa gom đủ */
+  #note { display: none; padding: .5rem 1.5rem; font-size: .9rem; background: var(--alert-bg); color: var(--alert); border-top: 1px solid var(--rule); }
 
   /* ---------- Bố cục: danh mục | phiếu ---------- */
   .layout { display: grid; grid-template-columns: minmax(0, 1fr) 380px; gap: 1.2rem; padding: 1.2rem 1.5rem 2rem; align-items: start; }
@@ -102,7 +104,7 @@
     .layout { grid-template-columns: 1fr; padding: 1rem; }
     .ticket { position: static; }
     .products, #lines { max-height: none; }
-    header, #link { padding-left: 1rem; padding-right: 1rem; }
+    header, #link, #note { padding-left: 1rem; padding-right: 1rem; }
   }
 </style>
 </head>
@@ -112,6 +114,7 @@
   <div id="links" aria-label="Độ trễ tới các bản sao trung tâm"></div>
 </header>
 <div id="link" role="status">Đang kiểm tra kết nối tới trung tâm…</div>
+<div id="note" role="alert"></div>
 
 <div class="layout">
   <section class="panel">
@@ -176,12 +179,15 @@ const nextGate = (gates, i, failed = i) => (failed === i ? (i + 1) % gates.lengt
 const PREFIX = posPrefix(location.pathname);
 let gates = [location.origin], gi = 0;
 
-async function call(path, opts = {}) {
+// prefix khác PREFIX (vòng 6): gọi trung tâm qua cổng vào, "/" (kết luận đa số) hoặc "/replica/<X>/" (ghi hộ); chỉ dùng
+// khi mở qua nginx nên luôn ghép URL đầy đủ của cổng.
+async function call(path, opts = {}, prefix = PREFIX) {
   const ctl = new AbortController();
   const t = setTimeout(() => ctl.abort(), 4000);
   const at = gi;
+  const url = prefix === PREFIX && at === 0 ? path : apiUrl(gates[at], prefix, path);
   try {
-    return await fetch(apiUrl(at === 0 ? "" : gates[at], PREFIX, path), { cache: "no-store", ...opts, signal: ctl.signal });
+    return await fetch(url, { cache: "no-store", ...opts, signal: ctl.signal });
   } catch (e) {
     if (gates.length > 1) {
       if (at === gi) toast(`Cổng vào ${gates[at]} không trả lời, chuyển sang ${gates[nextGate(gates, gi)]}. ` +
@@ -193,8 +199,8 @@ async function call(path, opts = {}) {
   } finally { clearTimeout(t); }
 }
 
-async function post(url, body) {
-  const r = await call(url, { method: "POST", headers: { "Content-Type": "application/json" }, body: body ? JSON.stringify(body) : undefined });
+async function post(url, body, prefix = PREFIX) {
+  const r = await call(url, { method: "POST", headers: { "Content-Type": "application/json" }, body: body ? JSON.stringify(body) : undefined }, prefix);
   const data = await r.json().catch(() => ({}));
   if (!r.ok) throw Object.assign(new Error(r.status), { status: r.status, data });
   return data;
@@ -211,14 +217,97 @@ function toast(msg, isErr = false) {
 }
 
 // ---------------------------------------------------------------------------
+// Ghi hộ (vòng 6, PT-14). Chi nhánh lỗi HANDOFF_AFTER_FAILS lần liên tiếp VÀ kết luận đa số (/replica/<X>/api/nodes, đúng bản sao sẽ ghi hộ) là OFFLINE thì
+// bán qua MỘT bản sao (/replica/<X>/api/handoff, thứ tự /lb/replicas.json), giữ bản sao đó tới khi nó lỗi (mạng, 5xx)
+// rồi mới sang bản sao kế tiếp, cùng request_id. Kết luận mới SUSPECT thì chờ: khoá Thanh toán, giữ phiếu. Chi nhánh
+// trả lời lại (kể cả đang RECOVERING) thì thôi ghi hộ. Chỉ khi mở qua nginx (/cnX/). Hàm thuần: selftest.
+// ---------------------------------------------------------------------------
+const HANDOFF_AFTER_FAILS = 2;
+function posMode(fails, verdict, recoveryState) {
+  if (fails < HANDOFF_AFTER_FAILS) return recoveryState === "RECOVERING" ? "recovering" : "local";
+  return verdict === "OFFLINE" ? "handoff" : "waiting";
+}
+const branchFromPrefix = (prefix) => Number((prefix.match(/^\/cn(\d+)\/$/) || [])[1]) || null;
+let BRANCH = branchFromPrefix(PREFIX);   // /api/info không trả lời (chi nhánh chết) thì lấy số từ /cnX/
+let fails = 0, verdict = null, recovery = null, central = null;   // central: GET /api/handoff của bản sao đang dùng
+let replicas = ["A", "B", "C"], ri = 0;
+const currentMode = () => posMode(fails, verdict, recovery?.state);
+const replicaPrefix = () => `/replica/${replicas[ri]}/`;
+
+function setTitle(id, name) {
+  document.documentElement.style.setProperty("--c", COLORS[id] || "#18212A");
+  document.getElementById("title").textContent = `CN${id}${name ? " " + name : ""}`;
+  document.title = `MiniGo · Quầy CN${id}${name ? " " + name : ""}`;
+}
+
+// Chi nhánh không trả lời: hỏi kết luận đa số ở ĐÚNG bản sao sẽ ghi hộ (nó cũng tự kiểm lại kết luận này, 409
+// branch_not_offline), rồi đọc tồn tạm tính, số lượt ghi hộ ở đó. Bản sao lỗi thì lần sau dùng bản sao kế tiếp.
+async function refreshCentral() {
+  try {
+    const r = await call("api/nodes", {}, replicaPrefix());
+    if (!r.ok) throw new Error(r.status);
+    const me = (await r.json()).find((n) => n.branch_id === BRANCH);
+    verdict = me?.verdict ?? null;
+    if (me) setTitle(BRANCH, me.branch_name);
+    if (verdict !== "OFFLINE") return;
+    const h = await call(`api/handoff?branch_id=${BRANCH}`, {}, replicaPrefix());
+    if (!h.ok) throw new Error(h.status);
+    central = await h.json();
+    showProducts(central.stock);
+  } catch (e) {
+    verdict = null; central = null;
+    if (!e.gateSwitched) ri = nextGate(replicas, ri);
+  }
+}
+
+async function postHandoff(l) {
+  try {
+    return await post("api/handoff", { branch_id: BRANCH, product_id: l.product_id, qty: l.qty, request_id: l.rid }, replicaPrefix());
+  } catch (e) {
+    if (!e.gateSwitched && (!e.status || e.status >= 500)) ri = nextGate(replicas, ri);   // giữ request_id, gửi lại sang bản sao kế tiếp
+    throw e;
+  }
+}
+
+function renderMode(m) {
+  const el = document.getElementById("link");
+  if (m === "handoff") {
+    const c = central?.counts;
+    el.className = "busy";
+    el.innerHTML = `Chi nhánh mất liên lạc (đa số bản sao kết luận OFFLINE). <b>Đang ghi hộ qua trung tâm</b> (bản sao ${esc(replicas[ri])})` +
+      (c ? `: <b>${c.pending}</b> lượt chờ chi nhánh áp lại` : "") + ". Tồn hiển thị là tồn tạm tính; chỉ bán, không nhập.";
+  } else if (m === "waiting") {
+    el.className = "down";
+    el.innerHTML = `Không gọi được chi nhánh. Trung tâm: <b>${verdict === "SUSPECT" ? "nghi ngờ, chưa đủ đa số" : verdict === "ONLINE" ? "vẫn thấy chi nhánh sống" : "chưa hỏi được"}</b>. ` +
+      "Chưa ghi hộ: giữ phiếu và chờ (đa số kết luận mất liên lạc sau khoảng 15 giây).";
+  } else if (m === "recovering") {
+    el.className = "busy";
+    el.innerHTML = `<b>Chi nhánh đang phục hồi</b>: đã áp ${recovery.applied} lượt ghi hộ, từ chối ${recovery.rejected}, còn ${recovery.pending} chờ. Chưa nhận bán mới.`;
+  }   // local: renderLink(st) đã vẽ
+  const parts = [];
+  if (recovery?.incomplete) parts.push(`Phục hồi chưa đủ: chưa gom được ghi hộ từ bản sao ${recovery.unreachable.join(", ")}; lượt ở đó sẽ áp muộn khi gọi lại được.`);
+  const rej = (recovery?.rejected_items || []).slice(0, 5);
+  if (rej.length) parts.push("Lượt ghi hộ bị TỪ CHỐI khi chi nhánh áp lại: " + rej.map((r) =>
+    `${byId(r.product_id)?.name || "mã " + r.product_id} ×${r.qty} (${r.reason === "insufficient_stock" ? `tồn thật chỉ còn ${r.qty_on_hand}` : "không có mã hàng"}, lúc ${clock(r.rejected_at)})`).join("; ") + ".");
+  const note = document.getElementById("note");
+  note.style.display = parts.length ? "block" : "none";
+  note.textContent = parts.join(" ");
+}
+
+// ---------------------------------------------------------------------------
 // Kết quả gửi một dòng phiếu. Hàm thuần, kiểm bằng ?selftest=1.
 // - Thành công: dòng xong, bỏ khỏi phiếu.
 // - Server trả lỗi (có mã HTTP): chưa trừ gì, bỏ request_id để lần sau là yêu cầu mới.
 // - Lỗi mạng: KHÔNG biết server đã trừ chưa, giữ request_id và khoá số lượng; gửi lại thì server trả kết quả cũ
 //   chứ không trừ hai lần.
 // ---------------------------------------------------------------------------
+// Server trả lời nhưng CHƯA xử lý, thử lại sau (vòng 6): giữ request_id như lỗi mạng, vì dòng có thể đã nằm ở nơi khác
+// (đã gửi chi nhánh trước khi nó chết, hoặc đã ghi hộ ở bản sao cũ). 502–504 từ nginx: không biết đã tới chưa.
+const RETRY_LATER = ["branch_recovering", "branch_not_offline"];
 function errorText(status, data) {
   const d = data?.detail;
+  if (d?.error === "branch_recovering") return "Chi nhánh đang phục hồi (áp các lượt ghi hộ), chưa nhận bán mới. Thử lại sau vài giây.";
+  if (d?.error === "branch_not_offline") return "Trung tâm chưa kết luận chi nhánh mất liên lạc nên chưa ghi hộ. Thử lại sau.";
   if (d?.error === "insufficient_stock") return `Không đủ hàng: chỉ còn ${d.qty_on_hand}.`;
   if (d?.error === "product_not_found") return "Không có mã hàng này.";
   if (d?.error === "version_conflict") return "Số tồn vừa bị quầy khác sửa, thử lại.";
@@ -227,7 +316,9 @@ function errorText(status, data) {
 }
 function settle(line, outcome) {
   if (outcome.ok) return { ...line, done: true, uncertain: false, msg: "" };
-  if (outcome.status) return { ...line, rid: null, uncertain: false, msg: errorText(outcome.status, outcome.data) };
+  if (RETRY_LATER.includes(outcome.data?.detail?.error)) return { ...line, msg: errorText(outcome.status, outcome.data) };
+  if (outcome.status && ![502, 503, 504].includes(outcome.status))
+    return { ...line, rid: null, uncertain: false, msg: errorText(outcome.status, outcome.data) };
   return { ...line, uncertain: true, msg: "Chưa rõ đã ghi chưa (mất kết nối). Bấm gửi lại: không bị trừ hai lần." };
 }
 
@@ -303,11 +394,14 @@ function renderCart() {
   }).join("") : `<li class="empty-ticket">Phiếu trống. Chọn mặt hàng ở danh sách bên trái hoặc quét mã.</li>`;
   const units = cart.reduce((s, l) => s + l.qty, 0);
   document.getElementById("summary").innerHTML = cart.length ? `<b>${cart.length}</b> mặt hàng, <b>${units}</b> đơn vị` : "";
-  document.getElementById("submit").disabled = !cart.length;
+  // Vòng 6: chờ kết luận hoặc chi nhánh đang phục hồi thì chưa gửi được; ghi hộ chỉ có bán
+  const m = currentMode();
+  document.getElementById("submit").disabled = !cart.length || m === "waiting" || m === "recovering";
+  document.getElementById("bulk").disabled = m !== "local";
   // Dòng chưa rõ kết quả gắn với loại phiếu đã gửi: không cho đổi loại phiếu tới khi gửi lại xong
   document.querySelectorAll(".seg button").forEach((b) => {
     b.setAttribute("aria-checked", b.dataset.mode === mode);
-    b.disabled = cart.some((l) => l.uncertain) && b.dataset.mode !== mode;
+    b.disabled = (cart.some((l) => l.uncertain) && b.dataset.mode !== mode) || (m === "handoff" && b.dataset.mode === "receipt");
   });
 }
 
@@ -339,14 +433,15 @@ document.getElementById("clear").addEventListener("click", () => { cart = cart.f
 
 document.getElementById("submit").addEventListener("click", async (ev) => {
   const btn = ev.currentTarget; btn.disabled = true;
+  const handoff = currentMode() === "handoff", via = replicas[ri];
   let done = 0, spent = 0;
   for (let i = 0; i < cart.length; i++) {
     const l = cart[i];
     l.rid ||= newRequestId();
     let outcome;
     try {
-      const res = await post(`api/${mode}`, { product_id: l.product_id, qty: l.qty, request_id: l.rid });
-      outcome = { ok: true, res }; done++; spent += res.elapsed_ms;
+      const res = handoff ? await postHandoff(l) : await post(`api/${mode}`, { product_id: l.product_id, qty: l.qty, request_id: l.rid });
+      outcome = { ok: true, res }; done++; spent += res.elapsed_ms ?? 0;
     } catch (e) {
       outcome = e.status ? { status: e.status, data: e.data } : { network: true };
     }
@@ -354,7 +449,8 @@ document.getElementById("submit").addEventListener("click", async (ev) => {
   }
   cart = cart.filter((l) => !l.done);
   const verb = mode === "sale" ? "Đã bán" : "Đã nhập";
-  if (done) toast(`${verb} ${done} mặt hàng. Xử lý tại chỗ trong ${ms(spent)} ms.` + (cart.length ? ` Còn ${cart.length} dòng lỗi.` : ""), !!cart.length);
+  if (done && handoff) toast(`Đã ghi hộ ${done} mặt hàng qua bản sao ${via}; chi nhánh sẽ áp khi phục hồi.` + (cart.length ? ` Còn ${cart.length} dòng lỗi.` : ""), !!cart.length);
+  else if (done) toast(`${verb} ${done} mặt hàng. Xử lý tại chỗ trong ${ms(spent)} ms.` + (cart.length ? ` Còn ${cart.length} dòng lỗi.` : ""), !!cart.length);
   else toast("Chưa ghi được dòng nào, xem lỗi ở từng dòng.", true);
   renderCart(); refresh();
 });
@@ -364,8 +460,8 @@ document.getElementById("bulk").addEventListener("click", async (ev) => {
   try {
     const r = await post("api/sale/random?count=20");
     toast(`Đã bán ${r.sold} đơn ngẫu nhiên${r.skipped_out_of_stock ? `, bỏ qua ${r.skipped_out_of_stock} đơn vì hết hàng` : ""}.`);
-  } catch (e) { toast(`Không bán được (mã lỗi ${e.status || e.message}).`, true); }
-  btn.disabled = false; refresh();
+  } catch (e) { toast(e.data?.detail?.error ? errorText(e.status, e.data) : `Không bán được (mã lỗi ${e.status || e.message}).`, true); }
+  renderCart(); refresh();   // renderCart mở lại nút theo chế độ hiện tại
 });
 
 // ---------------------------------------------------------------------------
@@ -398,22 +494,33 @@ function renderLink(s) {
 }
 
 let lastRendered = "";  // chỉ vẽ lại danh mục khi số liệu đổi
+function showProducts(inv) {
+  const snapshot = JSON.stringify(inv);
+  if (snapshot === lastRendered) return;
+  products = inv; renderProducts(); lastRendered = snapshot;
+  if (!lines.contains(document.activeElement)) renderCart();   // đang gõ số lượng thì không vẽ lại phiếu
+}
+
+let lastMode = "local";
 async function refresh() {
   try {
-    const [inv, st] = await Promise.all([
-      call("api/inventory").then((r) => r.json()),
-      call("api/status").then((r) => r.json()),
-    ]);
-    const snapshot = JSON.stringify(inv);
-    if (snapshot !== lastRendered) {
-      products = inv; renderProducts(); lastRendered = snapshot;
-      if (!lines.contains(document.activeElement)) renderCart();   // đang gõ số lượng thì không vẽ lại phiếu
-    }
+    const [invR, stR] = await Promise.all([call("api/inventory"), call("api/status")]);
+    // 502–504 (nginx: chi nhánh không trả lời) cũng là lỗi của chi nhánh
+    if (!invR.ok || !stR.ok) throw new Error(`chi nhánh trả ${invR.ok ? stR.status : invR.status}`);
+    const [inv, st] = [await invR.json(), await stR.json()];
+    fails = 0; recovery = st.recovery; central = null;
+    showProducts(inv);
     renderLink(st);
   } catch (e) {
-    // call() vừa chuyển cổng thì đã tự báo; lần làm mới sau đi cổng mới
-    if (!e.gateSwitched) toast("Không đọc được dữ liệu của chính chi nhánh. Kiểm tra container api và db.", true);
+    // call() vừa chuyển cổng thì đã tự báo và không tính là chi nhánh lỗi; lần làm mới sau đi cổng mới
+    if (!e.gateSwitched) fails++;
+    if (fails >= HANDOFF_AFTER_FAILS && PREFIX && BRANCH) await refreshCentral();
+    else if (!PREFIX && !e.gateSwitched) toast("Không đọc được dữ liệu của chính chi nhánh. Kiểm tra container api và db.", true);
   }
+  const m = currentMode();
+  if (m === "handoff" && mode !== "sale" && !cart.some((l) => l.uncertain)) { mode = "sale"; renderProducts(); }   // ghi hộ chỉ có bán
+  renderMode(m);
+  if (m !== lastMode) { lastMode = m; renderCart(); }
 }
 
 function selftest() {
@@ -433,6 +540,18 @@ function selftest() {
   check("cổng đang mở đứng đầu, bỏ trùng", gateList("http://localhost:8012", "http://localhost,http://localhost:8012").join() === "http://localhost:8012,http://localhost");
   check("cổng kế tiếp quay vòng", nextGate(["a", "b"], 1) === 0 && nextGate(["a"], 0) === 0);
   check("lỗi muộn của cổng cũ không làm nhảy thêm cổng", nextGate(["a", "b", "c"], 1, 0) === 1);
+  // Vòng 6: ghi hộ
+  check("chi nhánh trả lời: bán tại chỗ, hoặc đang phục hồi", posMode(0, null, "ONLINE") === "local" && posMode(0, "OFFLINE", "RECOVERING") === "recovering");
+  check("lỗi 1 lần chưa đủ để ghi hộ", posMode(1, "OFFLINE", "ONLINE") === "local");
+  check("lỗi 2 lần mà mới nghi ngờ hoặc không hỏi được: chờ", posMode(2, "SUSPECT") === "waiting" && posMode(2, null) === "waiting" && posMode(2, "ONLINE") === "waiting");
+  check("lỗi 2 lần và đa số OFFLINE: ghi hộ", posMode(2, "OFFLINE") === "handoff" && posMode(5, "OFFLINE", "RECOVERING") === "handoff");
+  check("số chi nhánh lấy từ /cnX/", branchFromPrefix("/cn2/") === 2 && branchFromPrefix("") === null);
+  check("ghép URL ghi hộ qua cổng vào", apiUrl("http://localhost", "/replica/A/", "api/handoff") === "http://localhost/replica/A/api/handoff");
+  const unsure = { ...line, rid: "y", uncertain: true };
+  const rec = settle(unsure, { status: 503, data: { detail: { error: "branch_recovering", stale: false } } });
+  check("chi nhánh đang phục hồi: giữ request_id và khoá dòng", rec.rid === "y" && rec.uncertain && rec.msg.includes("phục hồi"));
+  check("chưa đủ đa số: giữ request_id", settle(line, { status: 409, data: { detail: { error: "branch_not_offline" } } }).rid === "x");
+  check("502 từ nginx: chưa rõ đã tới chưa, giữ request_id", settle(line, { status: 502, data: {} }).rid === "x" && settle(line, { status: 502, data: {} }).uncertain);
   const failed = r.filter(([, ok]) => !ok);
   const el = document.getElementById("selftest");
   el.style.display = "block";
@@ -445,10 +564,14 @@ if (new URLSearchParams(location.search).get("selftest") === "1") selftest();
 (async () => {
   // Danh sách cổng vào đọc một lần, chỉ khi mở qua nginx (/cnX/)
   if (PREFIX) try { gates = gateList(location.origin, await fetch("/lb/gateways.json").then((r) => r.json())); } catch { /* chỉ một cổng */ }
-  const info = await fetch("api/info").then((r) => r.json());
-  document.documentElement.style.setProperty("--c", COLORS[info.branch_id] || "#18212A");
-  document.getElementById("title").textContent = `CN${info.branch_id} ${info.branch_name}`;
-  document.title = `MiniGo · Quầy CN${info.branch_id} ${info.branch_name}`;
+  if (PREFIX) try { replicas = await fetch("/lb/replicas.json").then((r) => r.json()); } catch { /* giữ A, B, C */ }
+  try {
+    const info = await fetch("api/info").then((r) => { if (!r.ok) throw new Error(r.status); return r.json(); });
+    BRANCH = info.branch_id; setTitle(info.branch_id, info.branch_name);
+  } catch {
+    // Chi nhánh không trả lời (nginx trả trang này từ @pos_page): số chi nhánh lấy từ /cnX/, tên lấy từ /api/nodes sau
+    if (BRANCH) setTitle(BRANCH, ""); else document.getElementById("title").textContent = "Không liên lạc được chi nhánh";
+  }
   renderCart();
   refresh();
   setInterval(refresh, 1500);

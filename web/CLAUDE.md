@@ -3,8 +3,9 @@
 HTML + JS thuần, mỗi màn hình một file, không framework, không bước build. FastAPI phục vụ trực tiếp (file nằm
 trong image: sửa xong phải build lại, `make local-up` hoặc `make up`).
 
-- `pos.html`: màn hình quầy, do `branch_api` phục vụ. Gọi API bằng đường dẫn TƯƠNG ĐỐI (`api/inventory`, không có
-  `/` đầu), vì nginx mở trang này dưới tiền tố `/cn2/`. Dạng phiếu: chế độ Bán hàng / Nhập hàng, ô tìm (gõ mã rồi
+- `pos.html`: màn hình quầy, do `branch_api` phục vụ; chi nhánh chết thì nginx trả chính file này cho `/cnX/`
+  (`@pos_page`, vòng 6, file mount vào nginx nên sửa xong không cần build lại cho đường này). Gọi API bằng đường dẫn
+  TƯƠNG ĐỐI (`api/inventory`, không có `/` đầu), vì nginx mở trang này dưới tiền tố `/cn2/`. Dạng phiếu: chế độ Bán hàng / Nhập hàng, ô tìm (gõ mã rồi
   Enter như máy quét), phiếu với số lượng 1–1000 (đúng giới hạn `StockChange`). Thanh toán gửi từng dòng một
   `api/sale` (hoặc `api/receipt`); mỗi dòng giữ một `request_id`: lỗi mạng thì giữ mã và khoá dòng để gửi lại không
   trừ hai lần (PT-08), server từ chối thì bỏ mã (`settle`). Giữ: dải trạng thái gửi, chip RTT, câu "Xử lý tại chỗ trong
@@ -25,11 +26,22 @@ trong image: sửa xong phải build lại, `make local-up` hoặc `make up`).
   chuyển cổng khi lỗi mạng, quá giờ hay 502–504; thanh bên ô "Cổng vào". POS: mọi lời gọi qua `call()` (chờ 4 giây,
   chuyển cổng khi lỗi mạng hay quá giờ), URL = `apiUrl(cổng, posPrefix(pathname), "api/sale")`; mở thẳng chi nhánh
   thì không có tiền tố, như cũ. Lượt bán lỗi giữa chừng giữ `request_id` (PT-08), không tự gửi lại POST.
+- Ghi hộ (vòng 6, PT-14), chỉ khi mở qua nginx: `refresh()` lỗi `HANDOFF_AFTER_FAILS` (2) lần liên tiếp thì hỏi
+  `/replica/<X>/api/nodes` (đúng bản sao sẽ ghi hộ). Chế độ `posMode(fails, verdict, recovery.state)`: `local`,
+  `waiting` (kết luận chưa OFFLINE: khoá Thanh toán, giữ phiếu), `handoff` (bán qua `/replica/<X>/api/handoff`, bảng hàng
+  là tồn tạm tính `stock`, khoá Nhập hàng và Bán 20 đơn), `recovering` (chi nhánh trả 503 `branch_recovering`: khoá
+  Thanh toán). Bản sao: thứ tự `/lb/replicas.json`, giữ nguyên tới khi lỗi mạng hoặc 5xx (`nextGate`). Số chi nhánh lấy
+  từ `/cnX/` khi `api/info` không trả lời (`branchFromPrefix`). `settle` giữ `request_id` cả khi gặp `branch_recovering`,
+  `branch_not_offline`, 502–504. Dải `#note`: lượt ghi hộ bị từ chối (`recovery.rejected_items`), phục hồi chưa đủ.
+  Dashboard: `branchState` ghi "Đang phục hồi (áp ghi hộ)" khi `recovering`; bảng chi nhánh thêm cột "Ghi hộ" (chờ, đã
+  áp, từ chối, `handoffTotals` cộng `digest.handoff` qua các bản sao); `systemIssues` báo chi nhánh đang phục hồi và
+  lượt ghi hộ chờ áp (lượt bị từ chối chỉ ở cột Ghi hộ, vì chúng ở lại mãi). Cảnh báo đủ mọi lỗi: vòng 6b.
 - Trạng thái chi nhánh theo kết luận đa số `verdict` (PT-13) ở bảng chi nhánh, ô "Chi nhánh hoạt động", `#sys-alert`;
   bảng kỹ thuật chi nhánh (tab Hệ thống) có thêm góc nhìn từng bản sao (`views`) và kết luận. SUSPECT ghi "Nghi ngờ,
   chưa đủ đa số". `alive` (góc nhìn riêng của bản sao đang trả lời) vẫn dùng cho nhãn "số cũ" và sơ đồ.
 - Logic thuần (`compareViews`, `relayEdge`, `sinkEdge`, `brokerState`, `gossipEdge`, `branchState`, `systemIssues`,
-  `gateList`, `nextGate`; POS `settle`, `match`, `posPrefix`, `apiUrl`, `gateList`, `nextGate`) nhận `now` hoặc
+  `gateList`, `nextGate`, `handoffTotals`, `handoffText`; POS `settle`, `match`, `posPrefix`, `apiUrl`, `gateList`,
+  `nextGate`, `posMode`, `branchFromPrefix`) nhận `now` hoặc
   dữ liệu làm tham số, kiểm bằng `?selftest=1` (chạy tay trong trình duyệt, không nằm trong `make check`). Thêm logic
   thì thêm `check(...)`.
 - Màu và font đặt bằng biến CSS ở `:root`.

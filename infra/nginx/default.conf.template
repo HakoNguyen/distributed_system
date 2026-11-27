@@ -88,9 +88,22 @@ server {
     # Quản lý ở trụ sở mở http://<IP máy bất kỳ>/cn2/ mà không cần biết CN2 ở máy nào.
     # Dữ liệu của một chi nhánh chỉ nằm ở chi nhánh đó, nên không có bản sao
     # dự phòng: máy chi nhánh mất mạng thì trang này báo rõ thay vì treo.
+    # Vòng 6: đường gốc /cnX/ (trang POS) khi chi nhánh chết thì nginx trả chính trang POS (@pos_page): quầy vẫn mở
+    # được để ghi hộ qua bản sao. Đường con (API) vẫn báo mất liên lạc (@branch_offline).
+    location = /cn1/ { proxy_pass http://branch_a/; error_page 502 504 = @pos_page; }
+    location = /cn2/ { proxy_pass http://branch_b/; error_page 502 504 = @pos_page; }
+    location = /cn3/ { proxy_pass http://branch_c/; error_page 502 504 = @pos_page; }
     location /cn1/ { proxy_pass http://branch_a/; error_page 502 504 = @branch_offline; }
     location /cn2/ { proxy_pass http://branch_b/; error_page 502 504 = @branch_offline; }
     location /cn3/ { proxy_pass http://branch_c/; error_page 502 504 = @branch_offline; }
+
+    # Không dùng add_header ở đây (mất CORS của server); expires epoch = Cache-Control: no-cache như branch_api
+    location @pos_page {
+        default_type "text/html; charset=utf-8";
+        expires epoch;
+        root /usr/share/nginx;            # named location không dùng được alias
+        try_files /pos.html =404;
+    }
 
     location @branch_offline {
         default_type "text/html; charset=utf-8";

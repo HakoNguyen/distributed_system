@@ -21,6 +21,9 @@
   `proxy_pass` trỏ vào upstream có `zone` và `server ... resolve` (`resolver 127.0.0.11 valid=5s`): tên phân giải
   động, nginx khởi động được khi node khác chưa chạy (tên chưa có thì đường đó 502). CORS (`*`, `OPTIONS` trả 204) đặt
   ở mức `server`: location nào tự đặt `add_header` thì mất các header đó. `/lb/gateways.json` trả `GATEWAYS`.
+  Vòng 6: `location = /cnX/` (đường gốc) có `error_page 502 504 = @pos_page`: chi nhánh chết thì trả chính trang POS
+  từ `../web/pos.html` mount vào `/usr/share/nginx/pos.html` (named location không dùng được `alias`: `root` +
+  `try_files`; `expires epoch` thay cho `add_header Cache-Control`); đường con `/cnX/...` vẫn `@branch_offline`.
 - `compose.local.yml` + `env/local-a.env`, `local-b.env`, `local-c.env`: 3 node trên MỘT máy (`make local-up`,
   logic ở `scripts/net.sh`). Mỗi node là project `minigo-<x>`; các node nối nhau qua docker network `minigo-wan`
   (subnet `10.210.0.0/24`) và gọi nhau bằng alias riêng `branch-<x>`, `replica-<x>`, `redpanda-<x>`, KHÔNG bằng tên

@@ -17,21 +17,64 @@ x-api-build: &api_build
   context: ..
   dockerfile: api/Dockerfile
 
+# ---- Vận hành (vòng 7): giới hạn log, RAM, CPU cho mọi service. Số đo ở docs/plan.md mục 5 vòng 7 ----
+# json-file mặc định không giới hạn: chạy lâu thì log đầy đĩa
+x-logging: &logging
+  driver: json-file
+  options: { max-size: "10m", max-file: "3" }
+# Đo khi nghỉ (3 node, 28/11/2026): Postgres 28–47 MB, Python 38–74 MB, nginx 10–15 MB, console 25 MB,
+# broker 131–178 MB. Giới hạn đặt khoảng 3–5 lần, để bán dồn và khởi động không chạm trần.
+x-res-pg: &res_pg { mem_limit: 256m, cpus: 1.0, logging: *logging }
+x-res-py: &res_py { mem_limit: 256m, cpus: 1.0, logging: *logging }
+x-res-small: &res_small { mem_limit: 64m, cpus: 0.5, logging: *logging }
+
+# Mật khẩu CSDL (vòng 7): không viết cứng. Máy thật: .env; một máy: infra/env/local-secrets.env (make local-up tự sinh)
+x-pg-env: &pg_env
+  POSTGRES_USER: app
+  POSTGRES_PASSWORD: ${DB_PASSWORD:?Chưa đặt DB_PASSWORD (máy thật trong .env; một máy make local-up tự sinh)}
+  POSTGRES_DB: kho
+x-branch-pg-env: &branch_pg_env
+  <<: *pg_env
+  REPLICATION_PASSWORD: ${REPLICATION_PASSWORD:?Chưa đặt REPLICATION_PASSWORD (máy thật trong .env; một máy make local-up tự sinh)}
+
+# Chi nhánh nối CSDL bằng chuỗi nhiều host (vòng 7): libpq thử branch_db rồi branch_db_standby, chỉ nhận host đang
+# là primary (target_session_attrs=read-write). Sau make promote tự nối sang primary mới, không đổi code.
+x-branch-db-url: &branch_db_url "postgresql://app:${DB_PASSWORD}@branch_db:5432,branch_db_standby:5432/kho?target_session_attrs=read-write&connect_timeout=3"
+
+# Healthcheck chỉ kiểm "tiến trình còn sống", tách khỏi lỗi broker, CSDL, mạng (K7b, K14, K15 không bị coi là hỏng).
+# api: GET / là trang tĩnh, không chạm CSDL (/health thì có).
+x-api-health: &api_health
+  test: ["CMD", "python", "-c", "import urllib.request as u; u.urlopen('http://127.0.0.1:8000/', timeout=3)"]
+  interval: 10s
+  timeout: 5s
+  retries: 3
+  start_period: 30s
+# relay, sink: mỗi lượt vòng lặp chạm /tmp/alive; lỗi Redpanda vẫn chạy hết lượt, chỉ treo hẳn mới cũ quá 60 giây
+x-worker-health: &worker_health
+  test: ["CMD", "python", "-c", "import os, sys, time; sys.exit(time.time() - os.path.getmtime('/tmp/alive') > 60)"]
+  interval: 15s
+  timeout: 5s
+  retries: 3
+  start_period: 90s
+
 services:
 
   # ------------------------------------------------------------------
   # CHI NHÁNH: dữ liệu của riêng chi nhánh này, bán được cả khi mất mạng
   # ------------------------------------------------------------------
+  # Vòng 7: lần đầu là primary. TÊN SERVICE KHÔNG CÒN LÀ VAI TRÒ: sau make promote, branch_db_standby là primary và
+  # branch_db bị fence; sau make rejoin, branch_db là standby. Xem vai trò thật: make db-status N=<node>.
   branch_db:
-    image: postgres:16-alpine
-    environment: &pg_env
-      POSTGRES_USER: app
-      POSTGRES_PASSWORD: app
-      POSTGRES_DB: kho
+    image: postgres:16.16-alpine
+    # db/pg-start.sh: fencing (minigo.fenced), rồi chạy Postgres như entrypoint gốc
+    command: ["sh", "/minigo/pg-start.sh"]
+    environment: *branch_pg_env
     volumes:
       # File trong /docker-entrypoint-initdb.d chạy theo thứ tự tên, CHỈ ở lần khởi tạo đầu
       - ../db/product.sql:/docker-entrypoint-initdb.d/01-product.sql:ro
       - ../db/branch.sql:/docker-entrypoint-initdb.d/02-schema.sql:ro
+      - ../db/replication.sh:/docker-entrypoint-initdb.d/03-replication.sh:ro
+      - ../db/pg-start.sh:/minigo/pg-start.sh:ro
       - branch_pgdata:/var/lib/postgresql/data
     healthcheck: &pg_health
       # -h 127.0.0.1: chỉ báo sẵn sàng khi Postgres chạy thật, không phải lúc đang khởi tạo
@@ -40,6 +83,23 @@ services:
       timeout: 3s
       retries: 30
     restart: unless-stopped
+    <<: *res_pg
+
+  # Standby (vòng 7, PT-12): streaming replication có sẵn của Postgres. Lần đầu (volume trống) pg-start.sh chép từ
+  # PG_PRIMARY_HOST bằng pg_basebackup -R. Mặc định bất đồng bộ; make sync-mode N=<node> MODE=sync bật đồng bộ.
+  # Không depends_on branch_db: sau promote branch_db bị fence (thoát), standby (lúc đó là primary) vẫn phải chạy.
+  branch_db_standby:
+    image: postgres:16.16-alpine
+    command: ["sh", "/minigo/pg-start.sh"]
+    environment:
+      <<: *branch_pg_env
+      PG_PRIMARY_HOST: branch_db
+    volumes:
+      - ../db/pg-start.sh:/minigo/pg-start.sh:ro
+      - branch_standby_pgdata:/var/lib/postgresql/data
+    healthcheck: *pg_health
+    restart: unless-stopped
+    <<: *res_pg
 
   # Dịch vụ quầy + màn hình POS: http://localhost:8001
   branch_api:
@@ -48,17 +108,22 @@ services:
       ROLE: branch
       BRANCH_ID: ${BRANCH_ID:?Chưa đặt BRANCH_ID trong .env}
       BRANCH_NAME: ${BRANCH_NAME}
-      DATABASE_URL: postgresql://app:app@branch_db:5432/kho
+      DATABASE_URL: *branch_db_url
       REPLICA_URLS: ${REPLICA_URLS:?Chưa đặt REPLICA_URLS trong .env}
       # Địa chỉ POS của chi nhánh này nhìn từ máy khác; gửi kèm heartbeat để bản sao đối soát
       BRANCH_URL: ${BRANCH_URL:?Chưa đặt BRANCH_URL trong .env}
     ports:
       - "${BRANCH_PORT:-8001}:8000"
     cap_add: [NET_ADMIN]   # cho phép dùng `tc` để giả lập độ trễ (scripts/tre.sh)
+    # Tên CSDL đã dừng (primary chết, đã fence) bị DNS của Docker Desktop hỏi ra ngoài, ~8 giây mới báo "không có";
+    # libpq thử branch_db trước nên mỗi lần nối lại sau promote chờ chừng đó. Bỏ cuộc sau 1 giây.
+    dns_opt: ["timeout:1", "attempts:1"]
     depends_on:
       branch_db:
         condition: service_healthy
+    healthcheck: *api_health
     restart: unless-stopped
+    <<: *res_py
 
   # Đẩy outbox lên cụm Redpanda
   relay:
@@ -67,19 +132,22 @@ services:
     environment:
       ROLE: branch
       BRANCH_ID: ${BRANCH_ID}
-      DATABASE_URL: postgresql://app:app@branch_db:5432/kho
+      DATABASE_URL: *branch_db_url
       KAFKA_BROKERS: ${KAFKA_BROKERS:?Chưa đặt KAFKA_BROKERS trong .env}
     cap_add: [NET_ADMIN]
+    dns_opt: ["timeout:1", "attempts:1"]   # như branch_api (và tên broker đã dừng, compose.local.yml)
     depends_on:
       branch_db:
         condition: service_healthy
+    healthcheck: *worker_health
     restart: unless-stopped
+    <<: *res_py
 
   # ------------------------------------------------------------------
   # BẢN SAO TRUNG TÂM: bảng tồn toàn chuỗi, dựng lại từ sự kiện
   # ------------------------------------------------------------------
   replica_db:
-    image: postgres:16-alpine
+    image: postgres:16.16-alpine
     environment: *pg_env
     volumes:
       - ../db/product.sql:/docker-entrypoint-initdb.d/01-product.sql:ro
@@ -87,6 +155,7 @@ services:
       - replica_pgdata:/var/lib/postgresql/data
     healthcheck: *pg_health
     restart: unless-stopped
+    <<: *res_pg
 
   # Dashboard của bản sao này: http://localhost:8000. Chạy thêm luồng gossip với các bản sao khác
   # (REPLICA_URLS, bỏ dòng trùng NODE_NAME) và đối soát với chi nhánh khi mất broker.
@@ -95,14 +164,16 @@ services:
     environment:
       ROLE: replica
       NODE_NAME: ${NODE_NAME:?Chưa đặt NODE_NAME trong .env}
-      DATABASE_URL: postgresql://app:app@replica_db:5432/kho
+      DATABASE_URL: postgresql://app:${DB_PASSWORD}@replica_db:5432/kho
       REPLICA_URLS: ${REPLICA_URLS:?Chưa đặt REPLICA_URLS trong .env}
     ports:
       - "${REPLICA_PORT:-8000}:8000"
     depends_on:
       replica_db:
         condition: service_healthy
+    healthcheck: *api_health
     restart: unless-stopped
+    <<: *res_py
 
   # Đọc Redpanda, cập nhật bảng tổng hợp của bản sao này
   sink:
@@ -111,12 +182,14 @@ services:
     environment:
       ROLE: replica
       NODE_NAME: ${NODE_NAME}
-      DATABASE_URL: postgresql://app:app@replica_db:5432/kho
+      DATABASE_URL: postgresql://app:${DB_PASSWORD}@replica_db:5432/kho
       KAFKA_BROKERS: ${KAFKA_BROKERS}
     depends_on:
       replica_db:
         condition: service_healthy
+    healthcheck: *worker_health
     restart: unless-stopped
+    <<: *res_py
 
   # ------------------------------------------------------------------
   # BROKER (profile broker, mọi máy): mỗi máy một broker, ba broker thành một cụm Raft.
@@ -164,6 +237,10 @@ services:
       timeout: 5s
       retries: 20
     restart: unless-stopped
+    # --memory=512M là phần của Seastar; cộng phần ngoài Seastar nên giới hạn container 1g (đặt sát thì bị OOM khi K7)
+    mem_limit: 1g
+    cpus: 1.0
+    logging: *logging
 
   # ------------------------------------------------------------------
   # CORE: chỉ chạy trên máy A
@@ -196,7 +273,15 @@ services:
       KAFKA_BROKERS: ${KAFKA_BROKERS}
     ports:
       - "8080:8080"
+    healthcheck:
+      test: ["CMD", "wget", "-q", "-O", "/dev/null", "http://127.0.0.1:8080/admin/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
     restart: unless-stopped
+    mem_limit: 256m
+    cpus: 0.5
+    logging: *logging
 
   # Cổng vào ở MỌI máy (vòng 5): http://<IP máy bất kỳ>/. Ba nginx cấu hình giống nhau; một cổng chết thì
   # dashboard, POS tự chuyển sang cổng khác trong GATEWAYS. Không thuộc profile nào.
@@ -223,9 +308,17 @@ services:
     depends_on:
       - replica_api
       - branch_api
+    # /lb/gateways.json trả thẳng từ nginx, không qua upstream: chỉ kiểm nginx còn sống
+    healthcheck:
+      test: ["CMD", "wget", "-q", "-O", "/dev/null", "http://127.0.0.1/lb/gateways.json"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
     restart: unless-stopped
+    <<: *res_small
 
 volumes:
   branch_pgdata:
+  branch_standby_pgdata:
   replica_pgdata:
   redpanda_data:

@@ -11,6 +11,7 @@ import signal
 import sys
 import time
 from datetime import datetime, timezone
+from pathlib import Path
 
 from confluent_kafka import TIMESTAMP_NOT_AVAILABLE, Consumer, KafkaError, KafkaException, TopicPartition
 
@@ -19,6 +20,8 @@ from common.db import open_pool
 from services.replica import apply_event, record_broker_check
 
 TAG = f"[sink {NODE_NAME}]"
+# Healthcheck (vòng 7): mỗi lượt vòng lặp chạm file này; mất broker vẫn chạy hết lượt nên vẫn "sống", chỉ treo mới hỏng
+ALIVE = Path("/tmp/alive")
 
 
 def broker_lag(consumer: Consumer, md) -> int:
@@ -86,6 +89,7 @@ def main() -> None:
         # Topic do topic-init (node A) tạo khi cụm đủ broker; chờ tới khi có
         ok = None
         while not (ok := check_broker(consumer, ok)):
+            ALIVE.touch()
             print(f"{TAG} Chưa đọc được topic {TOPIC} ({KAFKA_BROKERS}), thử lại sau 3 giây")
             time.sleep(3)
 
@@ -94,6 +98,7 @@ def main() -> None:
         next_check = time.monotonic() + BROKER_CHECK_EVERY_S
         uncommitted = False
         while True:
+            ALIVE.touch()
             if time.monotonic() >= next_check:
                 if uncommitted and commit(consumer):
                     uncommitted = False

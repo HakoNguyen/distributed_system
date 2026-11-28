@@ -312,6 +312,11 @@ function posAlerts(c, now, seen = {}) {
       `(${r.reason === "insufficient_stock" ? `tồn thật chỉ còn ${r.qty_on_hand}` : "không có mã hàng"}, lúc ${clock(r.rejected_at)})`).join("; ") + "." });
   Object.entries(c.gates?.down || {}).forEach(([g, at]) => out.push({ id: `gate:${g}`, s: "warn", since: at, approx: true,
     text: `Cổng vào ${hostOf(g)} không trả lời` + (g === c.gates.lost ? `, đang dùng ${hostOf(c.gates.list[c.gates.cur])}` : "") + "." }));
+  // P-11 (vòng 7, PT-12): primary không có standby streaming; sync thì lượt bán treo
+  const db = st?.db;
+  if (db?.role === "primary" && !db.standby?.connected) out.push(db.sync_mode === "sync"
+    ? { id: "standby", s: "bad", since: null, text: "CSDL chi nhánh chạy đồng bộ mà không có standby: lượt bán đang treo. Chạy make sync-mode MODE=async." }
+    : { id: "standby", s: "warn", since: null, text: "CSDL chi nhánh không có standby: mất primary lúc này là mất dữ liệu (quầy vẫn bán)." });
   if (c.localError) out.push({ id: "local", s: "bad", since: c.localError, approx: true,
     text: "Không đọc được dữ liệu của chính chi nhánh. Kiểm tra container api và db." });
   for (const a of out) {
@@ -361,7 +366,8 @@ document.getElementById("link").addEventListener("click", (ev) => {
 //   chứ không trừ hai lần.
 // ---------------------------------------------------------------------------
 // Server trả lời nhưng CHƯA xử lý, thử lại sau (vòng 6): giữ request_id như lỗi mạng, vì dòng có thể đã nằm ở nơi khác
-// (đã gửi chi nhánh trước khi nó chết, hoặc đã ghi hộ ở bản sao cũ). 502–504 từ nginx: không biết đã tới chưa.
+// (đã gửi chi nhánh trước khi nó chết, hoặc đã ghi hộ ở bản sao cũ). 5xx: không biết đã ghi chưa (vòng 7: COMMIT có thể
+// đã xong ở standby trước khi kết nối đứt), gửi lại cùng request_id thì server trả kết quả cũ.
 const RETRY_LATER = ["branch_recovering", "branch_not_offline"];
 function errorText(status, data) {
   const d = data?.detail;
@@ -376,7 +382,8 @@ function errorText(status, data) {
 function settle(line, outcome) {
   if (outcome.ok) return { ...line, done: true, uncertain: false, msg: "" };
   if (RETRY_LATER.includes(outcome.data?.detail?.error)) return { ...line, msg: errorText(outcome.status, outcome.data) };
-  if (outcome.status && ![502, 503, 504].includes(outcome.status))
+  // Mọi 5xx (vòng 7: 500, 503 db_unavailable lúc chuyển primary, 502–504 từ nginx): chưa rõ đã ghi chưa, giữ request_id
+  if (outcome.status && outcome.status < 500)
     return { ...line, rid: null, uncertain: false, msg: errorText(outcome.status, outcome.data) };
   return { ...line, uncertain: true, msg: "Chưa rõ đã ghi chưa (mất kết nối). Bấm gửi lại: không bị trừ hai lần." };
 }
@@ -696,6 +703,26 @@ function selftest() {
     const st = pst({ relay: { failing_since: iso(10) }, links: [{ name: "A", ok: false, seconds_since_ok: 30 }, { name: "B", ok: false, seconds_since_ok: 40 }] });
     return posAlerts(pctx({ st }), now, {}).map((a) => a.id).join() === "relay,link:B,link:A";
   });
+  // Vòng 7 (PT-08, PT-12): mọi 5xx đều "chưa rõ đã ghi chưa" (COMMIT đứt giữa chừng có thể đã ghi): giữ request_id
+  T("500 từ chi nhánh: giữ request_id và khoá dòng", () => {
+    const x = settle(line, { status: 500, data: {} });
+    return x.rid === "x" && x.uncertain;
+  });
+  T("503 db_unavailable (đang chuyển primary): giữ request_id và khoá dòng", () => {
+    const x = settle(line, { status: 503, data: { detail: { error: "db_unavailable" } } });
+    return x.rid === "x" && x.uncertain;
+  });
+  T("4xx vẫn bỏ request_id (server đã từ chối, chưa ghi gì)", () => settle(line, { status: 404, data: { detail: { error: "product_not_found" } } }).rid === null);
+  // P-11: status.db (vòng 7)
+  const dbs = (mode, connected) => ({ role: "primary", sync_mode: mode, timeline: 1,
+    standby: { connected, state: connected ? "streaming" : null, lag_bytes: connected ? 0 : null } });
+  T("P-11 async không standby: vàng; sync không standby: đỏ, nhắc lượt bán treo", () => {
+    const w = pone(posAlerts(pctx({ st: pst({ db: dbs("async", false) }) }), now, {}), "standby");
+    const b = pone(posAlerts(pctx({ st: pst({ db: dbs("sync", false) }) }), now, {}), "standby");
+    return w && w.s === "warn" && w.text.includes("standby") && b && b.s === "bad" && b.text.includes("treo");
+  });
+  T("P-11 standby đang streaming, hoặc chi nhánh cũ chưa có db: không cảnh báo", () =>
+    posAlerts(pctx({ st: pst({ db: dbs("sync", true) }) }), now, {}).length === 0 && posAlerts(pctx(), now, {}).length === 0);
   T("mốc trang thấy giữ từ lần đầu, hết cảnh báo thì quên", () => {
     const seen = {}, c = pctx({ st: null, mode: "waiting" });
     posAlerts(c, now, seen);

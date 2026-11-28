@@ -5,3 +5,7 @@ __pycache__/
 .vscode/
 .idea/
 .cut-*
+# Vòng 7: mật khẩu một máy (make local-up tự sinh), bản backup CSDL, log của scripts/k10.sh
+infra/env/local-secrets.env
+backups/
+.k10-*.log

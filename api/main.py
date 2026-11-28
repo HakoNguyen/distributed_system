@@ -7,7 +7,9 @@ Tiến trình nền chạy riêng, cùng image: workers/relay.py (chi nhánh), w
 """
 from contextlib import asynccontextmanager
 
+import psycopg
 from fastapi import FastAPI, Request
+from fastapi.responses import JSONResponse
 
 from common.config import BRANCH_ID, NODE_NAME, ROLE
 from common.db import open_pool, pool
@@ -32,6 +34,12 @@ async def lifespan(app: FastAPI):
 if ROLE == "branch":
     app = FastAPI(title=f"api_cn{BRANCH_ID}", lifespan=lifespan)
     app.include_router(branch.router)
+
+    @app.exception_handler(psycopg.OperationalError)
+    async def db_unavailable(_request: Request, _exc: psycopg.OperationalError) -> JSONResponse:
+        """Mất CSDL, kết nối đứt giữa chừng, pool hết chờ (vòng 7): 503 thay cho 500. Lượt bán đứt lúc COMMIT có thể đã
+        ghi (standby đã nhận WAL), nên POS phải giữ request_id và gửi lại (PT-08); 503 nói rõ "thử lại sau"."""
+        return JSONResponse(status_code=503, content={"detail": {"error": "db_unavailable"}})
 else:
     app = FastAPI(title=f"replica {NODE_NAME}", lifespan=lifespan)
     app.include_router(replica.router)

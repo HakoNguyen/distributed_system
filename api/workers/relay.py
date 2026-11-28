@@ -19,6 +19,7 @@ Trong đề tài kho đầy đủ, relay này được thay bằng Debezium đ�
 import json
 import sys
 import time
+from pathlib import Path
 
 from confluent_kafka import Producer
 
@@ -27,6 +28,8 @@ from common.db import open_pool
 from services.branch import outbox_backlog, record_relay_result, relay_batch
 
 TAG = f"[relay cn{BRANCH_ID}]"
+# Healthcheck (vòng 7): mỗi lượt vòng lặp chạm file này; lỗi Redpanda vẫn chạy hết lượt nên vẫn "sống", chỉ treo mới hỏng
+ALIVE = Path("/tmp/alive")
 
 producer = Producer({
     "bootstrap.servers": KAFKA_BROKERS,  # cả ba broker: mất một broker vẫn tìm được leader mới
@@ -79,6 +82,7 @@ def main() -> None:
     print(f"{TAG} Bắt đầu. Gửi tới {KAFKA_BROKERS}, topic {TOPIC}")
     was_failing = False
     while True:
+        ALIVE.touch()
         try:
             n = relay_batch(send)
             if n:

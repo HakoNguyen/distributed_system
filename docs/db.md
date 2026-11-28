@@ -1,6 +1,7 @@
 # Thiết kế CSDL
 
-Hai loại CSDL PostgreSQL 16, cùng tên `kho`, người dùng `app`. Mỗi máy có một CSDL chi nhánh và một CSDL bản sao.
+Hai loại CSDL PostgreSQL 16 (`postgres:16.16-alpine`), cùng tên `kho`, người dùng `app` (mật khẩu `DB_PASSWORD`,
+vòng 7). Mỗi máy có một CSDL chi nhánh (kèm standby, vòng 7) và một CSDL bản sao.
 File khởi tạo ở `db/`; chỉ chạy khi volume trống.
 
 ## 1. Dùng chung: `product` (`db/product.sql`)
@@ -54,6 +55,26 @@ Quy tắc của relay (`relay_batch`, `record_relay_result`):
   `UPDATE outbox SET sent_at = now()` cho đúng các `event_id` của lô (PT-03). Sự kiện ghi trong lúc gửi vẫn chưa gửi.
 - Gửi được: `last_ok_at = now()`, `failing_since = NULL`. Lỗi: `last_error` = lỗi mới, `failing_since` giữ mốc lỗi
   đầu tiên của đợt lỗi hiện tại. Outbox trống thì không ghi gì.
+
+Standby CSDL chi nhánh (vòng 7, PT-12):
+- Mỗi node có hai Postgres chi nhánh: `branch_db` (lần đầu là primary, `initdb` chạy `db/*.sql`) và
+  `branch_db_standby` (lần đầu `pg_basebackup -R` từ `PG_PRIMARY_HOST`, streaming replication có sẵn của Postgres).
+  **Tên service không còn là vai trò**: sau `make promote`, `branch_db_standby` là primary; sau `make rejoin`,
+  `branch_db` là standby. Vai trò thật xem `make db-status` hoặc `/api/status` trường `db`.
+- `db/replication.sh` (chạy một lần lúc `initdb` của primary): role `replicator` (`REPLICATION`, mật khẩu
+  `REPLICATION_PASSWORD`), dòng `host replication replicator all scram-sha-256` trong `pg_hba.conf`. Standby chép cả
+  hai qua `pg_basebackup`, nên đổi vai trò không phải cấu hình lại.
+- `db/pg-start.sh` (lệnh khởi động của cả hai): có file `minigo.fenced` trong thư mục dữ liệu thì thoát, không chạy
+  Postgres (fencing, K10c); thư mục trống và có `PG_PRIMARY_HOST` thì `pg_basebackup`; rồi chạy Postgres với
+  `wal_keep_size=256MB` (không dùng replication slot: standby chết lâu không làm đầy đĩa primary).
+- Chế độ: `synchronous_standby_names` = `''` (bất đồng bộ, mặc định) hoặc `'*'` (đồng bộ, `synchronous_commit=on`);
+  đặt bằng `ALTER SYSTEM` + `pg_reload_conf()` trên primary hiện tại (`make sync-mode`). Giá trị nằm trong
+  `postgresql.auto.conf` của từng Postgres, không nhân bản.
+- `make promote`: fence primary cũ (`docker update --restart=no`, `docker kill`, ghi `minigo.fenced`) TRƯỚC, rồi
+  `pg_promote()` standby, `setval` sequence `stock_movement_movement_id_seq` thêm 1000 (không cấp lại `movement_id` mà
+  primary cũ có thể đã dùng và relay đã gửi), đặt bất đồng bộ (primary mới chưa có standby). `make rejoin`: xoá dữ
+  liệu node đã bị fence, `pg_basebackup -R` từ primary mới, bỏ fence, bật lại làm standby.
+- Không có bảng mới. Đổi xong phải `make local-reset` (role `replicator`, mật khẩu mới).
 
 ## 3. CSDL bản sao trung tâm (`db/replica.sql`)
 

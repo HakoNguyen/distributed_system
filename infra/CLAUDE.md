@@ -36,8 +36,26 @@
   sau ~1–2 giây thay vì ~8 giây (`replica_api`: luồng gossip). `BRANCH_URL` một máy là `http://branch-<x>:8000`.
   `make config` chạy `scripts/net.sh check` để kiểm cổng, alias, địa chỉ nginx, cụm broker, nginx ở mọi node,
   `GATEWAYS`, IP cố định trên `minigo-wan` ở cả 6 file env. `make pause|unpause|kill|start N=<x> S=<service>`: K13, K14.
+- Vòng 7 (production local, PT-12):
+  - Standby: `branch_db_standby` (volume `branch_standby_pgdata`, `PG_PRIMARY_HOST=branch_db`, không `depends_on` để vẫn
+    chạy khi `branch_db` bị fence). Cả hai Postgres chi nhánh chạy `command: sh /minigo/pg-start.sh` (`db/pg-start.sh`:
+    fence, `pg_basebackup` lần đầu); `branch_db` mount thêm `db/replication.sh` làm `03-replication.sh`. Tên service
+    không còn là vai trò sau `make promote`. Lệnh: `scripts/db.sh` qua `make db-status|sync-mode|promote|rejoin|backup`.
+  - `branch_api`, `relay`: `DATABASE_URL` = anchor `x-branch-db-url` (chuỗi nhiều host, `target_session_attrs=read-write`,
+    `connect_timeout=3`), `dns_opt timeout:1` (tên CSDL đã dừng báo lỗi sau ~1 giây thay vì ~8).
+  - Mật khẩu: `${DB_PASSWORD:?}`, `${REPLICATION_PASSWORD:?}` (anchor `x-pg-env`, `x-branch-pg-env`). Máy thật: hai dòng
+    trống trong `may-*.env`, điền ở `.env`. Một máy: `scripts/net.sh` thêm `--env-file infra/env/local-secrets.env`
+    (không commit, `up` tự sinh lần đầu, `down -v` xoá); `make config` dùng `env/secrets.env.example`. CSDL test giữ
+    `app/app`.
+  - Healthcheck mọi service trừ `topic-init`, chỉ kiểm "tiến trình còn sống": api gọi `GET /` (trang tĩnh, không phải
+    `/health`), relay/sink kiểm `/tmp/alive` (vòng lặp chạm mỗi lượt), nginx `/lb/gateways.json`, console
+    `/admin/health`, Postgres `pg_isready`. Giới hạn: anchor `x-res-pg`, `x-res-py` (256m, 1 CPU), `x-res-small` (nginx
+    64m), console 256m, redpanda 1g (`--memory=512M` là phần Seastar); log `json-file` 10m × 3 (`x-logging`). Image
+    Postgres ghim `postgres:16.16-alpine` (cả `compose.test.yml`).
+  - `make config` (`net.sh check`, hàm `prod`, `secrets`) kiểm tất cả các ý trên ở 3 file `local-*` và 3 file `may-*`.
 - `compose.test.yml`: `test_db` (Postgres trên tmpfs) và `tests` (ảnh `test` của `api/Dockerfile`, mount repo vào
   `/repo`). Dùng qua `make test`.
-- Không ghi IP thật hay mật khẩu vào file được commit; `.env` đã nằm trong `.gitignore`.
+- Không ghi IP thật hay mật khẩu vào file được commit; `.env`, `infra/env/local-secrets.env`, `backups/`, `.k10-*.log`
+  đã nằm trong `.gitignore`.
 
 Quy tắc chung xem CLAUDE.md ở gốc repo.

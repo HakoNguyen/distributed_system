@@ -392,6 +392,35 @@ def recovery_once(pull: Callable[[str], dict], ack: Callable[[str, dict], None],
                     checked_at=time.monotonic())
 
 
+def summarize_db(row: dict) -> dict:
+    """Trạng thái CSDL đang nối (vòng 7, PT-12) từ dòng `db_status` đọc được. Hàm thuần.
+    Chỉ standby `streaming` mới tính là có standby: `catchup` (vừa rejoin) chưa nhận kịp WAL."""
+    return {
+        "role": "standby" if row["in_recovery"] else "primary",
+        "sync_mode": "sync" if row["standby_names"].strip() else "async",
+        "standby": {"connected": row["state"] == "streaming", "state": row["state"], "lag_bytes": row["lag_bytes"]},
+        "timeline": row["timeline"],
+    }
+
+
+def db_status() -> dict:
+    """Vai trò, chế độ đồng bộ, standby của CSDL đang nối (GET /api/status, trường `db`). Một câu SELECT, chỉ đọc.
+    Nhiều standby thì lấy cái đang streaming; pg_current_wal_lsn() chỉ gọi được trên primary."""
+    with pool.connection() as conn:
+        row = conn.execute(
+            """SELECT pg_is_in_recovery() AS in_recovery,
+                      current_setting('synchronous_standby_names') AS standby_names,
+                      (SELECT timeline_id FROM pg_control_checkpoint()) AS timeline,
+                      r.state,
+                      CASE WHEN r.state IS NOT NULL AND NOT pg_is_in_recovery()
+                           THEN pg_wal_lsn_diff(pg_current_wal_lsn(), r.replay_lsn)::bigint END AS lag_bytes
+               FROM (SELECT 1) one
+               LEFT JOIN LATERAL (SELECT state, replay_lsn FROM pg_stat_replication
+                                  ORDER BY (state = 'streaming') DESC LIMIT 1) r ON true"""
+        ).fetchone()
+    return summarize_db(row)
+
+
 def recovery_status() -> dict:
     """Trạng thái phục hồi cho POS, dashboard (GET /api/status): cả các lượt ghi hộ đã từ chối, để không mất lặng lẽ."""
     with pool.connection() as conn:

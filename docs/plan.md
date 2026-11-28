@@ -5,7 +5,7 @@ Mục tiêu trước mắt: xử lý hai câu hỏi của thầy (mục 3), trê
 
 ## 1. Tiến độ
 
-**Vòng tiếp theo: vòng 7** (vòng 6b đã code, chờ commit). Mỗi lần chỉ làm một vòng, đúng thứ tự: vòng sau dựa trên hạ tầng của vòng trước.
+**Vòng tiếp theo: vòng 8** (vòng 7 đã code, chờ commit). Mỗi lần chỉ làm một vòng, đúng thứ tự: vòng sau dựa trên hạ tầng của vòng trước.
 
 | Vòng | Phạm vi | Nhánh | Việc | Quy tắc | Kịch bản | Trạng thái |
 |---|---|---|---|---|---|---|
@@ -17,8 +17,8 @@ Mục tiêu trước mắt: xử lý hai câu hỏi của thầy (mục 3), trê
 | 4b | `web` | `web/ui-polish` | Chỉnh giao diện trước vòng 5: tràn ngang trên điện thoại, cột giờ tab Sự kiện, dải sự cố hệ thống ở Tổng quan, bớt nhiễu, ghi máy A/B/C trên sơ đồ, trang không bị cache | — | chạy tay trên 3 node | xong, đã merge (PR #7); selftest dashboard 24/24, POS 5/5; 58 test |
 | 5 | `infra`, `replica`, `web` | `ha/entry-failure-detector` | HA cổng vào (nginx ở mọi node, client tự chuyển); bộ phát hiện lỗi có trạng thái, kết luận theo đa số bản sao | PT-13 | K13, K14 | xong, đã merge (PR #8); 83 test, selftest dashboard 33/33, POS 10/10; K1–K14 đạt trên 3 node một máy; sửa hai lỗi hạ tầng (IP gắn cứng sau `heal`, `topic-init` lặp) |
 | 6 | `branch`, `replica`, `web` | `ha/hinted-handoff` | Chi nhánh sập vẫn bán: ghi hộ ở bản sao, chi nhánh phục hồi ở RECOVERING rồi kéo về áp theo thứ tự | PT-14 | K15 | xong, đã merge (PR #9); 131 test, selftest dashboard 38/38, POS 19/19; K1–K15 (cả biến thể REJECTED, hai nơi cùng ghi) đạt trên 3 node một máy |
-| 6b | `web`, `replica`, `branch` | `web/failure-alerts` | Cảnh báo đủ mọi trường hợp lỗi trên dashboard và POS, nhật ký sự cố, danh mục cảnh báo trong `docs/` | — | K3–K15 hiện đúng cảnh báo | đã code (28/11/2026), chờ commit; danh mục D-01..D-20, P-01..P-10 (`docs/demo.md` mục 5); selftest dashboard 78/78, POS 35/35; 131 test (không đổi server); K1–K15 chạy tay trên 3 node một máy, số đo ở `docs/tests.md` |
-| 7 | `infra`, `docs` | `infra/production-local` | Standby đồng bộ cho CSDL chi nhánh; vệ sinh vận hành; giám sát (tuỳ chọn); kiến trúc mục tiêu production trên giấy | PT-12 | K10a, K10b | chưa làm |
+| 6b | `web`, `replica`, `branch` | `web/failure-alerts` | Cảnh báo đủ mọi trường hợp lỗi trên dashboard và POS, nhật ký sự cố, danh mục cảnh báo trong `docs/` | — | K3–K15 hiện đúng cảnh báo | xong, đã merge (PR #10); danh mục D-01..D-20, P-01..P-10 (`docs/demo.md` mục 5); selftest dashboard 78/78, POS 35/35; 131 test (không đổi server); K1–K15 chạy tay trên 3 node một máy, số đo ở `docs/tests.md` |
+| 7 | `infra`, `docs` | `infra/production-local` | Standby đồng bộ cho CSDL chi nhánh; vệ sinh vận hành; giám sát (tuỳ chọn); kiến trúc mục tiêu production trên giấy | PT-12 | K10a, K10b, K10c | đã code (28/11/2026), chờ commit; 142 test (131 + 11), `make config` đạt (thêm kiểm vòng 7); selftest dashboard 80/80, POS 40/40; K10a thiếu 0/113 lượt đã báo thành công, K10b sync p50 3,3 ms / async 2,7 ms, K10c đạt; K1–K15 chạy lại trên 3 node một máy (`docs/tests.md`); RAM 1,36 GB lúc nghỉ (28 container); giám sát đã cắt, ghi lên giấy (`docs/spec.md` mục 9) |
 | 8 | `replica`, `scripts`, `docs` | `chore/hardening` | `dead_letter`, `scripts/chaos-check.sh` có đo thời gian gián đoạn, chốt tài liệu | PT-06 | `chaos-check.sh` | chưa làm |
 
 Xong một vòng thì sửa cột "Trạng thái" ở bảng này, dòng "Vòng tiếp theo" ở trên, và các bảng trạng thái trong
@@ -282,9 +282,10 @@ dữ liệu và cách vận hành, không biến một máy thành hệ sẵn s�
 | `branch_api` và `relay` dùng chuỗi kết nối nhiều host (`host=branch_db,branch_db_standby target_session_attrs=read-write`) để tự nối sang primary mới sau khi promote; không đổi code nghiệp vụ | `infra/compose.yml`, `infra/env/*` |
 | Lệnh `make promote N=<x>` (nâng standby thành primary), `make sync-mode N=<x> MODE=sync\|async` | `Makefile`, `scripts/` |
 | Vệ sinh vận hành: mật khẩu CSDL ra `.env` (bỏ `app/app` viết cứng), healthcheck cho mọi service, giới hạn RAM/CPU, giới hạn kích thước log, `make backup N=<x>` (`pg_dump` vào `backups/`, thêm vào `.gitignore`) | `infra/compose.yml`, `infra/env/*`, `Makefile`, `.gitignore` |
-| Giám sát (tuỳ chọn, cắt được nếu thiếu thời gian): profile `observability` gồm Prometheus và Grafana, đọc metrics của Redpanda và Postgres (exporter); một dashboard Grafana dựng sẵn: consumer lag từng bản sao, leader từng phân hoạch | `infra/compose.yml`, `infra/observability/` (mới) |
+| ~~Giám sát~~ **cắt ở vòng 7** (duyệt ở `/plan-task`), chỉ ghi vào `docs/spec.md` mục 9. Mô tả cũ: (tuỳ chọn, cắt được nếu thiếu thời gian): profile `observability` gồm Prometheus và Grafana, đọc metrics của Redpanda và Postgres (exporter); một dashboard Grafana dựng sẵn: consumer lag từng bản sao, leader từng phân hoạch | `infra/compose.yml`, `infra/observability/` (mới) |
 | "Kiến trúc mục tiêu production" trên giấy: sơ đồ và bảng đánh đổi (CDC thay relay, Kubernetes, LB kép, mTLS, nhiều vùng, Merkle tree) | `docs/spec.md` (mục mới) |
 | Nhặt từ vòng 5 vào "kiến trúc mục tiêu": cổng vào bằng một tên DNS trỏ nhiều địa chỉ (nhiều bản ghi A, hoặc VIP/anycast trước các nginx) để cả lần mở trang đầu cũng không phụ thuộc một máy; CORS liệt kê đúng origin thay cho `*` (`docs/spec.md` mục 6) | `docs/spec.md` (mục mới) |
+| Nhặt từ rà soát tính thực tế (28/11/2026) vào "kiến trúc mục tiêu": (1) tách edge/core: cửa hàng chỉ chạy `branch_db`, `branch_api`, `relay`; bản sao, broker, nginx đặt ở cloud hoặc datacenter rải nhiều vùng, một cửa hàng mất mạng không làm cụm mất quorum (code đã tách theo `ROLE` và `.env`, chủ yếu đổi compose); (2) hàng đợi tại máy POS khi server cửa hàng chết, gửi lại bằng `request_id`; (3) lease kèm fencing token chống hai nơi cùng ghi (`docs/spec.md` mục 6); (4) TLS cho API và PostgreSQL, khóa riêng từng chi nhánh; (5) triển khai hàng loạt cửa hàng (Ansible, Kubernetes ở edge), NTP bắt buộc; (6) phạm vi: MiniGo chỉ mô phỏng phần tồn kho của POS, không có giá, thanh toán, hóa đơn, nhiều quầy, phân quyền | `docs/spec.md` (mục mới) |
 
 Quy tắc mới, ghi vào `docs/spec.md` mục 8 ở `/test-first`: **PT-12** ở chế độ đồng bộ, lượt bán chỉ báo thành công
 khi standby đã nhận WAL; mất primary không mất lượt bán nào đã báo thành công.
@@ -312,6 +313,10 @@ Xong khi: K10a không mất lượt bán nào đã báo thành công; K10b đo �
   Đo và in thời gian gián đoạn (bao lâu không bán được, không xem được dashboard) và thời gian phục hồi (tới khi 3 dấu
   vân tay khớp) của từng kịch bản, để trả lời "có HA không" bằng số (học theo `scripts/measure` của repo tham khảo
   cùng môn `4ustintr/BTL_Distributed_Application`).
+- Sửa các lỗi còn mở ở mục 6: `clock_offset_ms` đổi `::int` sang `bigint` (kèm test heartbeat lệch giờ lớn); POS chỉ
+  chuyển cổng khi chính cổng chết (dò `/lb/gateways.json` trước khi chuyển), chi nhánh chậm thì báo chậm chứ không
+  chuyển cổng; thử giảm `session.timeout.ms` của sink rồi đo lại K7b, K9.
+- Gọn mục 6 thành ba nhóm: "Giả định chưa kiểm", "Giới hạn đã biết", "Lỗi còn mở".
 - Cập nhật `docs/spec.md` (ba kênh, cụm broker, giới hạn mới), `db.md`, `api.md`, `demo.md`.
 
 ## 6. Giả định còn mở
@@ -366,32 +371,56 @@ Xong khi: K10a không mất lượt bán nào đã báo thành công; K10b đo �
 - ~~Vòng 6: RECOVERING mà không gọi được bản sao nào thì làm gì~~ **Chốt ở vòng 6**: chờ tối đa 60 giây
   (`RECOVERY_TIMEOUT_S`), rồi tự ONLINE kèm cảnh báo `incomplete`, kéo tiếp; ngoại lệ ghi trong PT-14 và
   `docs/spec.md` mục 6.
-- Vòng 6, phát hiện lúc chạy tay: (1) POS lấy kết luận qua `/api/nodes` (nginx chia lần lượt) thì có lúc bản sao trả
-  lời đã thấy OFFLINE mà bản sao sẽ ghi hộ chưa thấy, lượt ghi hộ bị 409; đã sửa: POS hỏi kết luận ở đúng bản sao sẽ
-  ghi hộ (`/replica/<X>/api/nodes`). (2) Một máy, `make cut N=b`: cổng A gọi `branch-b` đã bị gỡ khỏi mạng thì phân
-  giải tên mất ~8 giây, POS quá 4 giây nên chuyển sang cổng B (cùng máy với chi nhánh, vẫn gọi được) và bán tại chỗ;
-  muốn thấy "hai nơi cùng ghi" ở chế độ một máy phải dừng thêm nginx B (máy thật: rút mạng máy B thì trình duyệt máy
-  khác cũng mất cổng B). (3) `query_nodes` tính `clock_offset_ms` bằng `::int`: đồng hồ chi nhánh lệch quá ~24 ngày
-  thì tràn số (lộ ra khi test gửi heartbeat có `node_time_ms` cố định); chưa sửa, không thuộc vòng 6.
-- Vòng 6b, phát hiện lúc chạy tay (cảnh báo làm lộ ra, không sửa vì thuộc vòng 5, trang chỉ báo đúng): (1) K3 một máy:
-  nginx A chờ phân giải `replica-b` (đã bị gỡ khỏi mạng) quá 4 giây nên dashboard qua cổng A có lần tự chuyển sang cổng
-  8012 và từ đó thấy phía B bị cô lập; cảnh báo "Cổng vào … đã chuyển" chỉ hiện nếu dò cổng A thật sự lỗi. (2) POS qua
-  cổng vào: chi nhánh bị `pause` thì `call()` quá 4 giây và chuyển cổng vòng quanh 3 cổng (cổng vẫn sống); vòng 6b chỉ
-  báo cổng khi dò lỗi. (3) Sau khi một broker dừng, metadata của MỌI sink có thể bỏ sót cả broker còn sống tới 22 giây
-  (đo ở K7a), nên "broker không chạy" chờ 30 giây; chữ "cụm còn k/3" vẫn có thể lệch trong lúc đó. (4) Lúc cụm bầu
-  leader (cắt một máy, dừng một broker), sink và relay báo lỗi 6–10 giây: cảnh báo đỏ chờ 15 giây (`BROKER_ALERT_S`).
-- Vòng 7: chuỗi kết nối nhiều host của libpq (`target_session_attrs=read-write`) đủ để `psycopg_pool` tự nối sang
-  primary mới sau promote mà không đổi code; kiểm ở `/plan-task` vòng 7.
-- Vòng 7: promote bằng tay (`make promote`), không dùng Patroni hay repmgr. Tự động failover CSDL ghi vào "kiến trúc
-  mục tiêu production".
-- Vòng 7: chế độ mặc định của nhân bản (đồng bộ hay bất đồng bộ) chọn ở `/plan-task`. Mặc định đồng bộ thì mất
-  standby là quầy treo, trái tinh thần PT-01 (quầy luôn bán được); mặc định bất đồng bộ thì giữ PT-01 nhưng RPO > 0.
+- ~~Vòng 6 phát hiện (1): POS lấy kết luận qua `/api/nodes` (nginx chia lần lượt) nên lượt ghi hộ có lúc bị 409~~
+  **Đã sửa ở vòng 6**: POS hỏi kết luận ở đúng bản sao sẽ ghi hộ (`/replica/<X>/api/nodes`).
+- ~~Vòng 6b phát hiện (3), (4): metadata của mọi sink có thể bỏ sót broker còn sống tới 22 giây sau khi một broker dừng
+  (đo ở K7a); lúc cụm bầu leader, sink và relay báo lỗi 6–10 giây~~ **Giới hạn đã biết, đã giảm nhẹ ở vòng 6b bằng
+  ngưỡng**: "broker không chạy" chờ 30 giây, cảnh báo đỏ chờ 15 giây (`BROKER_ALERT_S`); chữ "cụm còn k/3" vẫn có thể
+  lệch trong lúc đó.
+- **Giới hạn đã biết của chế độ một máy** (vòng 6 phát hiện (2), vòng 6b phát hiện (1)): sau `make cut N=b`, nginx gọi
+  tên đã bị gỡ khỏi `minigo-wan` (`branch-b`, `replica-b`) thì phân giải tên mất ~8 giây. POS qua cổng A quá 4 giây
+  nên chuyển sang cổng B (cùng máy với chi nhánh, vẫn gọi được) và bán tại chỗ; dashboard qua cổng A có lần tự chuyển
+  sang 8012. Muốn thấy "hai nơi cùng ghi" ở chế độ một máy phải dừng thêm nginx B. Máy thật không có hiện tượng này
+  (rút mạng máy B thì trình duyệt máy khác cũng mất cổng B). Ghi vào `docs/spec.md` mục 6. Vòng 8 có thể thử rút
+  ngắn thời gian chờ phân giải của nginx.
+- **Lỗi còn mở, giao cho vòng 8** (mục 5): (a) `query_nodes` tính `clock_offset_ms` bằng `::int`, đồng hồ chi nhánh
+  lệch quá ~24 ngày thì tràn số (vòng 6 phát hiện (3)); (b) POS qua cổng vào: chi nhánh bị `pause` thì `call()` quá 4
+  giây và chuyển cổng vòng quanh 3 cổng dù các cổng vẫn sống, vì POS coi "chi nhánh chậm" là "cổng chết" (vòng 6b
+  phát hiện (2)); (c) sink đọc tiếp chậm ~55 giây sau khi có lại đa số broker (mục vòng 3 ở trên).
+- ~~Vòng 7: chuỗi kết nối nhiều host của libpq (`target_session_attrs=read-write`) đủ để `psycopg_pool` tự nối sang
+  primary mới sau promote mà không đổi code~~ **Đã kiểm ở vòng 7: đủ cho việc nối, nhưng phải thêm hai thứ**: (1) pool
+  `check=ConnectionPool.check_connection` (không thì lượt bán đầu tiên sau promote chạy trên kết nối chết); (2)
+  `dns_opt timeout:1` cho `branch_api`, `relay` (tên `branch_db` đã dừng mất ~8 giây mới báo không có, mỗi lần nối lại).
+  Đo ở K10a: lượt bán kế tiếp thành công ~1 giây sau khi `make promote` xong. Thêm: lượt bán đứt giữa chừng trả 500
+  khiến POS bỏ `request_id`; đã sửa cả hai phía (503 `db_unavailable`, POS giữ mã với mọi 5xx).
+- ~~Vòng 7: promote bằng tay hay tự động~~ **Chốt ở vòng 7**: bằng tay (`make promote`: fence trước, promote sau, nhảy
+  sequence +1000, đặt bất đồng bộ); Patroni ghi vào `docs/spec.md` mục 9.
+- ~~Vòng 7: chế độ mặc định của nhân bản~~ **Chốt ở vòng 7**: bất đồng bộ (giữ PT-01, RPO > 0); đồng bộ dùng
+  `synchronous_commit=on`, bật bằng `make sync-mode MODE=sync`; đồng bộ tự hạ cấp (Patroni) ghi lên giấy. Giới hạn sự
+  kiện "ma" sau promote ở chế độ bất đồng bộ ghi ở `docs/spec.md` mục 6.
+- Vòng 7, phát hiện lúc chạy tay: (1) `docker pause` standby KHÔNG làm mất WAL (kernel vẫn nhận vào bộ đệm TCP, `unpause`
+  là đọc kịp): muốn thấy RPO > 0 phải cắt mạng standby (`docker network disconnect`, K10b). (2) Mất primary thì lượt bán
+  không lỗi nhanh mà chờ pool (30 giây) nên client quá giờ trước; lượt đó vẫn có thể được ghi vào primary mới sau khi
+  client bỏ cuộc (K10a: 2/2 lượt quá giờ đã ghi), nên giữ `request_id` là bắt buộc. (3) `make local-up` khi `branch_db`
+  đang bị fence: node đó báo lỗi `depends_on`, compose có thể tạo lại container (vòng khởi động lại, mỗi lần đều thoát vì
+  file fence); `make rejoin` dừng container trước khi xoá dữ liệu để nó không `initdb` thành primary mới.
 
 ## 7. Để sau, không làm
 
-Để sau (khi xong mục 3):
-- Chuyển kho giữa chi nhánh bằng Saga (`TRANSFER_OUT` → `TRANSFER_IN`, bù bằng `TRANSFER_CANCEL`).
-- Danh mục sản phẩm phát từ trung tâm qua topic compacted `catalog`.
+Để sau (khi xong mục 3), theo thứ tự đề xuất sau vòng 8 (rà soát tính thực tế 28/11/2026). Tên mới (bảng, biến
+môi trường, loại biến động) đặt ở `/plan-task` như mọi vòng:
+1. Cho bán khi tồn âm ở quầy, kể cả ghi hộ: lượt bán luôn áp, gắn cờ chênh lệch, thêm biến động điều chỉnh kiểm kê;
+   vẫn chặn xuất, chuyển kho. Lý do: khách cầm hàng ra quầy là hàng có thật, POS thật không chặn bán. Phải đổi PT-09,
+   PT-14 ở `docs/spec.md` trước; đụng K15 biến thể REJECTED, `test_change_stock`, `test_handoff`, POS, dashboard.
+2. ~~Hai lỗi nhỏ ở mục 6: `clock_offset_ms` đổi `::int` sang `bigint`; thử giảm `session.timeout.ms` của sink rồi đo
+   lại K7b, K9.~~ Chuyển vào vòng 8 (mục 5).
+3. Khóa nội bộ dùng chung cho heartbeat, ghi hộ, snapshot, digest (hiện không có xác thực nào); đăng nhập thu ngân ở POS.
+4. Chuyển kho giữa chi nhánh bằng Saga (`TRANSFER_OUT` → `TRANSFER_IN`, bù bằng `TRANSFER_CANCEL`): lấp khoảng trống
+   giao dịch phân tán so với repo tham khảo `4ustintr/BTL_Distributed_Application`.
+5. Migration đánh số thay cho `make reset` khi đổi schema.
+6. Gossip so dấu vân tay theo từng chi nhánh, chỉ kéo phần lệch; script sinh nhiều mã hàng để đo lại.
+7. Danh mục sản phẩm phát từ trung tâm qua topic compacted `catalog`.
+
 - Chạy lại toàn bộ trên 2–3 máy thật khi có máy: chỉ đổi file env, code giữ nguyên.
 
 Không làm:

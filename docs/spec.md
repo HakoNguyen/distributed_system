@@ -24,6 +24,7 @@ Một chuỗi cửa hàng tiện lợi có nhiều chi nhánh ở nhiều thành
 | Phục hồi từ nguồn sự thật | Mất broker quá 15 giây thì bản sao đối soát thẳng với chi nhánh qua API | K9 |
 | Đọc đơn điệu (monotonic reads) | Dashboard nhớ phiên bản (`last_movement`) từng ô đã hiện; bản sao trả lời cũ hơn thì giữ số cũ và gắn nhãn "bản sao B trễ N sự kiện" | K11 |
 | Chi nhánh sập vẫn bán (hinted handoff, store-and-forward) | POS ghi hộ lượt bán lên một bản sao khi đa số kết luận chi nhánh OFFLINE; chi nhánh khởi động lại ở RECOVERING, tự kéo về áp đúng một lần theo thứ tự, lượt vượt tồn thật thành REJECTED và hiện ra (PT-14) | K15 |
+| Nhân bản CSDL chi nhánh, chuyển primary (replication, failover, fencing) | Mỗi node một standby (streaming replication của Postgres). Mất primary: `make promote` fence primary cũ rồi nâng standby; chi nhánh tự nối sang qua chuỗi nhiều host. Đồng bộ (`synchronous_commit=on`): không mất lượt bán đã báo thành công (PT-12); mặc định bất đồng bộ (PACELC: chọn độ trễ thấp và quầy không treo, RPO > 0) | K10a, K10b, K10c |
 | Quan sát được đường đi của dữ liệu | Sơ đồ topology sống; truy vết một sự kiện qua chi nhánh, broker (timestamp Kafka), từng bản sao | K12, K1–K9 trên giao diện |
 
 ## 3. Kiến trúc
@@ -48,7 +49,8 @@ Một chuỗi cửa hàng tiện lợi có nhiều chi nhánh ở nhiều thành
    MÁY C giống máy B (broker 3, nginx, CN3, bản sao C). Relay, sink mỗi máy nói chuyện với CẢ cụm.
 ```
 
-Mọi máy chạy **giống hệt nhau**: một chi nhánh (`branch_db`, `branch_api`, `relay`), một bản sao trung tâm
+Mọi máy chạy **giống hệt nhau**: một chi nhánh (`branch_db` kèm standby `branch_db_standby` từ vòng 7, `branch_api`,
+`relay`), một bản sao trung tâm
 (`replica_db`, `replica_api`, `sink`), một **nginx** (cổng vào, vòng 5) và một broker Redpanda (profile **broker**).
 Ba broker thành **một cụm**: mỗi phân hoạch có 3 bản (RF=3), một leader, ghi xong khi đa số (2/3) đã ghi đĩa. Mất 1
 broker thì cụm tự bầu leader mới; mất 2 broker thì không ghi được nữa, quầy vẫn bán và POS, dashboard báo "đồng bộ
@@ -127,8 +129,11 @@ mở transaction ghi.
 | `BRANCH_URL` | `.env`, riêng từng máy | `branch_api` | Địa chỉ POS của chính chi nhánh này, nhìn từ máy khác; gửi kèm heartbeat để bản sao đối soát khi mất broker. Máy thật: `http://100.64.0.2:8001` (IP overlay của chính máy, cổng host); một máy: `http://branch-b:8000` |
 
 | `ROLE` | `infra/compose.yml` | mọi tiến trình Python | `branch` hoặc `replica` |
-| `DATABASE_URL` | `infra/compose.yml` | mọi tiến trình Python | CSDL của chính tiến trình: `postgresql://app:app@branch_db:5432/kho` hoặc `@replica_db` |
-| `TEST_DB_URL` | `infra/compose.test.yml` | `tests/conftest.py` | CSDL test, tên phải kết thúc bằng `_test`: `postgresql://app:app@test_db:5432/kho_test` |
+| `DATABASE_URL` | `infra/compose.yml` | mọi tiến trình Python | CSDL của chính tiến trình. Chi nhánh (vòng 7): chuỗi nhiều host `postgresql://app:${DB_PASSWORD}@branch_db:5432,branch_db_standby:5432/kho?target_session_attrs=read-write&connect_timeout=3` (libpq thử lần lượt, chỉ nhận host đang là primary); bản sao: `postgresql://app:${DB_PASSWORD}@replica_db:5432/kho` |
+| `DB_PASSWORD` | máy thật: `.env`; một máy: `infra/env/local-secrets.env` (không commit, `make local-up` tự sinh lần đầu) | compose (Postgres, `DATABASE_URL`) | Mật khẩu user `app` của mọi CSDL (vòng 7). Thiếu thì compose dừng với "Chưa đặt DB_PASSWORD". Mẫu: `infra/env/secrets.env.example` |
+| `REPLICATION_PASSWORD` | như `DB_PASSWORD` | compose (`branch_db`, `branch_db_standby`) | Mật khẩu user `replicator` (streaming replication, vòng 7) |
+| `PG_PRIMARY_HOST` | `infra/compose.yml` | `db/pg-start.sh` của `branch_db_standby` | Nguồn `pg_basebackup` lần đầu (thư mục dữ liệu trống): `branch_db` (vòng 7) |
+| `TEST_DB_URL` | `infra/compose.test.yml` | `tests/conftest.py` | CSDL test, tên phải kết thúc bằng `_test`: `postgresql://app:app@test_db:5432/kho_test` (giữ mật khẩu cố định: tmpfs, không publish cổng) |
 
 **Chạy 3 node trên một máy** (`infra/compose.local.yml`): mỗi node là một compose project `minigo-a`, `minigo-b`,
 `minigo-c`; "mạng overlay" là docker network chung `minigo-wan`. Compose tự thêm tên service (`replica_api`) làm
@@ -179,6 +184,20 @@ kết luận của bản sao đó vẫn là OFFLINE). Hết 60 giây mà vẫn c
 được nhận khi luồng phục hồi đã chạy trong 10 giây gần nhất (chặn lượt bán chen vào ngay sau `docker unpause`).
 RECOVERING là cờ chi nhánh tự báo trong heartbeat (`recovering`), tách khỏi ONLINE/SUSPECT/OFFLINE theo timeout:
 kết luận đa số (PT-13) không đổi.
+
+**Standby CSDL chi nhánh** (vòng 7, PT-12, K10a–K10c; chi tiết ở `docs/db.md` mục 2). Mỗi node có hai Postgres chi
+nhánh nối nhau bằng streaming replication. `branch_api` và `relay` nối bằng chuỗi nhiều host
+(`branch_db,branch_db_standby`, `target_session_attrs=read-write`): libpq bỏ qua host không phải primary. Mặc định bất
+đồng bộ: COMMIT xong ở primary là trả lời, WAL sang standby sau vài mili giây. `make sync-mode MODE=sync` bật đồng bộ
+(`synchronous_standby_names='*'`, `synchronous_commit=on`): COMMIT chỉ trả lời khi standby đã ghi WAL xuống đĩa, và lượt
+bán chưa hiện ra cho phiên khác (kể cả relay) trước lúc đó. Mất primary thì người vận hành chạy `make promote`: **fence
+trước** (primary cũ bị giết, không tự khởi động lại, file `minigo.fenced` trong volume làm nó thoát ngay nếu bị bật lại),
+**promote sau**, nhảy sequence `movement_id` thêm 1000, đặt bất đồng bộ (primary mới chưa có standby). Pool kiểm kết nối
+lúc lấy ra (`check`), nên lượt bán đầu tiên sau promote đã chạy trên primary mới. Lượt bán đứt giữa chừng trả 503
+`db_unavailable`; POS giữ `request_id` với mọi lỗi 5xx và gửi lại thì nhận kết quả cũ (PT-08). Promote quá 15 giây thì
+heartbeat (đọc outbox) dừng đủ lâu để đa số kết luận OFFLINE: POS chuyển sang ghi hộ, chi nhánh tự vào RECOVERING khi
+có CSDL lại (vòng 6, không đổi code); ghi hộ là lớp bảo vệ thứ hai. `make rejoin` đưa primary cũ về làm standby
+(`pg_basebackup`).
 
 ## 5. Mức nhất quán
 
@@ -269,6 +288,34 @@ kết luận đa số (PT-13) không đổi.
   báo"). Mốc "từ" lấy từ server khi có, không thì là lúc trang thấy lần đầu (ghi "~"). Nhật ký lưu `localStorage`: mỗi
   trình duyệt một nhật ký, sự cố xảy ra khi không có trang nào mở thì không có trong nhật ký. Mở thẳng một bản sao thì
   chỉ có cảnh báo từ góc nhìn của bản sao đó (không phân biệt được "cụm mất đa số" với "bản sao này bị cô lập").
+- **Một máy vẫn là một miền lỗi** (vòng 7). Primary và standby chạy trên cùng máy, cùng đĩa, cùng Docker: mất máy, hỏng
+  đĩa, Docker Desktop chết là mất cả hai. Standby che được lỗi của một tiến trình hay một volume Postgres, không che
+  được lỗi của máy. Vòng 7 cải thiện độ bền dữ liệu và cách vận hành, không biến một máy thành hệ sẵn sàng cao.
+- **Mặc định bất đồng bộ: RPO > 0** (vòng 7, K10b). Lượt bán đã báo thành công mà chưa sang standby thì mất khi primary
+  hỏng rồi promote (đo: cắt mạng standby, bán 7 lượt, mất primary, promote: thiếu đúng 7). Hệ quả thứ hai là **sự kiện
+  "ma"**: relay đọc outbox trên primary, nên có thể đã gửi lên Redpanda các lượt đó; bản sao trung tâm giữ chúng còn chi
+  nhánh thì không. Bước nhảy sequence lúc promote (+1000) chặn việc cấp lại `movement_id` cho lượt bán khác (nếu cấp lại
+  thì bản sao bỏ lượt mới vì trùng khoá `(branch_id, movement_id)`). Ô của sự kiện ma đứng sai tới lượt bán kế tiếp của
+  mã đó (lượt đó có `movement_id` lớn hơn nên ghi đè đúng); đối soát không vá được, vì `last_movement` của ma lớn hơn của
+  chi nhánh mà luật merge chỉ ghi đè khi lớn hơn (PT-05, PT-10). Cách triệt để: CDC đọc WAL đã sang standby (mục 9). Ở
+  chế độ đồng bộ không có sự kiện ma.
+- **Chế độ đồng bộ: standby chết thì quầy treo** (K10b). Lượt bán chờ standby không giới hạn (Postgres không có timeout
+  cho chờ đồng bộ); treo đủ lâu thì pool (5 kết nối) cạn, heartbeat dừng, đa số kết luận OFFLINE. Người vận hành chạy
+  `make sync-mode MODE=async`: các lượt đang chờ xong ngay. Tự hạ cấp (như Patroni) ghi ở mục 9.
+- **Chuyển primary bằng tay** (`make promote`). Từ lúc primary chết tới khi promote xong, lượt bán chờ pool rồi lỗi (POS
+  báo "chưa rõ đã ghi chưa", giữ `request_id`). Đo ở K10a: 11 giây không bán được (3 giây gõ lệnh, 7 giây `make
+  promote`, gồm các lệnh docker). Tự động failover cần đồng thuận để tránh hai primary (Patroni + etcd, mục 9).
+- **Fencing dựa vào Docker trên cùng máy**: `docker kill` primary cũ và file `minigo.fenced` trong volume. Primary và
+  standby ở hai máy khác nhau thì phải có STONITH thật (tắt nguồn, cắt mạng) hoặc lease kèm fencing token (mục 9). Khi
+  `branch_db` đang bị fence, `make local-up` báo lỗi ở node đó (`branch_api` chờ `branch_db` healthy) và compose có thể
+  tạo lại container `branch_db` (khởi động lại liên tục, mỗi lần đều thoát vì file fence): chạy `make rejoin` trước.
+- **Mật khẩu qua biến môi trường** (vòng 7): không còn viết cứng, file bí mật không commit, nhưng vẫn lộ qua `docker
+  inspect`; mật khẩu replication nằm trong `postgresql.auto.conf` của standby (`pg_basebackup -R`). CSDL test giữ
+  `app/app` (tmpfs, không publish cổng). Docker secrets hay kho bí mật ở mục 9.
+- **Healthcheck chỉ kiểm "tiến trình còn sống"** (vòng 7): `branch_api`, `replica_api` gọi trang tĩnh `/`, relay, sink
+  kiểm file `/tmp/alive` mà vòng lặp chạm mỗi lượt; lỗi broker, CSDL, mạng không làm container unhealthy. Docker
+  Compose không tự khởi động lại container unhealthy; healthcheck dùng cho `depends_on` và để người vận hành nhìn.
+- **Sao lưu là `pg_dump` logic** (`make backup`), không khôi phục được tới một thời điểm bất kỳ (PITR cần lưu WAL, mục 9).
 - **Nginx chỉ tự thử lại yêu cầu idempotent (GET).** Lệnh bán (POST) qua nginx mà thất bại thì không được thử lại
   tự động. POS tự bảo vệ bằng `request_id`.
 
@@ -305,5 +352,47 @@ dòng ở đây trước khi code.
 | PT-09 | Không bán lố tồn: trừ bằng một câu `UPDATE` có điều kiện `qty_on_hand + delta >= 0` | `_change_stock` |
 | PT-10 | Mọi kênh cập nhật snapshot (sink, gossip, đối soát) dùng chung một luật merge giao hoán, lũy đẳng theo từng ô | `merge_cells` (`api/services/replica.py`), gọi từ `apply_event`, `merge_replica_snapshot`, `merge_branch_snapshot` |
 | PT-11 | Mất đa số broker không làm dừng bán; trạng thái "đồng bộ dừng" phải hiện trên POS và dashboard | `record_relay_result` (`relay_status`), `record_broker_check` (`sink_stats`), `web/pos.html`, `web/dashboard.html` |
+| PT-12 | Ở chế độ đồng bộ (`make sync-mode MODE=sync`: `synchronous_standby_names='*'`, `synchronous_commit=on`), lượt bán chỉ báo thành công khi standby đã nhận và ghi xuống đĩa WAL của nó; mất primary rồi promote standby thì không mất lượt bán nào đã báo thành công. Mặc định là bất đồng bộ (giữ PT-01: standby chết quầy vẫn bán), khi đó RPO > 0 (mục 6) | cấu hình Postgres (`scripts/db.sh sync-mode`); chứng minh bằng `scripts/k10.sh verify` (K10a); lượt bán lỗi giữa chừng trả 503 `db_unavailable` và POS giữ `request_id` (PT-08) |
 | PT-13 | Một chi nhánh chỉ bị coi là OFFLINE khi đa số bản sao, tính trên **tổng số bản sao cấu hình** (2/3), cùng thấy OFFLINE; góc nhìn thiếu hoặc cũ quá 15 giây không tính là OFFLINE. Một bản sao mất liên lạc riêng lẻ chỉ đổi góc nhìn của chính nó | `branch_state`, `majority_state`, `query_nodes` (`api/services/replica.py`); góc nhìn bản sao khác kéo qua `GET /api/views` (`view_loop` trong `api/workers/gossip.py`), lưu ở `peer_view` |
 | PT-14 | Mỗi lượt ghi hộ được áp vào chi nhánh **đúng một lần**, theo thứ tự ghi hộ (thứ tự bản sao trong `REPLICA_URLS`, rồi `handoff_id`), **trước khi** chi nhánh nhận lượt bán mới; lượt không áp được thì REJECTED và hiện ra (POS, dashboard), không mất lặng lẽ. Ngoại lệ duy nhất: hết 60 giây (`RECOVERY_TIMEOUT_S`) mà vẫn có bản sao không gọi được thì chi nhánh lên ONLINE kèm cảnh báo `incomplete`; ghi hộ còn ở bản sao đó được áp muộn khi gọi lại được, theo cùng luật (mục 6) | `require_online`, `next_recovery_state`, `collect_handoffs`, `apply_handoffs`, `recovery_once` (`api/services/branch.py`), gọi từ `api/workers/recovery.py`; `store_handoff`, `record_handoff_ack` (`api/services/replica.py`) |
+
+## 9. Kiến trúc mục tiêu production (trên giấy)
+
+MiniGo chạy mọi thứ trên 1–3 máy bằng Docker Compose để chứng minh các tính chất ở mục 2. Bản production cho một chuỗi
+cửa hàng thật sẽ khác ở các chỗ dưới đây. Không làm trong demo vì không trả lời thêm câu hỏi nào của môn, hoặc cần hạ
+tầng không có trên một máy (vòng 7, `docs/plan.md`).
+
+```
+              Trình duyệt trụ sở, POS ── DNS nhiều bản ghi A / anycast ──┐
+                                                                         ▼
+ ┌──────── CORE (cloud / datacenter, nhiều vùng) ───────────────────────────────────────────────┐
+ │  LB kép (VIP) ─▶ nginx/ingress ─▶ replica_api (Kubernetes, nhiều vùng)                        │
+ │  Kafka/Redpanda nhiều vùng (Raft)   replica_db có HA (Patroni)   Prometheus, Grafana, Vault    │
+ └──────────────────────────────▲──────────────────────────────────────────────────────────────┘
+                                │ mTLS, TLS, khoá riêng từng chi nhánh
+ ┌──────── EDGE (mỗi cửa hàng, K3s hoặc Compose, triển khai hàng loạt bằng Ansible) ────────────┐
+ │  POS (hàng đợi tại máy, gửi lại bằng request_id) ─▶ branch_api ─▶ Postgres primary            │
+ │                                                    Patroni + standby (đồng bộ, tự hạ cấp)     │
+ │  CDC (Debezium đọc WAL đã sang standby) thay relay ─▶ Kafka core                              │
+ └──────────────────────────────────────────────────────────────────────────────────────────────┘
+```
+
+| Ý | MiniGo hiện tại | Production | Đánh đổi, vì sao demo chưa làm |
+|---|---|---|---|
+| Tách edge/core | Mỗi máy chạy đủ chi nhánh, bản sao, broker, nginx | Cửa hàng chỉ chạy `branch_db`, `branch_api`, relay/CDC; bản sao, broker, nginx ở cloud hoặc datacenter rải nhiều vùng: một cửa hàng mất mạng không làm cụm mất quorum | Code đã tách theo `ROLE` và `.env`, chủ yếu đổi compose; demo cần mỗi máy đủ vai để cho thấy failover trên 3 máy |
+| CDC thay relay | Relay đọc bảng outbox trên primary (at-least-once) | Debezium đọc WAL qua logical slot, chỉ phát phần đã sang standby (failover slot, PG 17) | Hết sự kiện "ma" sau promote (mục 6). Cần Kafka Connect, slot, thêm một hệ phải vận hành |
+| Tự động failover CSDL | `make promote` bằng tay, fence bằng `docker kill` | Patroni + etcd/Consul: leader key có TTL (lease), watchdog tự tắt primary mất lease, tự promote, tự đưa primary cũ về bằng `pg_rewind` | Cần cụm đồng thuận riêng; demo muốn thấy rõ từng bước fence, promote |
+| Đồng bộ có tự hạ cấp | Đồng bộ chặt hoặc bất đồng bộ, đổi bằng tay | `synchronous_mode` không chặt của Patroni (như semi-sync có timeout của MySQL): mất standby quá T giây thì tự chuyển bất đồng bộ, có lại thì bật đồng bộ | Quầy chỉ treo tối đa T giây; trong lúc hạ cấp RPO > 0 |
+| Fencing chống hai nơi cùng ghi | File fence ở CSDL; ghi hộ dựa vào kết luận đa số (mục 6) | Lease do đa số cấp kèm fencing token tăng dần; lượt ghi mang token cũ bị từ chối (cả CSDL lẫn ghi hộ) | Cần dịch vụ cấp lease và kiểm token ở mọi đường ghi |
+| Sao lưu | `pg_dump` vào `backups/` | Lưu WAL liên tục (pgBackRest, WAL-G) lên kho đối tượng ở vùng khác, khôi phục tới một thời điểm (PITR), diễn tập khôi phục | Cần kho lưu trữ ngoài máy |
+| Kubernetes | Docker Compose, `restart: unless-stopped`, healthcheck chỉ để nhìn | Kubernetes ở core, K3s ở edge: liveness/readiness probe tự khởi động lại, rolling deploy, giới hạn tài nguyên theo pod | Nặng cho một máy; Compose đủ để cho thấy các tính chất |
+| Cổng vào | 3 nginx, trang đang mở tự chuyển cổng (mục 3, mục 6) | Một tên DNS trỏ nhiều địa chỉ (nhiều bản ghi A) hoặc VIP/anycast trước LB kép, để cả lần mở trang đầu cũng không phụ thuộc một máy | keepalived/VIP không chạy qua Docker Desktop trên Windows |
+| CORS | `*` (không cookie, không xác thực) | Liệt kê đúng origin của các cổng vào | Chỉ đúng khi đã có xác thực |
+| Bảo mật đường truyền | HTTP và Postgres không mã hoá, không xác thực nội bộ | TLS cho API và PostgreSQL, mTLS giữa dịch vụ, khoá riêng từng chi nhánh (thu hồi được khi mất máy) | Cần CA, cấp và xoay vòng chứng chỉ |
+| Bí mật | Biến môi trường từ file không commit | Docker secrets / Kubernetes Secrets, kho bí mật (Vault) cấp mật khẩu ngắn hạn | Thêm một dịch vụ phải luôn sống |
+| Nhiều vùng | Mọi thứ ở 1–3 máy cùng mạng | Bản sao, broker, CSDL trung tâm rải nhiều vùng; một vùng mất vẫn còn đa số | Độ trễ giữa vùng làm chậm Raft, đồng bộ |
+| Anti-entropy | Gossip so dấu vân tay toàn bộ, kéo cả snapshot (60 ô) | Merkle tree hoặc dấu vân tay theo từng chi nhánh, chỉ kéo phần lệch | Đủ cho 60 ô; cần khi có hàng nghìn mã |
+| Hàng đợi ở máy POS | POS ghi hộ qua trung tâm khi server cửa hàng chết (vòng 6) | POS tự giữ hàng đợi cục bộ, gửi lại bằng `request_id` khi server cửa hàng sống lại | Cần ứng dụng POS có lưu trữ, không chỉ trang web |
+| Triển khai hàng loạt, đồng hồ | Chép `.env` bằng tay; đồng hồ chỉ để hiển thị | Ansible / GitOps cho hàng trăm cửa hàng; NTP bắt buộc (đồng hồ vẫn không dùng để so thứ tự, PT-05) | Không cần cho 3 máy |
+| Giám sát | Dashboard tự tính cảnh báo ở trình duyệt (vòng 6b) | Prometheus, Grafana, exporter của Postgres, Redpanda; cảnh báo phía server, gửi tới người trực | Cắt khỏi vòng 7 để tập trung vào standby |
+| Phạm vi nghiệp vụ | Chỉ phần tồn kho của POS | Giá, thanh toán, hoá đơn, nhiều quầy, phân quyền | Ngoài phạm vi môn học |

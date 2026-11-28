@@ -67,6 +67,8 @@ def status():
         "relay": branch.relay_status(),
         # Ghi hộ (vòng 6): ONLINE / RECOVERING, số đã áp, đã từ chối, lần chạy cuối của luồng phục hồi
         "recovery": branch.recovery_status(),
+        # Standby CSDL (vòng 7, PT-12): vai trò, sync/async, standby streaming; POS (P-11), dashboard (D-21) cảnh báo
+        "db": branch.db_status(),
         "links": [
             {"name": l["name"], "ok": l["ok"], "rtt_ms": l["rtt_ms"],
              "seconds_since_ok": None if l["last_ok"] is None

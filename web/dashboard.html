@@ -1017,6 +1017,11 @@ function alertsFrom(inp, now) {
       add({ id: `handoff:${b}`, s: "warn", parent: recovering ? `recover:${b}` : `branch:${b}`, kid: `${h.pending} lượt ghi hộ chờ áp`,
             text: `CN${b}: ${h.pending} lượt ghi hộ chờ chi nhánh áp` });
     if (st) {
+      // D-21 (vòng 7, PT-12): primary không có standby streaming; sync thì lượt bán treo
+      const db = st.db;
+      if (db?.role === "primary" && !db.standby?.connected) add(db.sync_mode === "sync"
+        ? { id: `standby:${b}`, s: "bad", text: `CSDL CN${b} chạy đồng bộ mà không có standby: lượt bán đang treo (make sync-mode N=${NODES[b - 1].toLowerCase()} MODE=async)` }
+        : { id: `standby:${b}`, s: "warn", text: `CSDL CN${b} không có standby: mất primary lúc này là mất dữ liệu` });
       const recent = (rc?.rejected_items || []).filter((r) => now - Date.parse(r.rejected_at) <= REJECTED_ALERT_S * 1000);
       if (recent.length) add({ id: `rejected:${b}`, s: "bad", since: minT(recent.map((r) => t(r.rejected_at))),
         text: `CN${b}: ${recent.length} lượt ghi hộ bị TỪ CHỐI khi áp lại (` + recent.slice(0, 3).map((r) =>
@@ -1618,6 +1623,16 @@ function selftest() {
     const a = one(alertsFrom(at(12), now), "outbox:2");
     return a && a.s === "warn" && a.since === ms(12) && alertsFrom(at(3), now).length === 0;
   });
+  // D-21 (vòng 7, PT-12): CSDL chi nhánh không có standby streaming; async vàng, sync đỏ (lượt bán treo)
+  const dbs = (mode, connected) => ({ role: "primary", sync_mode: mode, timeline: 1,
+    standby: { connected, state: connected ? "streaming" : null, lag_bytes: connected ? 0 : null } });
+  T("D-21 CN2 không có standby: async vàng, sync đỏ nhắc lượt bán treo", () => {
+    const w = one(alertsFrom(inp({ statuses: { 1: stx(), 2: stx({ db: dbs("async", false) }), 3: stx() } }), now), "standby:2");
+    const b = one(alertsFrom(inp({ statuses: { 1: stx(), 2: stx({ db: dbs("sync", false) }), 3: stx() } }), now), "standby:2");
+    return w && w.s === "warn" && w.text.includes("CN2") && b && b.s === "bad" && b.text.includes("treo");
+  });
+  T("D-21 standby đang streaming, hoặc status chưa có db: không cảnh báo", () =>
+    alertsFrom(inp({ statuses: { 1: stx({ db: dbs("sync", true) }), 2: stx(), 3: stx() } }), now).length === 0);
   T("D-17 mở thẳng: outbox theo heartbeat, chờ 10 giây", () => {
     const a = one(alertsFrom(inp({ direct: true, statuses: {}, digests: { A: dgx() }, nodes: [nd(2, "ONLINE", { outbox_backlog: 4 })] }), now), "outbox:2");
     return a && a.hold === 10000;

@@ -18,10 +18,14 @@ WAN=minigo-wan
 SUBNET=10.210.0.0/24
 DYNAMIC=10.210.0.128/25
 
+# Mật khẩu CSDL (vòng 7): file không commit, make local-up tự sinh lần đầu; make config dùng file mẫu
+SECRETS=${SECRETS:-infra/env/local-secrets.env}
+EXAMPLE=infra/env/secrets.env.example
+
 # docker compose của node $1 (a, b, c), phần còn lại là tham số cho compose
 compose() {
   n=$1; shift
-  docker compose -p "minigo-$n" --env-file "infra/env/local-$n.env" \
+  docker compose -p "minigo-$n" --env-file "infra/env/local-$n.env" --env-file "$SECRETS" \
     -f infra/compose.yml -f infra/compose.local.yml "$@"
 }
 
@@ -36,6 +40,7 @@ flat() {
 
 check() {
   fail=0
+  SECRETS=$EXAMPLE   # make config không cần mật khẩu thật
   bad() { echo "KHÔNG ĐẠT: $*"; fail=1; }
   ports="" ips=""
   for n in $NODES; do
@@ -147,7 +152,83 @@ check() {
   cluster local
   cluster may
 
-  [ $fail -eq 0 ] && echo "ĐẠT: cấu hình 3 node trên một máy, cụm 3 broker, cổng vào ở mọi node" || exit 1
+  # 7. Production local (vòng 7): standby, chuỗi nhiều host, healthcheck, giới hạn tài nguyên và log, mật khẩu
+  for n in $NODES; do
+    [ -f "infra/env/local-$n.env" ] && raw=$(compose "$n" config) && prod "node $n" "$raw"
+  done
+  for x in a b c; do
+    raw=$(docker compose --env-file "infra/env/may-$x.env" --env-file "$EXAMPLE" -f infra/compose.yml config) &&
+      prod "may-$x" "$raw"
+    for v in DB_PASSWORD REPLICATION_PASSWORD; do
+      grep -q "^$v=\$" "infra/env/may-$x.env" ||
+        bad "infra/env/may-$x.env: phải có dòng '$v=' để trống (điền ở .env, không commit mật khẩu)"
+    done
+  done
+  secrets
+
+  [ $fail -eq 0 ] && echo "ĐẠT: cấu hình 3 node trên một máy, cụm 3 broker, cổng vào ở mọi node, standby CSDL, vận hành" || exit 1
+}
+
+# Cấu hình đã ghép của một node ($2), nhãn $1: standby CSDL chi nhánh, chuỗi kết nối nhiều host, mọi service có
+# healthcheck (trừ topic-init chạy một lần), giới hạn RAM/CPU, giới hạn log (vòng 7).
+prod() {
+  cfg=$(echo "$2" | flat)
+  echo "$cfg" | grep -q '^branch_db_standby ' || bad "$1: thiếu service branch_db_standby"
+  echo "$cfg" | grep -q '^branch_db_standby  *PG_PRIMARY_HOST: branch_db$' || bad "$1: branch_db_standby thiếu PG_PRIMARY_HOST=branch_db"
+  echo "$cfg" | grep -q '^branch_db_standby  *target: /var/lib/postgresql/data$' || bad "$1: branch_db_standby thiếu volume dữ liệu"
+  for s in branch_db branch_db_standby; do
+    echo "$cfg" | grep -q "^$s .*pg-start.sh" || bad "$1: $s phải khởi động qua db/pg-start.sh (fencing, pg_basebackup)"
+  done
+  echo "$cfg" | grep -q '^branch_db .*target: /docker-entrypoint-initdb.d/.*replication.sh$' ||
+    bad "$1: branch_db phải mount db/replication.sh vào /docker-entrypoint-initdb.d (user replicator, pg_hba)"
+  for s in branch_api relay; do
+    url=$(echo "$cfg" | awk -v s="$s" '$1 == s && $2 == "DATABASE_URL:" { print $3 }')
+    case "$url" in
+      *@branch_db:5432,branch_db_standby:5432/kho\?*target_session_attrs=read-write*) ;;
+      *) bad "$1: $s DATABASE_URL phải là chuỗi nhiều host branch_db:5432,branch_db_standby:5432 với target_session_attrs=read-write (có: '$url')" ;;
+    esac
+    echo "$cfg" | grep -q "^$s  *- timeout:1\$" || bad "$1: $s thiếu dns_opt timeout:1 (tên CSDL đã dừng báo lỗi sau ~1 giây)"
+  done
+  for s in $(echo "$2" | awk '/^services:/ { f = 1; next } /^[^ ]/ { f = 0 } f && /^  [a-z_-]+:$/ { sub(":", ""); print $1 }'); do
+    [ "$s" = topic-init ] && continue   # chạy một lần rồi thoát: không có gì để kiểm sống
+    echo "$cfg" | grep -q "^$s  *healthcheck:" || bad "$1: $s thiếu healthcheck"
+    echo "$cfg" | grep -q "^$s  *mem_limit:" || bad "$1: $s thiếu mem_limit"
+    echo "$cfg" | grep -q "^$s  *cpus:" || bad "$1: $s thiếu cpus"
+    echo "$cfg" | grep -q "^$s  *max-size:" || bad "$1: $s thiếu giới hạn log (logging.options.max-size)"
+  done
+  # Kiểm "tiến trình còn sống", tách khỏi lỗi broker/CSDL: api không dùng /health (chạm CSDL), relay/sink dùng /tmp/alive
+  for s in branch_api replica_api; do
+    echo "$cfg" | grep -q "^$s  *- .*/health" && bad "$1: healthcheck $s không được gọi /health (chạm CSDL; K15, P-10 sẽ thành unhealthy)"
+  done
+  for s in relay sink; do
+    echo "$cfg" | grep -q "^$s  *- .*/tmp/alive" || bad "$1: healthcheck $s phải kiểm /tmp/alive (vòng lặp còn chạy)"
+  done
+  echo "$cfg" | grep -q '^redpanda  *mem_limit: "1073741824"$' || ! echo "$cfg" | grep -q '^redpanda ' ||
+    bad "$1: redpanda mem_limit phải là 1g (--memory=512M cộng phần ngoài Seastar)"
+  echo "$cfg" | grep '^[a-z_-]*  *image: postgres' | grep -vq 'postgres:16.16-alpine$' && bad "$1: image Postgres phải ghim postgres:16.16-alpine"
+  true   # set -e: kiểm cuối không vi phạm thì && trả 1, không được làm dừng script
+}
+
+# Mật khẩu không viết cứng, file bí mật không bị commit (vòng 7)
+secrets() {
+  c=infra/compose.yml
+  grep -v '^ *#' "$c" | grep -qE 'POSTGRES_PASSWORD: *app *$|app:app@' && bad "$c: còn mật khẩu app viết cứng"
+  grep -qF '${DB_PASSWORD:?' "$c" || bad "$c: mật khẩu phải lấy từ \${DB_PASSWORD:?...}"
+  grep -qF '${REPLICATION_PASSWORD:?' "$c" || bad "$c: mật khẩu replication phải lấy từ \${REPLICATION_PASSWORD:?...}"
+  grep 'image: postgres' infra/compose.test.yml | grep -vq 'postgres:16.16-alpine$' && bad "infra/compose.test.yml: image Postgres phải ghim postgres:16.16-alpine"
+  for v in DB_PASSWORD REPLICATION_PASSWORD; do
+    grep -q "^$v=." "$EXAMPLE" 2>/dev/null || bad "$EXAMPLE: thiếu $v (giá trị giả)"
+  done
+  for f in db/replication.sh db/pg-start.sh scripts/db.sh scripts/k10.sh; do [ -f "$f" ] || bad "thiếu $f"; done
+  for t in promote rejoin sync-mode backup db-status; do
+    grep -q "^\.PHONY:.* $t\( \|\$\)" Makefile || bad "Makefile: thiếu lệnh $t"
+  done
+  if git rev-parse --git-dir >/dev/null 2>&1; then
+    git ls-files --error-unmatch infra/env/local-secrets.env >/dev/null 2>&1 && bad "infra/env/local-secrets.env đang bị git track"
+    for f in infra/env/local-secrets.env backups/x.dump .k10-b.log; do
+      git check-ignore -q "$f" || bad ".gitignore phải bỏ qua $f"
+    done
+  fi
 }
 
 # Cổng vào của chính node trong file env $1, nhìn từ trình duyệt ($2: localhost hoặc IP overlay), phải có trong GATEWAYS
@@ -194,7 +275,7 @@ cluster() {
         [ "$(val REPLICA_$X)" = "$h:8000" ] && [ "$(val BRANCH_$X)" = "$h:8001" ] ||
           bad "$env: REPLICA_$X, BRANCH_$X phải là $h:8000, $h:8001 (IP overlay; nginx chạy ở mọi máy nên không dùng tên service)"
       done
-      docker compose --env-file "$env" -f infra/compose.yml config --services 2>/dev/null | grep -qx nginx ||
+      docker compose --env-file "$env" --env-file "$EXAMPLE" -f infra/compose.yml config --services 2>/dev/null | grep -qx nginx ||
         bad "$env: máy này không chạy nginx (vòng 5: cổng vào ở mọi máy)"
     fi
     [ -z "$ref" ] && ref="$kb|$seeds|$gws|$addr"
@@ -205,7 +286,21 @@ cluster() {
   [ -z "$(echo $own | tr ' ' '\n' | sort | uniq -d)" ] || bad "$1-*.env: BROKER_HOST trùng giữa các node"
 }
 
+# Mật khẩu CSDL một máy (vòng 7): sinh ngẫu nhiên lần đầu, giữ nguyên các lần sau (volume khởi tạo với mật khẩu đó)
+secrets_file() {
+  [ -f "$SECRETS" ] && return
+  gen() { LC_ALL=C tr -dc 'A-Za-z0-9' < /dev/urandom | head -c 24; }
+  printf '# Sinh tự động bởi make local-up (vòng 7). KHÔNG commit. Xoá file này thì phải make local-reset.\nDB_PASSWORD=%s\nREPLICATION_PASSWORD=%s\n' \
+    "$(gen)" "$(gen)" > "$SECRETS"
+  echo "Đã sinh mật khẩu CSDL vào $SECRETS (không commit)"
+  if docker volume inspect minigo-a_branch_pgdata >/dev/null 2>&1; then
+    echo "Volume CSDL cũ còn đó (khởi tạo với mật khẩu khác): chạy make local-reset (xoá dữ liệu demo)."
+    rm -f "$SECRETS"; exit 1
+  fi
+}
+
 up() {
+  secrets_file
   if docker network inspect $WAN >/dev/null 2>&1; then
     [ "$(docker network inspect -f '{{range .IPAM.Config}}{{.IPRange}}{{end}}' $WAN)" = "$DYNAMIC" ] || {
       echo "Mạng $WAN tạo từ bản trước vòng 5 (chưa tách vùng IP động $DYNAMIC)."
@@ -220,7 +315,10 @@ up() {
 }
 
 down() {
+  [ -f "$SECRETS" ] || SECRETS=$EXAMPLE   # dừng không cần mật khẩu thật (nâng từ bản trước vòng 7)
   for n in a b c; do compose $n down "$@"; done
+  # down -v (local-reset) xoá dữ liệu: lần up sau sinh mật khẩu mới
+  case " $* " in *" -v "*) [ "$SECRETS" = "$EXAMPLE" ] || rm -f "$SECRETS" ;; esac
   rm -f .cut-a .cut-b .cut-c
   docker network rm $WAN >/dev/null 2>&1 || true
 }

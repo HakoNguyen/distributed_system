@@ -6,7 +6,7 @@ COMPOSE = docker compose --env-file $(ENV_FILE) -f infra/compose.yml
 S ?=
 N ?= 100
 
-.PHONY: up down reset ps logs test config check local-up local-down local-reset cut heal pause unpause kill start
+.PHONY: up down reset ps logs test config check local-up local-down local-reset cut heal pause unpause kill start promote rejoin sync-mode backup db-status
 
 # Dựng và chạy mọi container của máy này (máy A thêm redpanda, console, nginx)
 up:
@@ -56,11 +56,23 @@ heal:
 pause unpause kill start:
 	docker $@ minigo-$(N)-$(S)-1
 
+# Standby CSDL chi nhánh (vòng 7, PT-12; scripts/db.sh). N=<node> khi chạy một máy; máy thật bỏ N.
+# make db-status N=b; make sync-mode N=b MODE=sync|async; make promote N=b; make rejoin N=b; make backup N=b
+MODE ?=
+db-status:
+	sh scripts/db.sh status $(N)
+
+sync-mode:
+	sh scripts/db.sh sync-mode "$(N)" $(MODE)
+
+promote rejoin backup:
+	sh scripts/db.sh $@ $(N)
+
 # File compose hợp lệ với env mẫu (máy thật và 3 node một máy); không cần .env, không chạy container
 config:
-	docker compose --env-file infra/env/may-a.env -f infra/compose.yml config -q
-	docker compose --env-file infra/env/may-b.env -f infra/compose.yml config -q
-	docker compose --env-file infra/env/may-c.env -f infra/compose.yml config -q
+	docker compose --env-file infra/env/may-a.env --env-file infra/env/secrets.env.example -f infra/compose.yml config -q
+	docker compose --env-file infra/env/may-b.env --env-file infra/env/secrets.env.example -f infra/compose.yml config -q
+	docker compose --env-file infra/env/may-c.env --env-file infra/env/secrets.env.example -f infra/compose.yml config -q
 	docker compose -f infra/compose.test.yml config -q
 	sh scripts/net.sh check
 

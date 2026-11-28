@@ -44,8 +44,17 @@ các bản sao không gọi được ở lần kéo gần nhất; `last_run_at`,
 lỗi của lần đó (NULL = chạy được); `rejected_items` = 20 dòng `handoff_rejected` mới nhất (`request_id`,
 `product_id`, `qty`, `reason`, `qty_on_hand`, `rejected_at`).
 
+`/api/status` có `db` (vòng 7, PT-12): CSDL mà `branch_api` đang nối (primary hiện tại, qua chuỗi nhiều host),
+đọc bằng một câu `SELECT` (`pg_is_in_recovery()`, `synchronous_standby_names`, `pg_stat_replication`,
+`pg_control_checkpoint()`): `{role, sync_mode, standby: {connected, state, lag_bytes}, timeline}`. `role` ∈ `primary`,
+`standby`; `sync_mode` ∈ `sync` (`synchronous_standby_names` khác rỗng), `async`; `standby.connected` = có standby
+đang `streaming`; `state` = trạng thái WAL sender (`streaming`, `catchup`, …; `null` = không có standby nào nối);
+`lag_bytes` = WAL standby chưa áp (`null` khi không có); `timeline` tăng 1 sau mỗi lần promote. Không có standby
+`streaming` thì POS (P-11) và dashboard (D-21) cảnh báo.
+
 | Mã lỗi | Khi nào |
 |---|---|
+| 503 `db_unavailable` | Mọi endpoint của chi nhánh khi không nối được CSDL hoặc kết nối đứt giữa chừng (`psycopg.OperationalError`), ví dụ lúc primary chết, trước khi promote (vòng 7). Lượt bán đứt lúc COMMIT có thể đã ghi: chưa rõ, POS giữ `request_id` và gửi lại (PT-08) |
 | 404 `product_not_found` | Không có mã hàng |
 | 404 `movement_not_found` | `/api/movement/{movement_id}`: không có biến động đó ở chi nhánh này |
 | 409 `version_conflict` | Gửi `version` mà tồn đã bị sửa; kèm `current_version` |

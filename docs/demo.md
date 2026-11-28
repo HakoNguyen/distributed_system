@@ -98,7 +98,7 @@ Trên dashboard qua nginx, sau khoảng 10 giây phải có đủ hai thẻ CN1,
 Mỗi "máy" là một compose project (`minigo-a`, `minigo-b`, `minigo-c`) chạy cùng `infra/compose.yml`, ghép thêm
 `infra/compose.local.yml`, env ở `infra/env/local-<x>.env` (không cần `.env`). "Mạng overlay" là docker network
 chung `minigo-wan`. "Rút mạng máy B" là gỡ mọi container của B khỏi `minigo-wan`: B vẫn chạy đủ bên trong (CSDL,
-POS, bản sao, broker), chỉ mất liên lạc với node khác, đúng như rút dây mạng. RAM: 23 container (3 broker, mỗi broker `--memory=512M`) đo được khoảng 1,23 GB (19/11/2026); vòng 5 thêm 2 nginx (25 container).
+POS, bản sao, broker), chỉ mất liên lạc với node khác, đúng như rút dây mạng. RAM: 23 container (3 broker, mỗi broker `--memory=512M`) đo được khoảng 1,23 GB (19/11/2026); vòng 5 thêm 2 nginx (25 container); vòng 7 thêm 3 standby CSDL chi nhánh (28 container chạy): khoảng 1,36 GB lúc nghỉ (28/11/2026; mỗi standby ~22 MB), giới hạn ở `infra/compose.yml`. Mật khẩu CSDL tự sinh lần đầu vào `infra/env/local-secrets.env` (không commit); `make local-reset` sinh mật khẩu mới.
 Đã chạy bản một broker (vòng 1)? Chạy `make local-reset` một lần: volume broker cũ là cụm một node.
 **Nâng từ bản trước vòng 5:** chạy `make local-reset` một lần (bảng mới `peer_view`; mạng `minigo-wan` tạo lại có
 vùng IP động riêng). `make local-up` trên mạng cũ sẽ dừng và nhắc việc này.
@@ -138,6 +138,8 @@ K1–K9 ở mục 5 giữ nguyên, chỉ đổi thao tác:
 | K13 mất cổng vào A | Rút mạng máy A, hoặc `docker compose stop nginx` trên máy A | `make kill N=a S=nginx` (chết) hoặc `make pause N=a S=nginx` (treo); bật lại `make start` / `make unpause`. **Không dùng `make cut N=a`**: cổng host không đi qua `minigo-wan`, trình duyệt cùng máy vẫn gọi được nginx A |
 | K14 chi nhánh B chậm / chết | `docker compose pause branch_api` / `docker compose kill branch_api` trên máy B | `make pause N=b S=branch_api` / `make kill N=b S=branch_api`; biến thể: `docker exec minigo-b-branch_api-1 sh tre.sh on 0 replica-a 100` (mất 100% gói tới riêng bản sao A), bỏ: `... sh tre.sh off` |
 | K15 chi nhánh B sập (ghi hộ) | `docker compose kill branch_api branch_db` trên máy B; bật lại: `docker compose start branch_db`, rồi `branch_api` | `make kill N=b S=branch_api`, `make kill N=b S=branch_db`; bật lại: `make start N=b S=branch_db`, chờ healthy, `make start N=b S=branch_api`. Biến thể REJECTED: trước đó `make kill N=b S=relay`; biến thể hai nơi cùng ghi: `make kill N=b S=nginx` rồi `make cut N=b` (xem K15) |
+| K10a mất primary CSDL CN2 | `docker compose kill branch_db` trên máy B, `make promote` | `make kill N=b S=branch_db`, `make promote N=b`; đưa về: `make rejoin N=b` |
+| K10b đồng bộ / bất đồng bộ | `make sync-mode MODE=sync` | `make sync-mode N=b MODE=sync` / `MODE=async`; dừng standby: `make kill N=b S=branch_db_standby` (xem tên primary hiện tại bằng `make db-status N=b`) |
 | Xem gossip, đối soát | `curl localhost:8000/api/digest` (trường `sync_peers`) | `curl localhost:8010/api/digest`; log: `docker logs minigo-b-replica_api-1 \| grep gossip` |
 | Xem cụm broker | `docker compose exec redpanda rpk cluster health` | `docker exec minigo-a-redpanda-1 rpk cluster health`, `... rpk topic describe inventory.movement -p` |
 | Xem container, log | `make ps`, `make logs S=relay` | `docker ps --filter name=minigo-b`, `docker logs -f minigo-b-relay-1` |
@@ -206,7 +208,7 @@ docker compose exec branch_api sh tre.sh on 300 100.64.0.1
 # bỏ:                ... sh tre.sh off
 ```
 
-## 5. Kịch bản K1–K9, K11–K15
+## 5. Kịch bản K1–K15
 
 (K10 dành cho vòng 7.) Từ vòng 4 hai màn hình được làm lại theo thao tác nghiệp vụ. Dashboard trụ sở có thanh bên
 (menu, bản sao đang trả lời, trạng thái đồng bộ tóm tắt) và bốn tab; tab đang mở nằm trong địa chỉ
@@ -335,6 +337,7 @@ Quy ước:
 | D-18 | Dò cổng vào X lỗi (mỗi 10 giây `GET <cổng>/lb/gateways.json`, chờ 2 giây; trang vừa chuyển khỏi X thì dò ngay). Trang chuyển cổng mà dò X vẫn trả lời (bản sao, chi nhánh phía sau chậm) thì không báo, thanh bên vẫn ghi đã chuyển | lần dò lỗi đầu | vàng | "Cổng vào localhost không trả lời (đã chuyển sang localhost:8012)" · lần lỗi đầu | — | dò lại được (trang vẫn ở cổng mới) | không | K13 |
 | D-19 | Không đọc được `api/overview` qua mọi cổng | ngay | đỏ | dải `#conn-error` như cũ, thêm "từ …" · ~trang thấy | — | đọc lại được | có | mọi nginx (hoặc bản sao đang mở thẳng) chết |
 | D-20 | Đọc đơn điệu: bản sao X trả lời cũ hơn số đang hiện | ngay | vàng | dải `#mono` như cũ ("Bản sao B trễ 5 sự kiện ở CN2"), thêm "từ ~…" | — | phản hồi của X được nhận lại | không | K11, K4 |
+| D-21 | `/cn<N>/api/status` có `db`, CSDL đang nối là primary và không có standby `streaming` (vòng 7) | 2 lần làm mới | async: vàng; sync: **đỏ** | async: "CSDL CN2 không có standby: mất primary lúc này là mất dữ liệu"; sync: "CSDL CN2 chạy đồng bộ mà không có standby: lượt bán đang treo (make sync-mode N=b MODE=async)" · ~trang thấy | — | standby `streaming` lại | không | K10a (sau promote, trước rejoin), K10b |
 
 **POS.** Dải trạng thái `#link` dưới tên chi nhánh thành danh sách cảnh báo (thay cho `#link` và `#note` cũ), xếp
 như dashboard; không có cảnh báo thì như cũ ("Mọi lượt bán đã gửi lên trung tâm" / "Đang gửi n sự kiện"). POS không
@@ -352,6 +355,7 @@ có nhật ký.
 | P-08 | `recovery.rejected_items` có lượt chưa được bấm **"Đã biết"** | đỏ | như vòng 6 ("Lượt ghi hộ bị TỪ CHỐI …") · `rejected_at` sớm nhất, nút "Đã biết" | — | **chỉ khi thu ngân bấm "Đã biết"** (lưu `localStorage` `minigo.rejectedAck` theo `request_id`); không tự tắt theo thời gian | có | K15 biến thể REJECTED |
 | P-09 | Dò cổng vào lỗi (như D-18; chuyển cổng vì chi nhánh treo, cổng vẫn trả lời thì không báo, đo ở K14) | vàng | "Cổng vào localhost không trả lời, đang dùng localhost:8012" · lần lỗi đầu | — | dò lại được | không | K13 |
 | P-10 | Mở thẳng chi nhánh mà không đọc được dữ liệu của chính nó | đỏ | "Không đọc được dữ liệu của chính chi nhánh …" · ~trang thấy | — | đọc lại được | chỉ mở thẳng | dừng `branch_db` khi mở `:8011` |
+| P-11 | `status.db`: primary không có standby `streaming` (vòng 7) | async: vàng; sync: đỏ | như D-21 ("CSDL chi nhánh không có standby …" / "… lượt bán đang treo …") · ~trang thấy | — | standby `streaming` lại | có | K10a, K10b |
 
 Kịch bản không phải lỗi nên **không** có cảnh báo nào: K1, K2, K5 (trễ, không mất gói), K6, K12. Thời gian hiện, tắt đo
 được ghi ở `docs/tests.md`.
@@ -370,6 +374,7 @@ giây tính từ lúc gây lỗi, đo 27/11/2026, 3 node một máy):
 | K13 | "Cổng vào localhost không trả lời, đã chuyển sang localhost:8012" (1) | POS qua cổng: cùng cảnh báo | 5 giây sau khi bật nginx A (dò cổng); trang vẫn ở cổng mới |
 | K14 | Pause: "CN2 nghi ngờ" (12), đỏ "CN2 mất liên lạc (2/3 bản sao)" (20); unpause: "CN2 đang phục hồi". Kill: nghi ngờ (8), mất liên lạc (12). Biến thể: "Bản sao A không nhận heartbeat CN2 (1/3 góc nhìn, kết luận vẫn sống)" (18) | POS qua cổng: đỏ "Không gọi được chi nhánh … Chưa ghi hộ" (4), "Đang ghi hộ qua trung tâm" (12); biến thể: "Bản sao máy A mất liên lạc" (3) | 5–10 giây sau `unpause`, `start`, `tre.sh off` |
 | K15 | "CN2 nghi ngờ" (8), đỏ "CN2 mất liên lạc" kéo theo "5 lượt ghi hộ chờ áp" (19) | POS: đỏ "Không gọi được chi nhánh" (3), "Đang ghi hộ qua trung tâm (bản sao A): 5 lượt chờ" (18) | ~9 giây sau `start`; RECOVERING dưới 2 giây nên có lần không kịp hiện "đang phục hồi" |
+| K10a, K10b | Mất primary CN2: "CN2 nghi ngờ" nếu promote chậm quá ~8 giây (đo: SUSPECT 2 giây, không tới OFFLINE vì promote xong ở giây 10); sau promote, trước rejoin: vàng "CSDL CN2 không có standby: mất primary lúc này là mất dữ liệu" (D-21). Dừng standby ở chế độ đồng bộ: **đỏ** "… chạy đồng bộ mà không có standby: lượt bán đang treo" | POS: P-11 như D-21; lượt bán treo thì "Chưa rõ đã ghi chưa", giữ `request_id` | D-21, P-11 tắt 1–3 giây sau khi standby streaming lại |
 | K15 REJECTED | "CN2: 1 sự kiện chờ gửi lên Redpanda (relay không chạy?)" (15 giây sau khi giết relay); sau khi bật lại: đỏ "CN2: 1 lượt ghi hộ bị TỪ CHỐI khi áp lại (mã 11 ×10, tồn thật 2)" | POS: "n sự kiện chưa gửi" (10); đỏ "Lượt ghi hộ bị TỪ CHỐI …" kèm nút **Đã biết** | dashboard: 5 phút sau lượt bị từ chối; POS: khi bấm Đã biết |
 | D-15 | "Bản sao C không liên lạc được"; 60 giây sau khi chi nhánh bật lại: "CN2 phục hồi chưa đủ: chưa gom được ghi hộ từ bản sao C" | POS: "Phục hồi chưa đủ …" | 7 giây sau khi bật `replica_api` C |
 | P-10 | — | POS `:8011` khi dừng `branch_db`: đỏ "Không đọc được dữ liệu của chính chi nhánh" (5) | khi `branch_db` chạy lại |
@@ -595,6 +600,97 @@ nhánh: PT-07) và merge bằng đúng luật của sink và gossip (PT-10). Chi
   khớp trong lúc broker dừng. Bật lại: outbox về 0 sau 5 giây, sink đọc tiếp sau ~55 giây (như K7b), +5 sự kiện, dấu
   vân tay không đổi.
 
+### K10. Standby CSDL chi nhánh: mất primary, đồng bộ hay bất đồng bộ, fencing (vòng 7, PT-12)
+
+Mỗi node có hai Postgres chi nhánh: `branch_db` (lần đầu là primary) và `branch_db_standby` (streaming replication).
+Tên service không còn là vai trò sau khi promote: luôn xem `make db-status N=b`. Mở sẵn: POS CN2 qua cổng vào
+`http://localhost/cn2/`, dashboard `http://localhost/` tab Tổng quan. Bằng chứng bằng số:
+`sh scripts/k10.sh sell b <giây>` (bán liên tục, mỗi lượt một `request_id`, ghi vào `.k10-b.log`) và
+`sh scripts/k10.sh verify b` (đối chiếu với `stock_movement` trên primary hiện tại, rồi gửi lại các lượt lỗi với cùng
+`request_id` như POS).
+
+#### K10a. Mất primary rồi promote: không mất lượt bán nào đã báo thành công
+
+**Làm:**
+1. `make sync-mode N=b MODE=sync`; `make db-status N=b`: `branch_db` primary "chế độ sync", standby "streaming sync".
+2. `sh scripts/k10.sh sell b 70 &` (chạy nền).
+3. Khoảng giây 10: `make kill N=b S=branch_db` (primary chết). Ngay sau đó `make promote N=b`.
+4. Chờ hết đợt bán, `sh scripts/k10.sh verify b`.
+5. Đưa primary cũ về: `make rejoin N=b`; bật lại đồng bộ: `make sync-mode N=b MODE=sync`.
+
+**Thấy:**
+- `make promote` in 4 bước: fence `branch_db` (tắt tự khởi động lại, giết, ghi `minigo.fenced`), `pg_promote`
+  `branch_db_standby`, nhảy sequence, đặt bất đồng bộ. Lượt bán kế tiếp chạy trên primary mới, không ai sửa cấu hình.
+- `verify`: "Báo thành công: n; THIẾU: 0", "ĐẠT: không mất lượt bán nào đã báo thành công (PT-12)". Lượt báo lỗi lúc
+  chuyển (quá 5 giây) gửi lại thì "replayed (đã có, không trừ thêm)", "Dòng sổ cái trùng request_id: 0".
+- Outbox CN2 về 0 (relay đọc primary mới), 3 dấu vân tay khớp. `db-status`: `branch_db` "down (ĐÃ BỊ FENCE)",
+  `branch_db_standby` primary, timeline tăng 1. Dashboard, POS: vàng "CSDL CN2 không có standby" tới khi `rejoin`.
+
+**Nói:** Nhân bản đồng bộ: COMMIT chỉ trả lời khi standby đã ghi WAL xuống đĩa, nên mọi lượt đã báo thành công đều có
+ở standby; promote thì không mất gì (RPO = 0). Lượt bán đứt đúng lúc chuyển là "chưa rõ" (có thể đã ghi ở standby trước
+khi kết nối đứt): server trả 503 `db_unavailable`, POS giữ `request_id`, gửi lại thì không trừ hai lần (PT-08). Chi
+nhánh không đổi code để chuyển: chuỗi kết nối nhiều host `target_session_attrs=read-write` chỉ nhận host đang là
+primary. Promote quá 15 giây thì đa số kết luận OFFLINE, POS ghi hộ (K15), chi nhánh tự vào RECOVERING khi có CSDL
+lại: ghi hộ là lớp bảo vệ thứ hai.
+
+Đo ngày 28/11/2026 (3 node một máy, đồng bộ): bán 115 lượt trong 70 giây; giết primary 10:56:45, `make promote` lúc
+10:56:48 chạy 6,9 giây, lượt bán thành công kế tiếp 10:56:56 (**11 giây không bán được**, trong đó 3 giây "gõ lệnh");
+113 lượt báo thành công, **thiếu 0**; 2 lượt quá 5 giây thật ra đã ghi (`branch_api` chờ pool rồi ghi vào primary mới
+sau khi client bỏ cuộc), gửi lại cả 2 ra `replayed`, 0 dòng trùng. Kết luận đa số SUSPECT 2 giây, không OFFLINE. Outbox
+về 0, 3 dấu vân tay khớp. `make rejoin`: 6,2 giây, standby streaming.
+
+#### K10b. Đánh đổi đồng bộ / bất đồng bộ (PACELC)
+
+**Làm:**
+1. Độ trễ: `sh scripts/k10.sh sell b 20` ở chế độ bất đồng bộ, rồi `make sync-mode N=b MODE=sync` và chạy lại. Ghi p50,
+   p95 `elapsed_ms`.
+2. Đồng bộ mà mất standby: `make kill N=b S=branch_db_standby` (standby hiện tại), bán một lượt ở POS. Chờ 10 giây.
+   `make sync-mode N=b MODE=async`. `make start N=b S=branch_db_standby`.
+3. RPO > 0 ở bất đồng bộ: `make sync-mode N=b MODE=async`; cắt mạng standby để WAL không sang được
+   (`docker network disconnect minigo-b_default minigo-b-branch_db_standby-1`); `sh scripts/k10.sh sell b 4`;
+   `make kill N=b S=branch_db`; nối lại
+   (`docker network connect --alias branch_db_standby minigo-b_default minigo-b-branch_db_standby-1`); `make promote N=b`;
+   `sh scripts/k10.sh verify b`. Rồi `make rejoin N=b`. (Không dùng `docker pause` standby: kernel vẫn nhận WAL vào bộ
+   đệm TCP, `unpause` là standby đọc kịp, không mất gì.)
+
+**Thấy:**
+- Bước 1: đồng bộ chậm hơn vài phần mười mili giây ở một máy (hai Postgres cùng máy; máy thật xa nhau thì cộng thêm
+  RTT).
+- Bước 2: lượt bán **treo** (POS "Chưa rõ đã ghi chưa"), dải đỏ "CSDL CN2 chạy đồng bộ mà không có standby: lượt bán
+  đang treo". `MODE=async`: lượt đang treo xong ngay (200, một dòng sổ cái), dải đổi sang vàng; bật standby thì hết.
+- Bước 3: `verify` "THIẾU: n" (n = số lượt bán trong lúc cắt), "KHÔNG ĐẠT … đúng kỳ vọng khi async: RPO > 0". Ba bản sao
+  vẫn khớp nhau nhưng giữ n **sự kiện "ma"** (relay đã gửi trước khi primary chết): tồn ở trung tâm thấp hơn chi nhánh ở
+  các mã đó, tới lượt bán kế tiếp của từng mã (giới hạn ở `docs/spec.md` mục 6).
+
+**Nói:** PACELC: khi có phân vùng (mất standby), đồng bộ chọn C (quầy treo, không mất gì), bất đồng bộ chọn A (quầy
+bán tiếp, chấp nhận mất); khi bình thường, đồng bộ trả giá bằng độ trễ (L), bất đồng bộ chọn độ trễ thấp nhưng RPO > 0.
+MiniGo mặc định bất đồng bộ vì quy tắc lõi là quầy luôn bán được (PT-01); bật đồng bộ khi cần RPO = 0. Production
+thường chọn giữa: đồng bộ có tự hạ cấp (Patroni, mục 9 của `docs/spec.md`).
+
+Đo ngày 28/11/2026 (3 node một máy, 39 lượt mỗi chế độ): bất đồng bộ p50 **2,7 ms**, p95 4,3 ms; đồng bộ p50 **3,3 ms**,
+p95 5,7 ms. Dừng standby ở đồng bộ: lượt bán chưa trả lời sau 6 giây, `/api/status` `db.sync_mode = sync`,
+`standby.connected = false`; `MODE=async` thì lượt đó trả 200 ngay (một dòng sổ cái); bật standby: streaming sau ~1 giây.
+RPO > 0: cắt mạng standby, bán 7 lượt (đều 200), mất primary, promote: **thiếu 7**; 3 bản sao khớp nhau nhưng lệch chi
+nhánh ở 7 mã (ví dụ mã 2: chi nhánh 53, trung tâm 52); primary mới cấp `movement_id` từ 3358 (sau bước nhảy), lớn hơn
+mọi sự kiện ma (2358–2364), nên lượt bán kế tiếp của mã 2 ghi đè đúng; bán mỗi mã còn lệch một lượt thì khớp lại hết.
+
+#### K10c. Fencing: primary cũ bật lại không thành hai primary
+
+**Làm:** sau K10a (trước `rejoin`): `make start N=b S=branch_db`; `make db-status N=b`; bán một lượt ở POS.
+
+**Thấy:** container `branch_db` thoát ngay (`Exited (1)`), `docker logs minigo-b-branch_db-1`: "CSDL này đã bị FENCE …
+make rejoin". Lượt bán ghi vào primary mới. `make rejoin N=b` thì `branch_db` thành standby.
+
+**Nói:** Sau promote, primary cũ vẫn tự coi là primary; chuỗi nhiều host của libpq thử `branch_db` trước, nên nếu nó
+sống lại thì chi nhánh có thể ghi vào nó: hai primary (split-brain), lượt bán tách làm hai lịch sử. Vì vậy **fence
+trước, promote sau**: giết primary cũ, tắt tự khởi động lại, và ghi dấu vào chính volume của nó để mọi lần bật lại đều
+thoát (kể cả `make local-up` tạo lại container). Hai máy thật thì cần STONITH hoặc lease kèm fencing token.
+
+Đo ngày 28/11/2026: `make start` thì `Exited (1)` sau dưới 4 giây với thông báo fence; lượt bán kế tiếp `movement_id`
+1324 trên primary mới. `make local-up` lúc đang fence: node B báo "dependency failed to start" (các service đang chạy
+không bị đụng), compose tạo lại `branch_db` nhưng nó vẫn thoát vì file fence; `make rejoin` dừng container trước khi xoá
+dữ liệu.
+
 ### K11. Đọc đơn điệu: bản sao trễ không làm số lùi lại
 
 Mở sẵn: dashboard qua nginx `http://localhost/` (vệt served-by xen kẽ `A B C`).
@@ -795,7 +891,7 @@ nhánh RECOVERING ở giây 4, lượt thừa REJECTED, ONLINE ở giây 8,4; 3 
 | Làm sao biết dữ liệu hai nơi giống nhau? | Nhất quán cuối, dấu vân tay | Có mạng lại thì tự đồng bộ bù; so mã băm toàn bộ snapshot giữa các bản sao. |
 | Gửi lặp hai lần có trừ tồn hai lần không? | Lũy đẳng | Bản sao dùng khoá `(branch_id, movement_id)`; thấy rồi thì bỏ qua. Chi nhánh dùng `request_id`. |
 | Sao người dùng không cần biết IP từng máy? | Trong suốt vị trí | Nginx là cổng vào, tự chọn bản sao và chia tải; ba nginx giống hệt nhau nên vào máy nào cũng thấy cả hệ. |
-| Hệ có HA không? Còn điểm chết duy nhất nào? | Sẵn sàng cao, failover phía client, bộ phát hiện lỗi, đa số (quorum) | Bỏ được ở các tầng: broker là cụm 3 (K7a), bản sao trung tâm có 3 và nginx chia tải (K3), **cổng vào** có 3 nginx, trang đang mở tự chuyển cổng như `bootstrap.servers` của Kafka (K13). Phát hiện chi nhánh chết bằng timeout nên không phân biệt chậm với chết (K14); để không kết luận sai khi chỉ một bản sao mất liên lạc, chỉ coi OFFLINE khi **đa số 2/3 bản sao** cùng thấy (PT-13), bản sao bị cô lập chỉ "nghi ngờ". Còn lại: dữ liệu mỗi chi nhánh chỉ một bản chính (server chi nhánh chết thì quầy bán tiếp bằng ghi hộ qua trung tâm, K15; vòng 7 standby CSDL); trang mở mới khi cổng quen thuộc đã chết phải tự gõ cổng khác (production: DNS nhiều địa chỉ hoặc VIP). Một máy vẫn là một miền lỗi. |
+| Hệ có HA không? Còn điểm chết duy nhất nào? | Sẵn sàng cao, failover phía client, bộ phát hiện lỗi, đa số (quorum) | Bỏ được ở các tầng: broker là cụm 3 (K7a), bản sao trung tâm có 3 và nginx chia tải (K3), **cổng vào** có 3 nginx, trang đang mở tự chuyển cổng như `bootstrap.servers` của Kafka (K13). Phát hiện chi nhánh chết bằng timeout nên không phân biệt chậm với chết (K14); để không kết luận sai khi chỉ một bản sao mất liên lạc, chỉ coi OFFLINE khi **đa số 2/3 bản sao** cùng thấy (PT-13), bản sao bị cô lập chỉ "nghi ngờ". Còn lại: CSDL chi nhánh có standby nhưng chuyển primary bằng tay (`make promote`, K10a; trong lúc đó ghi hộ là lớp thứ hai, K15), primary và standby chung một máy; trang mở mới khi cổng quen thuộc đã chết phải tự gõ cổng khác (production: DNS nhiều địa chỉ hoặc VIP). Một máy vẫn là một miền lỗi. |
 | Chi nhánh sập thì sao? | Ghi hộ (hinted handoff, store-and-forward), RECOVERING, chọn A trong CAP | Quầy mở qua cổng vào vẫn bán (K15): đa số bản sao kết luận OFFLINE thì POS gửi lượt bán lên **một** bản sao, bản sao kiểm "tồn tạm tính" và giữ hộ. Chi nhánh bật lại ở RECOVERING, **tự kéo** ghi hộ về (bản sao không ghi vào CSDL chi nhánh), áp đúng một lần nhờ `request_id`, theo `handoff_id` (không dựa vào đồng hồ), xong mới bán mới (PT-14). Lượt không đủ tồn thật thành REJECTED và hiện trên POS, dashboard. Giá phải trả: mạng chia cắt thì hai nơi cùng ghi, có thể bán quá tồn, chỉ biết lúc áp lại; cách triệt để là lease kèm fencing token. |
 | Trung tâm sập thì cửa hàng có sập không? | Tách rời qua broker | Chi nhánh và trung tâm nói chuyện qua Redpanda, không cần chạy cùng lúc. |
 | Redpanda gặp sự cố thì xử lý thế nào? | Phòng, chống, phục hồi | **Phòng**: cụm 3 broker, RF=3, mất 1 broker tự bầu leader mới (K7a). **Chống**: mất đa số thì quầy vẫn bán, outbox giữ sự kiện, POS và dashboard báo "đồng bộ dừng từ HH:MM:SS" (K7b). Mất đa số quá 15 giây thì bản sao **đối soát thẳng với chi nhánh** qua API (chỉ đọc), số tồn vẫn đúng (K9). **Phục hồi**: có lại đa số thì relay gửi bù, sink đọc tiếp từ offset, không ai làm gì (K7b, K7c). Mất hẳn dữ liệu broker: số tồn dựng lại từ bản sao khác (gossip, K8) hoặc từ chi nhánh (đối soát, K9); chỉ mất nhật ký các sự kiện chưa kịp đọc. Redpanda là đường nhanh, không phải nguồn sự thật: nguồn sự thật là sổ cái chi nhánh. |
@@ -840,6 +936,10 @@ nhánh RECOVERING ở giây 4, lượt thừa REJECTED, ONLINE ở giây 8,4; 3 
 | Nginx lỗi khởi động, báo `Chưa đặt REPLICA_C` hoặc `Chưa đặt GATEWAYS` | File `.env` cũ, chưa có khối `REPLICA_*`, `BRANCH_*`, `GATEWAYS` | Chép lại từ `infra/env/may-<x>.env` |
 | Log nginx có `replica-b could not be resolved` | Node B chưa chạy hoặc đang bị `make cut`; nginx vẫn chạy (phân giải động), đường tới B trả 502 | Không cần làm gì: node B có lại thì trong ≤ 5 giây nginx tự phân giải lại |
 | Cột Gossip ghi "lỗi từ …" với một bản sao; mất broker mà không thấy "đang đối soát" | Bản sao không gọi được bản sao kia (`REPLICA_URLS`, cổng 8000) hoặc chi nhánh (`BRANCH_URL`, cổng 8001) | `curl http://<IP>:8000/api/digest`, `curl http://<IP>:8001/api/snapshot` từ máy đó; kiểm `BRANCH_URL` = IP overlay của chính máy chi nhánh; xem `sync_peers` trong `/api/digest` (trường `last_error`) |
+| `Chưa đặt DB_PASSWORD` | Máy thật: `.env` cũ hoặc chưa điền hai dòng mật khẩu (vòng 7) | Điền `DB_PASSWORD`, `REPLICATION_PASSWORD` vào `.env` (mẫu `infra/env/secrets.env.example`) |
+| Một máy: `make local-up` báo "Volume CSDL cũ còn đó" | Lên từ bản trước vòng 7: volume khởi tạo với mật khẩu cũ, chưa có user `replicator` | `make local-reset` một lần (xoá dữ liệu demo) |
+| `make local-up` báo `dependency failed to start: container minigo-b-branch_db-1 exited (1)` | `branch_db` đã bị fence sau `make promote` (K10c) | `make rejoin N=b` rồi chạy lại |
+| `password authentication failed for user "app"` | Đã xoá `infra/env/local-secrets.env` mà volume cũ còn | `make local-reset` |
 | Sửa `db/*.sql` không thấy tác dụng | Script khởi tạo chỉ chạy khi volume trống | `make reset` trên **mọi máy** |
 
 **Làm lại từ đầu:** chạy `make reset` trên **tất cả** các máy (cụm broker chờ đủ 3 máy rồi mới lập).
@@ -862,6 +962,12 @@ Lệnh make (chạy từ gốc repo, trong Git Bash hoặc shell Linux/macOS; đ
 | `make cut N=b`, `make heal N=b` | Một máy: rút / cắm lại mạng node B |
 | `make pause N=b S=branch_api`, `make unpause N=b S=branch_api` | Một máy: tạm dừng / chạy tiếp một container (`docker pause`: "chậm", vẫn sống), K13, K14 |
 | `make kill N=b S=branch_api`, `make start N=b S=branch_api` | Một máy: giết (`docker kill`: "chết") / bật lại một container, K13, K14 |
+| `make db-status N=b` | Vai trò hai CSDL chi nhánh của node (primary/standby, bị fence), chế độ sync/async, standby đang streaming, độ trễ, timeline (vòng 7). Máy thật: bỏ `N` |
+| `make sync-mode N=b MODE=sync` / `MODE=async` | Bật / tắt nhân bản đồng bộ trên primary hiện tại (PT-12, K10b). Mặc định async |
+| `make promote N=b` | Fence primary cũ rồi nâng standby thành primary (K10a, K10c) |
+| `make rejoin N=b` | Đưa CSDL đã bị fence quay lại làm standby (`pg_basebackup` từ primary mới; xoá dữ liệu cũ của nó) |
+| `make backup N=b` | `pg_dump` primary hiện tại vào `backups/<node>-<giờ>.dump` (không commit) |
+| `sh scripts/k10.sh sell b 60`, `sh scripts/k10.sh verify b` | Bán liên tục ghi `request_id` vào `.k10-b.log`; đối chiếu với `stock_movement` sau promote (K10a, K10b) |
 
 Các lệnh `up`, `down`, `reset`, `ps`, `logs` đọc `.env` ở gốc repo; dùng file khác: `make up ENV_FILE=infra/env/may-b.env`.
 

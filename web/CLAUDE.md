@@ -7,8 +7,9 @@ trong image: sửa xong phải build lại, `make local-up` hoặc `make up`).
   (`@pos_page`, vòng 6, file mount vào nginx nên sửa xong không cần build lại cho đường này). Gọi API bằng đường dẫn
   TƯƠNG ĐỐI (`api/inventory`, không có `/` đầu), vì nginx mở trang này dưới tiền tố `/cn2/`. Dạng phiếu: chế độ Bán hàng / Nhập hàng, ô tìm (gõ mã rồi
   Enter như máy quét), phiếu với số lượng 1–1000 (đúng giới hạn `StockChange`). Thanh toán gửi từng dòng một
-  `api/sale` (hoặc `api/receipt`); mỗi dòng giữ một `request_id`: lỗi mạng thì giữ mã và khoá dòng để gửi lại không
-  trừ hai lần (PT-08), server từ chối thì bỏ mã (`settle`). Giữ: dải trạng thái gửi (từ vòng 6b là danh sách cảnh báo), chip RTT, câu "Xử lý tại chỗ trong
+  `api/sale` (hoặc `api/receipt`); mỗi dòng giữ một `request_id`: lỗi mạng hoặc mọi lỗi 5xx (vòng 7: 500, 503
+  `db_unavailable` lúc chuyển primary) thì giữ mã và khoá dòng để gửi lại không trừ hai lần (PT-08), server từ chối
+  (4xx) thì bỏ mã (`settle`). Giữ: dải trạng thái gửi (từ vòng 6b là danh sách cảnh báo), chip RTT, câu "Xử lý tại chỗ trong
   … ms", nút "Bán 20 đơn ngẫu nhiên" (mục Công cụ demo), vì kịch bản K1–K9 dùng. Tự kiểm: `?selftest=1`.
 - `dashboard.html`: dashboard trụ sở, do `replica_api` phục vụ. Thanh bên (menu, bản sao trả lời, đồng bộ tóm tắt,
   selftest) và bốn tab `#tong-quan` (ô số liệu, bảng chi nhánh, cần đặt thêm hàng), `#ton-kho` (tìm, lọc dưới
@@ -54,7 +55,8 @@ trong image: sửa xong phải build lại, `make local-up` hoặc `make up`).
   `#sys-alert` ở Tổng quan; D-19 ở `#conn-error`, D-20 ở `#mono`. Dò cổng `probeGates` mỗi `GATE_PROBE_S` giây
   (`GET <cổng>/lb/gateways.json`). POS: `posAlerts(ctx, now, seen)` vẽ vào `#link` (thay cho `#note` cũ), "Đã biết" cho
   lượt ghi hộ bị từ chối (`loadAcked`, `ackRejected`, `localStorage` `minigo.rejectedAck`). Thêm cảnh báo: thêm dòng danh
-  mục, thêm `check` trong selftest, không gọi mạng trong hàm thuần.
+  mục, thêm `check` trong selftest, không gọi mạng trong hàm thuần. Vòng 7: D-21 (`standby:<N>`), P-11 (`standby`) từ
+  `status.db`: primary không có standby `streaming`; vàng khi async, đỏ khi sync (lượt bán treo).
 - Tab Sự kiện xếp theo lúc bản sao nhận (`received_at`), nên cột giờ cũng là lúc nhận, kèm ngày khi không phải hôm
   nay; giờ chi nhánh ghi nằm ở tooltip và truy vết.
 - `routers/*.py` trả trang với `Cache-Control: no-cache`: build lại image là trình duyệt thấy giao diện mới.

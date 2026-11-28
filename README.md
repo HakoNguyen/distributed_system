@@ -19,6 +19,7 @@ Tiến độ và thứ tự làm: [docs/plan.md](docs/plan.md).
 | Truy vết sự kiện | Bấm một sự kiện: mốc ở chi nhánh, ở broker (timestamp Kafka), ở từng bản sao (qua Redpanda hay vá bằng gossip, đối soát) | K12 |
 | Cổng vào không có điểm chết | Nginx ở mọi máy, cấu hình giống nhau; trang đang mở tự chuyển sang cổng khác khi cổng đang dùng chết (như `bootstrap.servers` của Kafka) | K13 |
 | Chi nhánh sập vẫn bán (ghi hộ) | POS ghi hộ lượt bán lên một bản sao khi đa số kết luận chi nhánh OFFLINE; chi nhánh khởi động lại ở RECOVERING, tự kéo về áp đúng một lần, theo thứ tự; lượt vượt tồn thật thành REJECTED và hiện trên POS, dashboard (PT-14) | K15 |
+| Mất primary CSDL chi nhánh (vòng 7) | Mỗi node có standby (streaming replication); `make promote` fence primary cũ rồi nâng standby, chi nhánh tự nối sang qua chuỗi nhiều host. Chế độ đồng bộ: không mất lượt bán nào đã báo thành công (PT-12); mặc định bất đồng bộ (quầy không treo khi standby chết, RPO > 0) | K10a, K10b, K10c |
 | Phát hiện lỗi theo đa số | Mỗi bản sao tự đánh giá chi nhánh ONLINE → SUSPECT → OFFLINE theo tuổi heartbeat; chỉ kết luận OFFLINE khi 2/3 bản sao cùng thấy (PT-13) | K14 |
 
 Dashboard có **sơ đồ topology sống**: 3 node, mỗi node chi nhánh, broker, bản sao; cạnh relay → cụm, cụm → sink,
@@ -30,7 +31,8 @@ Mọi máy chạy cùng một file compose; máy nào chạy gì do file `.env` 
 
 | Container | Cổng | Máy | Vai trò |
 |---|---|---|---|
-| `branch_db` | | mọi máy | PostgreSQL của chi nhánh: tồn, sổ cái, outbox |
+| `branch_db` | | mọi máy | PostgreSQL của chi nhánh: tồn, sổ cái, outbox. Lần đầu là primary |
+| `branch_db_standby` | | mọi máy | Standby của CSDL chi nhánh (vòng 7). Tên service không còn là vai trò sau `make promote`: xem `make db-status` |
 | `branch_api` | 8001 | mọi máy | FastAPI `ROLE=branch`: màn hình POS, bán, nhập; gửi heartbeat; khởi động ở RECOVERING, tự kéo ghi hộ từ các bản sao |
 | `relay` | | mọi máy | Đẩy outbox lên cụm Redpanda, ghi trạng thái gửi cho POS |
 | `replica_db` | | mọi máy | PostgreSQL của bản sao: bảng tồn toàn chuỗi dựng từ sự kiện |
@@ -43,13 +45,14 @@ Mọi máy chạy cùng một file compose; máy nào chạy gì do file `.env` 
 
 ```
 docs/      đặc tả, CSDL, API, kịch bản demo, kế hoạch (nguồn sự thật)
-db/        SQL khởi tạo: product.sql (dùng chung), branch.sql, replica.sql
+db/        SQL khởi tạo: product.sql (dùng chung), branch.sql, replica.sql; replication.sh, pg-start.sh (standby, fencing)
 common/    cấu hình, pool CSDL, model
 api/       main.py, routers/ (mỏng), services/ (SQL và quy tắc), workers/ (relay, sink, heartbeat, gossip, recovery)
 web/       pos.html, dashboard.html (HTML + JS thuần, không build; dashboard tự kiểm bằng ?selftest=1)
 infra/     compose.yml, compose.local.yml (3 node một máy), compose.test.yml, nginx/, env/ (máy thật, local)
 tests/     pytest trên PostgreSQL thật, chạy trong container
-scripts/   tre.sh: giả lập độ trễ mạng trong container; net.sh: 3 node một máy, cut/heal
+scripts/   tre.sh: giả lập độ trễ mạng trong container; net.sh: 3 node một máy, cut/heal;
+           db.sh: standby (promote, rejoin, sync-mode, backup, db-status); k10.sh: bán liên tục và đối chiếu (K10)
 ```
 
 ## Chạy
@@ -57,7 +60,8 @@ scripts/   tre.sh: giả lập độ trễ mạng trong container; net.sh: 3 nod
 Cần Docker Desktop và một mạng overlay (Tailscale hoặc ZeroTier) nối các máy; chi tiết ở
 [docs/demo.md](docs/demo.md) mục 1.
 
-1. Trên mỗi máy, chép file env của máy đó thành `.env` ở gốc repo, rồi điền IP overlay thật:
+1. Trên mỗi máy, chép file env của máy đó thành `.env` ở gốc repo, rồi điền IP overlay thật và hai mật khẩu
+   `DB_PASSWORD`, `REPLICATION_PASSWORD` (chữ và số; mẫu `infra/env/secrets.env.example`; `.env` không commit):
    `cp infra/env/may-a.env .env` (máy B: `may-b.env`, máy C: `may-c.env`).
 2. Trên cả ba máy: `make up` (cụm broker lập khi đủ ba máy). Đã chạy bản một broker trước đó thì `make reset`.
 3. Trên máy bất kỳ mở http://localhost/ (dashboard qua cổng vào của máy đó), http://localhost:8001 (POS CN1 trên máy A).
@@ -69,12 +73,13 @@ Cần Docker Desktop và một mạng overlay (Tailscale hoặc ZeroTier) nối 
 | `make down` | Dừng, giữ dữ liệu |
 | `make reset` | Xóa dữ liệu và dựng lại từ đầu |
 | `make ps`, `make logs S=relay` | Trạng thái, log |
+| `make db-status`, `make sync-mode MODE=sync\|async`, `make promote`, `make rejoin`, `make backup` | Standby CSDL chi nhánh (vòng 7; một máy thêm `N=<node>`): xem vai trò, bật/tắt đồng bộ, nâng standby khi mất primary, đưa primary cũ về làm standby, `pg_dump` vào `backups/` |
 
 **Chỉ có một máy:** `make local-up` dựng 3 node (A, B, C) trên cùng máy, nối nhau qua docker network `minigo-wan`
-thay cho mạng overlay; không cần `.env`. Mở http://localhost/ (cổng vào A; B, C ở 8012, 8022), POS CN1/CN2/CN3 ở cổng 8001/8011/8021,
+thay cho mạng overlay; không cần `.env` (mật khẩu CSDL tự sinh lần đầu vào `infra/env/local-secrets.env`, không commit). Mở http://localhost/ (cổng vào A; B, C ở 8012, 8022), POS CN1/CN2/CN3 ở cổng 8001/8011/8021,
 dashboard bản sao A/B/C ở 8000/8010/8020. `make cut N=b` rút mạng node B, `make heal N=b` cắm lại;
 `make local-down`, `make local-reset` (bắt buộc một lần khi lên từ bản một broker, và khi lên vòng 4: thêm cột
-`event_log.kafka_ts`, `sink_stats.brokers_up`, topic `LogAppendTime`; và khi lên vòng 5: bảng `peer_view`, mạng `minigo-wan` có IP cố định). Dừng một broker cho K7:
+`event_log.kafka_ts`, `sink_stats.brokers_up`, topic `LogAppendTime`; và khi lên vòng 5: bảng `peer_view`, mạng `minigo-wan` có IP cố định; và khi lên vòng 7: standby, user `replicator`, mật khẩu mới). Dừng một broker cho K7:
 `docker stop minigo-b-redpanda-1`; K13, K14: `make pause|unpause|kill|start N=<x> S=<service>`. Chi tiết: [docs/demo.md](docs/demo.md) mục 3, phần "Chạy trên một máy".
 
 Không có `make` thì dùng thẳng `docker compose up -d --build`: file `.env` đã chỉ tới `infra/compose.yml`
@@ -89,7 +94,7 @@ Mỗi vòng trong [docs/plan.md](docs/plan.md) đi bốn bước bằng lệnh d
 | Lệnh | Việc làm |
 |---|---|
 | `make test` | pytest trong container, trên CSDL test riêng; chỉ cần Docker. Một thư mục: `make test T=tests/replica` |
-| `make config` | Kiểm tra file compose hợp lệ với env mẫu; với 3 node một máy: cổng không trùng, đủ alias, nginx đủ địa chỉ; cụm 3 broker ở mọi file env; `REPLICA_URLS`, `BRANCH_URL` cho gossip và đối soát; nginx ở mọi node, `GATEWAYS`, IP cố định trên `minigo-wan` |
+| `make config` | Kiểm tra file compose hợp lệ với env mẫu; với 3 node một máy: cổng không trùng, đủ alias, nginx đủ địa chỉ; cụm 3 broker ở mọi file env; `REPLICA_URLS`, `BRANCH_URL` cho gossip và đối soát; nginx ở mọi node, `GATEWAYS`, IP cố định trên `minigo-wan`; vòng 7: mỗi node có standby, chuỗi kết nối nhiều host, mọi service có healthcheck, giới hạn RAM/CPU và log, không còn mật khẩu viết cứng, file bí mật không bị track |
 | `make check` | `config` + `test`; chạy trước khi báo xong một vòng |
 
 Quy ước code và làm việc với AI: [CLAUDE.md](CLAUDE.md). Quy ước kiểm thử: [docs/tests.md](docs/tests.md).

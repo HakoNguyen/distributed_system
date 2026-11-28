@@ -36,7 +36,9 @@ code, không sửa kỳ vọng.
   `?selftest=1` (vòng 5 thêm: chọn cổng vào `gateList`, `nextGate`; POS `posPrefix`, `apiUrl`; trạng thái chi nhánh
   theo `verdict`; `systemIssues` báo chi nhánh OFFLINE; vòng 6 thêm: POS `posMode`, `branchFromPrefix`, `settle` giữ
   `request_id` khi `branch_recovering`, `branch_not_offline`, 502; dashboard `handoffTotals`, `handoffText`, "Đang phục
-  hồi", `systemIssues` báo phục hồi và ghi hộ chờ áp): mở `http://localhost/?selftest=1` hoặc `http://localhost/cn2/?selftest=1`, thanh bên / dưới phiếu
+  hồi", `systemIssues` báo phục hồi và ghi hộ chờ áp; vòng 6b thay `systemIssues` bằng danh mục cảnh báo: dashboard
+  `alertsFrom`, `sortAlerts`, `trackAlerts` mỗi dòng D-01..D-20 một kiểm, gộp hệ quả, chống nháy, `hold`/`ttl`, nhật ký;
+  POS `posAlerts` P-01..P-10, "Đã biết" `loadAcked`/`ackRejected`): mở `http://localhost/?selftest=1` hoặc `http://localhost/cn2/?selftest=1`, thanh bên / dưới phiếu
   ghi "Selftest: n/n đạt" (và in ra console). **Chạy tay, không nằm trong `make check`.** Phần hiển thị kiểm bằng kịch bản chạy tay K1–K9, K11, K12. Phần server phục vụ truy vết
   (`/api/trace`, `/api/movement/{movement_id}`, `kafka_ts`, `brokers_up`, `last_movement`) có pytest như mọi phần khác.
 
@@ -147,3 +149,28 @@ giữ số cũ "Bản sao B trễ 5 sự kiện ở CN2", 0 lần lùi phiên b�
 chuyển sang `localhost:8012` sau 2 giây, POS cũng chuyển; K14 pause, kill: SUSPECT ở giây 8–9, OFFLINE ở 16–17,
 `unpause`: RECOVERING tới giây 5,0, `start`: RECOVERING từ giây 1,3 tới 5,6. Cỡ 375px: bốn tab dashboard và POS
 (kể cả dải ghi hộ bị từ chối) không tràn ngang.
+
+Vòng 6b `web/failure-alerts` (27–28/11/2026, 3 node một máy): selftest dashboard 78/78, POS 35/35 (Edge headless; 4 kiểm
+`systemIssues` cũ viết lại thành kiểm `alertsFrom` cùng ý); `make check` 131 test xanh (không đổi server). Cỡ 375px: bốn tab
+dashboard (có dải cảnh báo dài và nhật ký) và POS (có nút "Đã biết") rộng đúng 375px. Chạy tay K1–K15 bằng Edge headless
+điều khiển qua DevTools, mỗi trang một tiến trình (tab nền trong cùng tiến trình bị hãm hẹn giờ), lấy mẫu mỗi giây; giây
+tính từ lúc gây lỗi. K1, K2 (bán ở CN1, CN2), K5 (`tre.sh` 300 ms), K6 (phát lại): không cảnh báo nào. K3: "Bản sao B
+không liên lạc được" giây 6, "CN2 nghi ngờ" 11, "Máy B mất liên lạc" 15 (gộp bản sao, CN2, broker, gossip); `:8010`:
+"Bản sao B không đọc được Redpanda; đang đối soát" 23, gossip B → A, B → C 17–25; POS `:8011`: bản sao A, C mất liên lạc
+6–8, outbox 7, relay lỗi 11. K4: "Máy B" tắt 2–3 giây sau `heal`, cảnh báo lẻ của từng kênh tắt trong ≤ 15 giây, POS hết
+sau ~10 giây. K7a: "Broker B không chạy" giây 43, tắt 7 giây sau khi bật. K7b: "Cụm Redpanda mất đa số; đang đối soát"
+giây 17, POS outbox 11, relay lỗi 15; bật lại: POS hết sau 9 giây, dashboard sau ~59 giây (sink đọc lại chậm). K9: như
+K7b (cụm giây 23, tắt ~52 giây sau khi bật). K7c: qua cổng 8012 "Máy A mất liên lạc" giây 14; qua cổng A "Bản sao A không
+đọc được Redpanda" 17, "CN1 gửi lên Redpanda lỗi" 27; hết ≤ 15 giây sau `heal`. K8/K11: "Sink bản sao B dừng" 14, dải
+"Bản sao B trễ 5 sự kiện ở CN2" 10, tắt 5 giây sau khi bật sink. K13: "Cổng vào localhost không trả lời, đã chuyển sang
+localhost:8012" giây 1, tắt 5 giây sau khi bật nginx A. K14: pause nghi ngờ 12, mất liên lạc 20, unpause đang phục hồi
+rồi hết sau 5 giây; kill nghi ngờ 8, mất liên lạc 12, POS chờ 4, ghi hộ 12, start hết sau 10 giây; biến thể "Bản sao A
+không nhận heartbeat CN2" 18, tắt 5 giây sau `tre.sh off`. K15: POS chờ 3, ghi hộ 18; dashboard mất liên lạc kéo theo "5
+lượt ghi hộ chờ áp" 19; hết 9 giây sau `start` (RECOVERING dưới 2 giây, không kịp hiện). K15 REJECTED: "1 sự kiện chờ
+gửi (relay không chạy?)" 15 giây sau khi giết relay; sau khi bật lại "1 lượt ghi hộ bị TỪ CHỐI" (dashboard, tắt sau 5
+phút) và POS kèm "Đã biết" (tắt khi bấm, lưu `request_id`). D-15: "CN2 phục hồi chưa đủ" 66 giây sau khi chi nhánh bật
+lại (mốc 60 giây), tắt 7 giây sau khi bật bản sao C. P-10: 5 giây. Ngưỡng sửa sau khi đo (đã thêm kiểm): mất broker và
+relay lỗi chờ 15 giây (bầu leader 6–10 giây), broker không chạy chờ 30 giây (metadata bỏ sót broker còn sống 6 và 22
+giây), cảnh báo bị gộp tắt ngay và nhật ký ghi "gộp vào", cùng sự cố bật lại trong 10 giây nối dòng nhật ký cũ, chuyển
+cổng chỉ báo khi dò cổng lỗi (K14 pause), P-04 không hiện khi mở thẳng. Chưa đo riêng K12 (không gây lỗi). Số đo K3 lần
+đầu, K9, K15, D-15 lấy ở bản build trước các lần sửa ngưỡng này (K9 nay giống K7b).

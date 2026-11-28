@@ -80,7 +80,17 @@
   #mono b { font-weight: 700; }
   #sys-alert { background: var(--alert-bg); color: var(--alert); margin-bottom: 0; }
   #sys-alert.warn { background: var(--pending-bg); color: #6B4300; }
-  #sys-alert a { color: inherit; font-weight: 600; }
+  #sys-alert a { color: inherit; font-weight: 600; margin-left: .4rem; }
+  #sys-alert.muted { background: var(--paper); color: var(--muted); font-weight: 400; }
+  #sys-alert ul { margin: .45rem 0 0; padding: 0; list-style: none; }
+  #sys-alert li { padding: .3rem 0 .3rem .8rem; border-left: 3px solid var(--alert); margin-top: .25rem; color: var(--alert); overflow-wrap: anywhere; }
+  #sys-alert li.warn { border-left-color: var(--pending); color: #6B4300; }
+  #sys-alert li small { font-weight: 400; opacity: .85; }
+  #sys-alert li small.kids { display: block; }
+  #sys-alert p.direct { margin: .4rem 0 0; font-size: .85rem; font-weight: 400; color: var(--muted); }
+  #incident-clear { margin-left: .5rem; font-size: .8rem; padding: .15rem .55rem; border: 1px solid var(--rule); border-radius: 6px; background: var(--card); cursor: pointer; }
+  #incidents td.name { white-space: normal; min-width: 14rem; }
+  #incidents b.warn { color: var(--pending); }
   .card { background: var(--card); border: 1px solid var(--rule); border-radius: 12px; }
   .card-head { display: flex; align-items: baseline; justify-content: space-between; gap: .8rem; flex-wrap: wrap; padding: .85rem 1.1rem; border-bottom: 1px solid var(--rule); }
   .card-head h2 { margin: 0; font-size: 1rem; font-weight: 600; }
@@ -349,6 +359,11 @@
       <div class="card-head"><h2>Các bản sao trung tâm</h2><span>mỗi máy một bản; gossip vá ô còn thiếu</span></div>
       <div class="table-wrap"><table id="replica-table"></table></div>
     </div>
+    <div class="card">
+      <div class="card-head"><h2>Nhật ký sự cố</h2><span>trên trình duyệt này; mới nhất trên cùng
+        <button type="button" id="incident-clear">Xoá nhật ký</button></span></div>
+      <div class="table-wrap"><table id="incidents"></table></div>
+    </div>
   </section>
 </main>
 
@@ -535,7 +550,7 @@ function renderMono() {
   el.style.display = "block";
   el.innerHTML = [...lagging].map(([n, l]) => `Bản sao <b>${esc(n)}</b> trễ ` +
     l.behind.map((x) => x.events ? `<b>${x.events}</b> sự kiện ở CN${x.branch}` : `<b>${x.cells}</b> ô ở CN${x.branch}`).join(", ") +
-    ` (trả lời lúc ${clock(l.at)})`).join("; ") +
+    ` (từ ~${clock(l.since)}, trả lời lúc ${clock(l.at)})`).join("; ") +
     `. Đang giữ số mới nhất đã thấy, không để số lùi lại (đọc đơn điệu).`;
 }
 
@@ -585,8 +600,10 @@ function renderBranches(nodes, sync, statuses, handoff = {}) {
     </tr>`;
   }).join("");
   el.innerHTML = `<thead><tr><th class="name">Chi nhánh</th><th class="name">Trạng thái</th><th>Chờ gửi</th><th>Biến động gần nhất</th><th>Ghi hộ</th></tr></thead><tbody>${body}</tbody>`;
+  branchWorst = worst;   // chấm tab Tổng quan: gộp thêm mức cảnh báo cao nhất ở refresh()
   setDot("tong-quan", worst);
 }
+let branchWorst = "ok";
 
 const VIEW_TXT = { ONLINE: "sống", SUSPECT: "nghi ngờ", OFFLINE: "mất" };
 const VIEW_CLS = { ONLINE: "", SUSPECT: "warn", OFFLINE: "bad" };
@@ -895,31 +912,243 @@ function handoffTotals(digests) {
   return out;
 }
 
-function systemIssues(peers, sync, now, nodes = [], handoff = {}) {
+// ---------------------------------------------------------------------------
+// Cảnh báo (vòng 6b, danh mục ở docs/demo.md mục 5 "Danh mục cảnh báo"). alertsFrom: trạng thái đang có -> cảnh báo,
+// mỗi sự cố một id cố định; hệ quả (parent) gộp vào chữ của cảnh báo gốc. trackAlerts: chống nháy, mốc "từ", nhật ký.
+// Hàm thuần (nhận `now`), kiểm bằng ?selftest=1. Mốc `since` (ms) lấy từ server khi có; null = trang tự thấy.
+// ---------------------------------------------------------------------------
+const ALERT_CONFIRM = 2;          // lần làm mới liên tiếp để bật (khi không có mốc server) và để tắt
+const FINGERPRINT_ALERT_S = 20;   // lệch dấu vân tay lâu hơn mốc gossip vá (≤ 20 giây)
+const OUTBOX_ALERT_S = 10;        // sự kiện nằm chờ trong outbox
+const REJECTED_ALERT_S = 300;     // lượt ghi hộ bị từ chối: đỏ 5 phút rồi tắt (còn ở cột Ghi hộ, nhật ký)
+const GATE_PROBE_S = 10;          // dò cổng vào
+const BROKER_ALERT_S = 15;        // sink mất broker: dưới mốc này là bầu leader (đo ở K3: 6–10 giây), như mốc đối soát
+const SEV = { warn: 1, bad: 2 };
+
+function alertsFrom(inp, now) {
+  const { direct, nodes = [], digests = {}, statuses = {}, gates, connError, lagging = {} } = inp;
   const out = [];
-  if (sync?.down) out.push({ s: "bad", text: "đồng bộ qua Redpanda đang dừng" });
-  // Kết luận đa số về chi nhánh (PT-13): có cả khi mở thẳng một bản sao (góc nhìn kéo qua /api/views)
-  nodes.forEach((n) => {
-    if (n.verdict === "OFFLINE") out.push({ s: "bad", text: `CN${n.branch_id} mất liên lạc${offCount(n)}` });
-    else if (n.recovering) out.push({ s: "warn", text: `CN${n.branch_id} đang phục hồi (áp ghi hộ, chưa nhận bán)` });
-    else if (n.verdict === "SUSPECT") out.push({ s: "warn", text: `CN${n.branch_id} nghi ngờ, chưa đủ đa số` });
+  const add = (a) => out.push({ since: null, kids: [], kidIds: [], ...a });
+  const t = (ts) => (ts ? Date.parse(ts) : null);
+  const minT = (xs) => { const v = xs.filter((x) => x != null); return v.length ? Math.min(...v) : null; };
+  const nodeOf = new Map(nodes.map((n) => [n.branch_id, n]));
+  const reach = Object.entries(digests).filter(([, d]) => d);
+  const running = reach.filter(([, d]) => !sinkStale(d, now));
+  const handoff = handoffTotals(digests);
+  // Đối soát (vòng 3): có lần kéo snapshot chi nhánh thành công sau mốc mất broker
+  const recText = (ds, lostAt) => {
+    const last = Math.max(0, ...ds.flatMap((d) => (d.sync_peers || [])
+      .filter((p) => p.channel === "reconcile" && p.last_ok_at && Date.parse(p.last_ok_at) >= lostAt).map((p) => Date.parse(p.last_ok_at))));
+    return last ? `; đang đối soát thẳng với chi nhánh (lần cuối ${clock(last)})` : "";
+  };
+
+  // D-02, D-03: đường đọc Redpanda. Mất đa số chỉ kết luận khi thấy ≥ 2 bản sao (một mình thì có thể chính nó bị cô lập)
+  const lostLong = (d) => d.broker_ok === false && now - Date.parse(d.broker_lost_at) >= BROKER_ALERT_S * 1000;
+  // Mọi sink đang chạy cùng mất broker và sink mất sớm nhất đã đủ BROKER_ALERT_S: báo cụm ngay, không báo lẻ (đo ở K7b)
+  const lostAll = !direct && reach.length >= 2 && running.length > 0 && running.every(([, d]) => d.broker_ok === false) &&
+                  running.some(([, d]) => lostLong(d));
+  if (lostAll) {
+    const since = minT(running.map(([, d]) => t(d.broker_lost_at)));
+    add({ id: "cluster", s: "bad", since, text: `Cụm Redpanda mất đa số, đồng bộ qua Redpanda dừng${recText(running.map(([, d]) => d), since)}` });
+  }
+  running.forEach(([x, d]) => {
+    if (!lostLong(d)) return;
+    add({ id: `sink-lost:${x}`, s: "bad", since: t(d.broker_lost_at), parent: "cluster", kid: `bản sao ${x} không đọc được Redpanda`,
+          text: `Bản sao ${x} không đọc được Redpanda${recText([d], t(d.broker_lost_at))}` });
   });
-  // Vòng 6: lượt ghi hộ còn chờ chi nhánh áp (lượt bị từ chối hiện ở bảng chi nhánh, cột Ghi hộ)
-  Object.entries(handoff).forEach(([b, h]) => { if (h.pending) out.push({ s: "warn", text: `CN${b}: ${h.pending} lượt ghi hộ chờ chi nhánh áp` }); });
-  if (!peers) return out;
-  const brokers = [1, 2, 3].map((id) => brokerState(peers.digests, id, now));
-  if (brokers.every((b) => b.s === "unknown")) out.push({ s: "bad", text: "không hỏi được cụm broker (mất đa số?)" });
-  else brokers.forEach((b, i) => { if (b.s === "bad") out.push({ s: "warn", text: `broker ${NODES[i]} không chạy (cụm còn ${brokers.filter((x) => x.s !== "bad").length}/3)` }); });
-  Object.entries(peers.digests).forEach(([n, d]) => { if (d === null) out.push({ s: "warn", text: `bản sao ${n} không liên lạc được` }); });
-  return out;
+  // D-04
+  reach.forEach(([x, d]) => {
+    if (sinkStale(d, now)) add({ id: `sink-off:${x}`, s: "warn", since: t(d.broker_checked_at),
+                                 text: `Sink bản sao ${x} dừng (kiểm lần cuối ${clock(d.broker_checked_at)})` });
+  });
+  // D-05: broker theo metadata các sink đọc được cụm; không sink nào hỏi được thì đã có D-02/D-03
+  if (!lostAll) {
+    const brokers = [1, 2, 3].map((id) => brokerState(Object.fromEntries(reach), id, now));
+    const up = brokers.filter((b) => b.s !== "bad").length;
+    brokers.forEach((b, i) => {
+      // hold: sau khi một broker dừng, metadata mọi sink có thể bỏ sót cả broker còn sống tới 22 giây (đo ở K7a)
+      if (b.s === "bad") add({ id: `broker:${NODES[i]}`, s: "warn", hold: 30000, parent: `machine:${NODES[i]}`, kid: `broker ${NODES[i]}`,
+                               text: `Broker ${NODES[i]} không chạy (cụm còn ${up}/3)` });
+    });
+  }
+  // D-01, D-06: bản sao không trả lời qua cổng vào; cùng máy với chi nhánh đa số kết luận OFFLINE thì là cả máy
+  if (!direct) NODES.forEach((x, i) => {
+    if (digests[x] !== null) return;
+    const cn = nodeOf.get(i + 1);
+    if (cn?.verdict === "OFFLINE")
+      add({ id: `machine:${x}`, s: "bad", since: t(cn.last_seen), text: `Máy ${x} mất liên lạc (bản sao ${x}, CN${i + 1})` });
+    const gossipLost = reach.flatMap(([, d]) => (d.sync_peers || []).filter((p) => p.channel === "gossip" && p.peer === x).map((p) => t(p.failing_since)));
+    add({ id: `replica:${x}`, s: "warn", since: minT(gossipLost), parent: `machine:${x}`, kid: `bản sao ${x}`,
+          text: `Bản sao ${x} không liên lạc được` });
+  });
+  // D-07: so với bản sao đã áp nhiều sự kiện nhất
+  const lead = direct ? null : reach.reduce((a, r) => (!a || r[1].processed > a[1].processed ? r : a), null);
+  if (lead) reach.forEach(([x, d]) => {
+    if (d.fingerprint === lead[1].fingerprint) return;
+    add({ id: `drift:${x}`, s: "warn", hold: FINGERPRINT_ALERT_S * 1000, parent: sinkStale(d, now) ? `sink-off:${x}` : "cluster",
+          kid: `bản sao ${x} lệch dữ liệu`, text: `Bản sao ${x} lệch dữ liệu so với bản sao ${lead[0]}, gossip chưa vá` });
+  });
+  // D-08: 2 lần gossip lỗi liên tiếp; bản sao bên kia không trả lời thì gộp vào D-06/D-01
+  reach.forEach(([x, d]) => (d.sync_peers || []).forEach((p) => {
+    if (p.channel !== "gossip" || !p.failing_since || now - Date.parse(p.failing_since) < 15000) return;
+    add({ id: `gossip:${x}>${p.peer}`, s: "warn", since: t(p.failing_since), parent: `replica:${p.peer}`,
+          kid: `gossip ${x} → ${p.peer} lỗi`, text: `Gossip ${x} → ${p.peer} lỗi` });
+  }));
+  // Chi nhánh: D-09..D-17
+  const ids = new Set([...nodes.map((n) => n.branch_id), ...Object.keys(statuses).map(Number), ...Object.keys(handoff).map(Number)]);
+  [...ids].sort((a, b) => a - b).forEach((b) => {
+    const n = nodeOf.get(b), st = statuses[b], h = handoff[b], m = `machine:${NODES[b - 1]}`;
+    const verdict = n?.verdict;
+    if (verdict === "OFFLINE")
+      add({ id: `branch:${b}`, s: "bad", since: t(n.last_seen), parent: m, kid: `CN${b} mất liên lạc`, text: `CN${b} mất liên lạc${offCount(n)}` });
+    else if (verdict === "SUSPECT")
+      add({ id: `branch:${b}`, s: "warn", since: t(n.last_seen), text: `CN${b} nghi ngờ, chưa đủ đa số` });
+    else if (verdict === "ONLINE") {
+      const lost = Object.entries(n.views || {}).filter(([, v]) => v === "SUSPECT" || v === "OFFLINE").map(([k]) => k);
+      if (lost.length) add({ id: `view:${b}`, s: "warn", hold: 10000,
+        text: `Bản sao ${lost.join(", ")} không nhận heartbeat CN${b} (${lost.length}/${Object.keys(n.views).length} góc nhìn, kết luận vẫn sống)` });
+    }
+    const rc = st?.recovery;
+    const recovering = rc?.state === "RECOVERING" || (!st && !!n?.recovering && verdict !== "OFFLINE");
+    if (recovering)
+      add({ id: `recover:${b}`, s: "warn", since: rc?.state === "RECOVERING" ? t(rc.since) : null, parent: m, kid: `CN${b} đang phục hồi`,
+            text: `CN${b} đang phục hồi (áp ghi hộ, chưa nhận bán)` + (rc?.state === "RECOVERING" ? `: đã áp ${rc.applied}, còn ${rc.pending}` : "") });
+    if (h?.pending)
+      add({ id: `handoff:${b}`, s: "warn", parent: recovering ? `recover:${b}` : `branch:${b}`, kid: `${h.pending} lượt ghi hộ chờ áp`,
+            text: `CN${b}: ${h.pending} lượt ghi hộ chờ chi nhánh áp` });
+    if (st) {
+      const recent = (rc?.rejected_items || []).filter((r) => now - Date.parse(r.rejected_at) <= REJECTED_ALERT_S * 1000);
+      if (recent.length) add({ id: `rejected:${b}`, s: "bad", since: minT(recent.map((r) => t(r.rejected_at))),
+        text: `CN${b}: ${recent.length} lượt ghi hộ bị TỪ CHỐI khi áp lại (` + recent.slice(0, 3).map((r) =>
+          `mã ${r.product_id} ×${r.qty}${r.reason === "insufficient_stock" ? `, tồn thật ${r.qty_on_hand}` : ", không có mã hàng"}`).join("; ") + ")" });
+      if (rc?.incomplete) add({ id: `incomplete:${b}`, s: "warn", since: t(rc.since),
+        text: `CN${b} phục hồi chưa đủ: chưa gom được ghi hộ từ bản sao ${(rc.unreachable || []).join(", ")}` });
+      // Relay lỗi dưới BROKER_ALERT_S là lúc cụm bầu leader mới (đo ở K7c): chưa báo, kể cả outbox của nó
+      const relayBad = !!st.relay?.failing_since;
+      const relayLong = relayBad && now - Date.parse(st.relay.failing_since) >= BROKER_ALERT_S * 1000;
+      if (relayLong) add({ id: `relay:${b}`, s: "bad", since: t(st.relay.failing_since), parent: "cluster", kid: `relay CN${b} gửi lỗi`,
+                          text: `CN${b} gửi lên Redpanda lỗi` });
+      if (st.outbox_backlog > 0 && st.oldest_unsent_s >= OUTBOX_ALERT_S && (!relayBad || relayLong))
+        add({ id: `outbox:${b}`, s: "warn", since: now - st.oldest_unsent_s * 1000, parent: relayBad ? `relay:${b}` : "cluster",
+              kid: `CN${b} còn ${st.outbox_backlog} sự kiện chờ gửi`, text: `CN${b}: ${st.outbox_backlog} sự kiện chờ gửi lên Redpanda (relay không chạy?)` });
+    } else if (st === undefined) {
+      // Mở thẳng một bản sao: không có /cn<N>/api/status, dùng heartbeat và digest của bản sao này
+      if (h?.rejected) add({ id: `rejected:${b}`, s: "bad", ttl: REJECTED_ALERT_S * 1000,
+                             text: `CN${b}: ${h.rejected} lượt ghi hộ bị TỪ CHỐI khi áp lại (xem cột Ghi hộ)` });
+      if (n?.outbox_backlog > 0 && verdict !== "OFFLINE")
+        add({ id: `outbox:${b}`, s: "warn", hold: OUTBOX_ALERT_S * 1000, text: `CN${b}: ${n.outbox_backlog} sự kiện chờ gửi lên Redpanda (theo heartbeat)` });
+    }
+  });
+  // D-18: cổng vào (dò mỗi GATE_PROBE_S giây, hoặc trang vừa chuyển khỏi cổng đó); mốc do trang thấy
+  Object.entries(gates?.down || {}).forEach(([g, at]) => add({ id: `gate:${g}`, s: "warn", since: at, approx: true,
+    text: `Cổng vào ${hostOf(g)} không trả lời` + (g === gates.lost ? `, đã chuyển sang ${hostOf(gates.list[gates.cur])}` : "") }));
+  // D-19, D-20: hiện ở dải riêng (#conn-error, #mono), vẫn vào nhật ký
+  if (connError) add({ id: "conn", s: "bad", since: connError, approx: true, where: "conn", text: "Không đọc được dữ liệu qua mọi cổng vào" });
+  Object.entries(lagging).forEach(([x, l]) => add({ id: `mono:${x}`, s: "warn", since: l.since ?? null, approx: true, where: "mono",
+    text: `Bản sao ${x} trễ ` + l.behind.map((y) => (y.events ? `${y.events} sự kiện ở CN${y.branch}` : `${y.cells} ô ở CN${y.branch}`)).join(", ") }));
+
+  // Gộp: hệ quả có cảnh báo cha (theo chuỗi parent) thì thành một dòng "kéo theo" của cảnh báo gốc
+  const byId = new Map(out.map((a) => [a.id, a]));
+  const roots = [];
+  out.forEach((a) => {
+    let r = a;
+    while (r.parent && byId.has(r.parent)) r = byId.get(r.parent);
+    if (r === a) roots.push(a); else { r.kids.push(a.kid ?? a.text); r.kidIds.push(a.id); }
+  });
+  return roots;
 }
-function renderSysAlert(issues) {
+
+const sortAlerts = (list) => [...list].sort((a, b) => (SEV[b.s] - SEV[a.s]) || ((a.since ?? Infinity) - (b.since ?? Infinity)));
+
+// state = { recs: { id: {...} }, log: [{ id, s, text, start, end, approx }] }. Trả cảnh báo đang hiện, đã xếp.
+function trackAlerts(state, alerts, now) {
+  const listed = new Set(alerts.map((a) => a.id)), present = new Set();
+  const absorbed = new Map(alerts.flatMap((a) => (a.kidIds || []).map((k) => [k, a.text])));   // hệ quả -> chữ cảnh báo gốc
+  for (const a of alerts) {
+    const r = state.recs[a.id] ||= { first: now, seen: 0, miss: 0, on: false, entry: null };
+    if (a.ttl && now - (a.since ?? r.first) > a.ttl) continue;   // hết hạn: coi như vắng, giữ r để không bật lại
+    present.add(a.id); r.seen++; r.miss = 0; r.a = a;
+    if (!r.on && (a.since != null || r.seen >= ALERT_CONFIRM) && now - r.first >= (a.hold || 0)) {
+      r.on = true;
+      // Cùng sự cố còn mở (trang tải lại giữa chừng) hoặc vừa tắt dưới 10 giây (chập chờn): nối tiếp dòng nhật ký đó
+      r.entry = state.log.findLast((e) => e.id === a.id && (e.end == null || now - e.end <= 10000));
+      if (r.entry) Object.assign(r.entry, { end: null, endApprox: false, into: undefined });
+      else {
+        r.entry = { id: a.id, s: a.s, text: a.text, start: a.since ?? r.first, end: null, approx: a.approx ?? a.since == null };
+        state.log.push(r.entry);
+        if (state.log.length > 200) state.log.splice(0, state.log.length - 200);
+      }
+    }
+    if (r.on && SEV[a.s] >= SEV[r.entry.s]) Object.assign(r.entry, { s: a.s, text: a.text });
+  }
+  for (const [id, r] of Object.entries(state.recs)) {
+    if (present.has(id)) continue;
+    r.miss++; r.seen = 0;
+    // Vừa thành hệ quả của cảnh báo gốc: tắt ngay, nhật ký ghi "gộp vào" (lỗi chưa hết)
+    if (r.on && absorbed.has(id)) { r.on = false; Object.assign(r.entry, { end: now, into: absorbed.get(id) }); }
+    if (r.on && r.miss >= ALERT_CONFIRM) { r.on = false; r.entry.end = now; }
+    if (!r.on && !listed.has(id)) delete state.recs[id];
+  }
+  // Dòng còn mở từ lần mở trang trước mà sự cố không còn: đóng lại (mốc kết thúc là lúc trang biết, ghi "~")
+  if (++state.ticks === ALERT_CONFIRM + 1)
+    state.log.forEach((e) => { if (e.end == null && !state.recs[e.id]?.on) Object.assign(e, { end: now, endApprox: true }); });
+  return sortAlerts(Object.values(state.recs).filter((r) => r.on)
+    .map((r) => ({ ...r.a, since: r.a.since ?? r.first, approx: r.a.approx ?? r.a.since == null })));
+}
+
+const hhmmss = (a) => `từ ${a.approx ? "~" : ""}${clock(a.since)}`;
+function renderSysAlert(active, direct) {
   const el = document.getElementById("sys-alert");
-  if (!issues.length) { el.style.display = "none"; return; }
+  const list = active.filter((a) => !a.where);
+  if (!list.length && !direct) { el.style.display = "none"; return; }
   el.style.display = "block";
-  el.className = issues.some((i) => i.s === "bad") ? "" : "warn";
-  el.innerHTML = `Hệ thống có sự cố: ${issues.map((i) => esc(i.text)).join("; ")}. ` +
-    `<a href="#he-thong" data-goto="he-thong">Xem tab Hệ thống</a>`;
+  el.className = list.some((a) => a.s === "bad") ? "" : list.length ? "warn" : "muted";
+  el.innerHTML = (list.length ? `<b>Hệ thống có ${list.length} sự cố</b> <a href="#he-thong" data-goto="he-thong">Xem tab Hệ thống</a><ul>` +
+    list.map((a) => `<li class="${a.s}"><span>${esc(a.text)}</span> <small>${hhmmss(a)}</small>` +
+      (a.kids.length ? `<small class="kids">kéo theo: ${a.kids.map(esc).join("; ")}</small>` : "") + `</li>`).join("") + `</ul>` : "") +
+    (direct ? `<p class="direct">Mở thẳng một bản sao: chỉ có cảnh báo theo góc nhìn của bản sao này; cổng vào, relay, phục hồi
+      và các bản sao khác cần mở qua cổng vào.</p>` : "");
+}
+
+// Nhật ký sự cố: localStorage của trình duyệt này (docs/spec.md mục 6); hỏng hoặc bị chặn thì chỉ giữ trong bộ nhớ
+const INCIDENTS = "minigo.incidents";
+function loadIncidents() {
+  try { const v = JSON.parse(localStorage.getItem(INCIDENTS)); return Array.isArray(v) ? v : []; } catch { return []; }
+}
+const alertState = { recs: {}, log: loadIncidents(), ticks: 0 };
+let savedLog = "";
+function renderIncidents() {
+  const s = JSON.stringify(alertState.log);
+  if (s === savedLog) return;
+  savedLog = s;
+  try { localStorage.setItem(INCIDENTS, s); } catch { /* chỉ giữ trong bộ nhớ */ }
+  const rows = [...alertState.log].reverse();
+  const dur = (e) => fmtMs((e.end ?? Date.now()) - e.start).replace(/^\+/, "");
+  document.getElementById("incidents").innerHTML = rows.length
+    ? `<thead><tr><th class="name">Mức</th><th class="name">Sự cố</th><th>Bắt đầu</th><th>Kết thúc</th><th>Kéo dài</th></tr></thead><tbody>` +
+      rows.map((e) => `<tr><td class="name"><span class="pill ${e.s}">${e.s === "bad" ? "đỏ" : "vàng"}</span></td><td class="name">${esc(e.text)}</td>` +
+        `<td>${e.approx ? "~" : ""}${when(e.start)}</td><td>${e.end == null ? `<b class="warn">đang diễn ra</b>` : (e.endApprox ? "~" : "") + when(e.end) +
+          (e.into ? `<br><small class="muted">gộp vào: ${esc(e.into)}</small>` : "")}</td>` +
+        `<td>${e.end == null ? "–" : dur(e)}</td></tr>`).join("") + `</tbody>`
+    : `<tbody><tr class="empty-row"><td>Chưa có sự cố nào từ lúc mở trang này trên trình duyệt này.</td></tr></tbody>`;
+}
+document.getElementById("incident-clear").addEventListener("click", () => {
+  alertState.log.splice(0, alertState.log.length, ...alertState.log.filter((e) => e.end == null));
+  renderIncidents();
+});
+
+// D-18: dò mọi cổng vào; lỗi thì ghi lúc lỗi đầu, trả lời lại thì xoá (cảnh báo tự tắt, trang vẫn ở cổng mới)
+const gateDown = {};
+async function probeGates() {
+  if (gates.length < 2) return;
+  await Promise.all(gates.map(async (g) => {
+    const ctl = new AbortController(), tm = setTimeout(() => ctl.abort(), 2000);
+    try {
+      const r = await fetch(`${g}/lb/gateways.json`, { cache: "no-store", signal: ctl.signal });
+      if (!r.ok) throw new Error(r.status);
+      delete gateDown[g];
+    } catch { gateDown[g] ??= Date.now(); } finally { clearTimeout(tm); }
+  }));
 }
 document.getElementById("sys-alert").addEventListener("click", (ev) => {
   const a = ev.target.closest("[data-goto]");
@@ -1114,6 +1343,7 @@ async function fetchOverview() {
     } catch (e) {
       if (i >= gates.length - 1 || (e.status && e.status < 502)) throw e;
       gateLost = gates[gi];
+      probeGates();   // cổng có thể vẫn sống mà bản sao phía sau chậm (đo ở K3): chỉ dò lỗi mới cảnh báo
       gi = nextGate(gates, gi);
       renderGate();
     }
@@ -1127,14 +1357,17 @@ async function tick() {
   try { await refresh(); } finally { busy = false; }
 }
 
+let connSince = null;   // D-19: lần đầu không đọc được overview qua mọi cổng
 async function refresh() {
   const err = document.getElementById("conn-error");
   let o = null;
   try {
     o = await fetchOverview();
     err.style.display = "none";
+    connSince = null;
   } catch (e) {
-    err.textContent = `Không đọc được dữ liệu (${e.message}). Nếu đang mở qua cổng vào, mọi cổng vào hoặc mọi bản sao có thể đều đang mất liên lạc; sẽ thử lại.`;
+    connSince ??= Date.now();
+    err.textContent = `Không đọc được dữ liệu từ ~${clock(connSince)} (${e.message}). Nếu đang mở qua cổng vào, mọi cổng vào hoặc mọi bản sao có thể đều đang mất liên lạc; sẽ thử lại.`;
     err.style.display = "block";
   }
   if (o) {
@@ -1146,7 +1379,7 @@ async function refresh() {
       renderSync(syncState(o.digest), o.digest);
       document.getElementById("updated").textContent = `cập nhật ${clock(Date.now())} · bản sao ${o.served_by}`;
     } else {
-      lagging.set(o.served_by, { behind: cmp.behind, at: Date.now() });
+      lagging.set(o.served_by, { behind: cmp.behind, at: Date.now(), since: lagging.get(o.served_by)?.since ?? Date.now() });
     }
     renderServed(o.served_by, !cmp.accept);
     renderMono();
@@ -1160,8 +1393,18 @@ async function refresh() {
     renderBranches(shown.nodes, sync, peers?.statuses, handoff);
     renderNodeTable(shown.nodes, sync, peers?.statuses);
     setDot("he-thong", worse(worse(renderTopology(peers, shown), replicaState), sync.down ? "bad" : "ok"));
-    renderSysAlert(systemIssues(peers, sync, Date.now(), shown.nodes, handoff));
   }
+  // Cảnh báo (vòng 6b): chạy cả khi chưa đọc được overview lần nào (D-19, D-18)
+  const now = Date.now();
+  const active = trackAlerts(alertState, alertsFrom({
+    direct: !peers, nodes: shown?.nodes ?? [], statuses: peers ? peers.statuses : {},
+    digests: peers ? peers.digests : shown ? { [shown.served_by]: shown.digest } : {},
+    gates: { list: gates, cur: gi, down: gateDown, lost: gateLost }, connError: connSince, lagging: Object.fromEntries(lagging),
+  }, now), now);
+  renderSysAlert(active, !peers && !!shown);
+  renderIncidents();
+  const top = active.filter((a) => !a.where).reduce((w, a) => worse(w, a.s), "ok");
+  if (shown?.nodes.length) setDot("tong-quan", worse(branchWorst, top));
 }
 
 // ---------------------------------------------------------------------------
@@ -1214,13 +1457,6 @@ function selftest() {
   check("K3: bản sao bị cô lập thấy OFFLINE một mình -> chỉ nghi ngờ", iso1.s === "warn" && iso1.label === "Nghi ngờ, chưa đủ đa số");
   check("K14 biến thể: riêng mình thấy OFFLINE, đa số ONLINE -> ok", branchState({ alive: false, state: "OFFLINE", verdict: "ONLINE" }, sync, undefined).s === "ok");
 
-  const sp = (a, b, c) => ({ digests: { A: a, B: b, C: c } });
-  check("đủ 3 broker, đủ bản sao -> không sự cố", systemIssues(sp(dg([1, 2, 3]), dg([1, 2, 3]), dg([1, 2, 3])), sync, now).length === 0);
-  const iss = systemIssues(sp(dg([1, 3]), dg([1, 3]), null), sync, now);
-  check("mất broker B, bản sao C chết -> hai sự cố", iss.length === 2 && iss[0].text.startsWith("broker B") && iss[1].text.includes("bản sao C"));
-  const cn = systemIssues(null, sync, now, [{ branch_id: 1, verdict: "ONLINE" }, { branch_id: 2, verdict: "OFFLINE", views: views("OFFLINE", "OFFLINE", "OFFLINE") }]);
-  check("đa số kết luận CN2 OFFLINE -> sự cố ở Tổng quan", cn.length === 1 && cn[0].s === "bad" && cn[0].text.includes("CN2") && cn[0].text.includes("3/3"));
-
   // Cổng vào (vòng 5): danh sách bắt đầu bằng cổng đang mở, bỏ trùng; hết lượt thì quay vòng
   const L = "http://localhost", B8 = "http://localhost:8012", C8 = "http://localhost:8022";
   const listed = `${L},${B8},${C8}`;
@@ -1235,9 +1471,244 @@ function selftest() {
   check("OFFLINE vẫn ưu tiên hơn recovering cũ", branchState({ alive: false, state: "OFFLINE", verdict: "OFFLINE", recovering: true, views: views("OFFLINE", "OFFLINE", null) }, sync, undefined).s === "bad");
   const tot = handoffTotals({ A: { handoff: { 2: { pending: 3, applied: 1, rejected: 0 } } }, B: { handoff: { 2: { pending: 2, applied: 0, rejected: 1 } } }, C: null });
   check("cộng số ghi hộ qua các bản sao, bỏ bản sao chết", tot[2].pending === 5 && tot[2].applied === 1 && tot[2].rejected === 1);
-  const hi = systemIssues(null, sync, now, [{ branch_id: 2, verdict: "ONLINE", recovering: true }], { 2: { pending: 5, applied: 0, rejected: 1 } });
-  check("dải sự cố: đang phục hồi và lượt chờ áp, không báo lượt đã từ chối", hi.length === 2 && hi[0].text.includes("phục hồi") && hi[1].text.includes("5 lượt"));
   check("chữ cột Ghi hộ", handoffText({ pending: 0, applied: 5, rejected: 1 }).s === "bad" && handoffText({ pending: 0, applied: 0, rejected: 0 }) === null);
+
+  // Vòng 6b: danh mục cảnh báo (docs/demo.md mục 5, "Danh mục cảnh báo"). alertsFrom: trạng thái -> cảnh báo gốc
+  // (id cố định, s, text, since = mốc server hoặc null, kids = hệ quả gộp, hold/ttl/where); trackAlerts: chống nháy,
+  // mốc trang thấy, nhật ký. Hàm chưa có thì kiểm trượt kèm lỗi, không làm hỏng các kiểm khác.
+  const T = (name, fn) => { try { check(name, !!fn()); } catch (e) { results.push([name, false, e.message]); } };
+  const ms = (s) => now - s * 1000;
+  const dgx = (o = {}) => ({ broker_checked_at: iso(1), broker_ok: true, broker_lost_at: null, brokers_up: [1, 2, 3], lag: 0,
+                             processed: 10, fingerprint: "aaaaaaaa", sync_peers: [], handoff: {}, ...o });
+  const nd = (id, verdict = "ONLINE", o = {}) => ({ branch_id: id, verdict, alive: verdict !== "OFFLINE", recovering: false,
+    views: { A: verdict, B: verdict, C: verdict }, last_seen: iso(verdict === "ONLINE" ? 1 : 20), outbox_backlog: 0, ...o });
+  const stx = (o = {}) => ({ outbox_backlog: 0, oldest_unsent_s: 0, sync_stuck: false, relay: { failing_since: null }, links: [],
+    recovery: { state: "ONLINE", since: iso(100), pending: 0, applied: 0, rejected: 0, incomplete: false, unreachable: [], rejected_items: [] }, ...o });
+  const GL = ["http://localhost", "http://localhost:8012", "http://localhost:8022"];
+  const inp = (o = {}) => ({ direct: false, served: "A", nodes: [nd(1), nd(2), nd(3)], digests: { A: dgx(), B: dgx(), C: dgx() },
+    statuses: { 1: stx(), 2: stx(), 3: stx() }, gates: { list: GL, cur: 0, down: {}, lost: null }, connError: null, lagging: {}, ...o });
+  const one = (list, id) => list.filter((a) => a.id === id).length === 1 ? list.find((a) => a.id === id) : null;
+  const gossipPeer = (peer, failAgo) => ({ channel: "gossip", peer, last_ok_at: iso(failAgo + 5), failing_since: iso(failAgo), cells_patched: 0 });
+
+  T("K1: hệ bình thường -> không cảnh báo nào", () => alertsFrom(inp(), now).length === 0);
+  T("D-01 máy B mất liên lạc: một cảnh báo đỏ, gộp bản sao B, CN2, broker B", () => {
+    const l = alertsFrom(inp({ digests: { A: dgx({ brokers_up: [1, 3] }), B: null, C: dgx({ brokers_up: [1, 3] }) },
+                               nodes: [nd(1), nd(2, "OFFLINE", { views: views("OFFLINE", null, "OFFLINE") }), nd(3)] }), now);
+    const a = one(l, "machine:B");
+    return l.length === 1 && a && a.s === "bad" && a.text.includes("Máy B") && a.since === ms(20) && a.kids.length >= 2;
+  });
+  T("D-02 cụm mất đa số: một cảnh báo đỏ, mốc mất broker sớm nhất, gộp relay CN1, CN2", () => {
+    const lost = (s) => dgx({ broker_ok: false, broker_lost_at: iso(s), brokers_up: null });
+    const bad = stx({ relay: { failing_since: iso(20) }, outbox_backlog: 5, oldest_unsent_s: 20 });
+    const l = alertsFrom(inp({ digests: { A: lost(30), B: lost(25), C: lost(28) }, statuses: { 1: bad, 2: bad, 3: stx() } }), now);
+    const a = one(l, "cluster");
+    return l.length === 1 && a && a.s === "bad" && a.since === ms(30) && a.kids.some((k) => k.includes("CN1")) && a.kids.some((k) => k.includes("CN2"));
+  });
+  T("D-02 K7b: mọi sink cùng mất broker, sink sớm nhất đủ 15 giây thì báo cụm ngay, không báo lẻ từng bản sao", () => {
+    const lost = (s) => dgx({ broker_ok: false, broker_lost_at: iso(s), brokers_up: null });
+    const l = alertsFrom(inp({ digests: { A: lost(16), B: lost(10), C: lost(12) } }), now);
+    return l.length === 1 && l[0].id === "cluster" && l[0].since === ms(16);
+  });
+  T("D-02 đang đối soát: ghi vào chữ của cảnh báo gốc", () => {
+    const rec = { channel: "reconcile", peer: "CN2", last_ok_at: iso(2), failing_since: null, cells_patched: 3 };
+    const lost = (s) => dgx({ broker_ok: false, broker_lost_at: iso(s), brokers_up: null, sync_peers: [rec] });
+    const l = alertsFrom(inp({ digests: { A: lost(30), B: lost(25), C: lost(28) } }), now);
+    return l.length === 1 && l[0].id === "cluster" && l[0].text.includes("đối soát");
+  });
+  T("D-03 mở thẳng bản sao B mất broker: đỏ, mốc broker_lost_at", () => {
+    const l = alertsFrom(inp({ direct: true, served: "B", digests: { B: dgx({ broker_ok: false, broker_lost_at: iso(20), brokers_up: null }) }, statuses: {} }), now);
+    const a = one(l, "sink-lost:B");
+    return a && a.s === "bad" && a.since === ms(20);
+  });
+  T("D-02/D-03 bầu leader (đo ở K3): sink mất broker dưới 15 giây thì chưa cảnh báo", () => {
+    const lost = (s) => dgx({ broker_ok: false, broker_lost_at: iso(s), brokers_up: null });
+    return alertsFrom(inp({ digests: { A: lost(8), B: lost(6), C: lost(9) } }), now).length === 0;
+  });
+  T("D-03 K7c qua cổng A: bản sao A không đọc được Redpanda, B và C không liên lạc (vàng), không thành mất đa số", () => {
+    const l = alertsFrom(inp({ digests: { A: dgx({ broker_ok: false, broker_lost_at: iso(20), brokers_up: null }), B: null, C: null },
+                               nodes: [nd(1), nd(2, "SUSPECT"), nd(3, "SUSPECT")] }), now);
+    return one(l, "sink-lost:A")?.s === "bad" && one(l, "replica:B")?.s === "warn" && one(l, "replica:C")?.s === "warn" && !one(l, "cluster");
+  });
+  T("D-04 sink B dừng: vàng, mốc kiểm lần cuối; lệch dấu vân tay gộp vào", () => {
+    const l = alertsFrom(inp({ digests: { A: dgx({ processed: 20 }), B: dgx({ broker_checked_at: iso(20), fingerprint: "bbbbbbbb" }), C: dgx({ processed: 20 }) } }), now);
+    const a = one(l, "sink-off:B");
+    return l.length === 1 && a && a.s === "warn" && a.since === ms(20);
+  });
+  T("D-05 broker B không chạy: vàng, cụm còn 2/3, chờ 30 giây (metadata các sink bỏ sót broker còn sống tới 22 giây, đo ở K7a)", () => {
+    const l = alertsFrom(inp({ digests: { A: dgx({ brokers_up: [1, 3] }), B: dgx({ brokers_up: [1, 3] }), C: dgx({ brokers_up: [1, 3] }) } }), now);
+    const a = one(l, "broker:B");
+    return l.length === 1 && a && a.s === "warn" && a.text.includes("2/3") && a.since === null && a.hold === 30000;
+  });
+  T("D-06 bản sao C không liên lạc: vàng, mốc gossip lỗi sớm nhất", () => {
+    const l = alertsFrom(inp({ digests: { A: dgx({ sync_peers: [gossipPeer("C", 12)] }), B: dgx({ sync_peers: [gossipPeer("C", 8)] }), C: null } }), now);
+    const a = one(l, "replica:C");
+    return l.length === 1 && a && a.s === "warn" && a.since === ms(12);
+  });
+  T("D-07 bản sao B lệch dấu vân tay khi sink chạy: vàng, chờ 20 giây", () => {
+    const l = alertsFrom(inp({ digests: { A: dgx({ processed: 20 }), B: dgx({ fingerprint: "bbbbbbbb" }), C: dgx({ processed: 20 }) } }), now);
+    const a = one(l, "drift:B");
+    return l.length === 1 && a && a.s === "warn" && a.hold === 20000;
+  });
+  T("D-08 gossip A→B lỗi quá 15 giây: vàng; mới 5 giây thì chưa", () => {
+    const l = alertsFrom(inp({ digests: { A: dgx({ sync_peers: [gossipPeer("B", 20)] }), B: dgx(), C: dgx() } }), now);
+    const n = alertsFrom(inp({ digests: { A: dgx({ sync_peers: [gossipPeer("B", 5)] }), B: dgx(), C: dgx() } }), now);
+    return one(l, "gossip:A>B")?.s === "warn" && one(l, "gossip:A>B").since === ms(20) && n.length === 0;
+  });
+  T("D-08 K3 mở thẳng bản sao B: gossip B→A, B→C lỗi hiện riêng", () => {
+    const l = alertsFrom(inp({ direct: true, served: "B", statuses: {}, digests: { B: dgx({ sync_peers: [gossipPeer("A", 20), gossipPeer("C", 20)] }) } }), now);
+    return !!one(l, "gossip:B>A") && !!one(l, "gossip:B>C");
+  });
+  T("D-09 đa số kết luận CN2 OFFLINE: đỏ, ghi 3/3, mốc last_seen", () => {
+    const l = alertsFrom(inp({ direct: true, served: "A", statuses: {}, digests: { A: dgx() },
+                               nodes: [nd(1), nd(2, "OFFLINE", { views: views("OFFLINE", "OFFLINE", "OFFLINE") })] }), now);
+    const a = one(l, "branch:2");
+    return l.length === 1 && a && a.s === "bad" && a.text.includes("CN2") && a.text.includes("3/3") && a.since === ms(20);
+  });
+  T("D-10 CN2 nghi ngờ: vàng, cùng mã sự cố với mất liên lạc", () => {
+    const a = one(alertsFrom(inp({ nodes: [nd(1), nd(2, "SUSPECT"), nd(3)] }), now), "branch:2");
+    return a && a.s === "warn" && a.text.includes("nghi ngờ");
+  });
+  T("D-11 K14 biến thể: riêng bản sao A không nhận heartbeat CN2, kết luận vẫn sống: vàng, chờ 10 giây", () => {
+    const a = one(alertsFrom(inp({ nodes: [nd(1), nd(2, "ONLINE", { views: views("OFFLINE", "ONLINE", "ONLINE") }), nd(3)] }), now), "view:2");
+    return a && a.s === "warn" && a.hold === 10000 && a.text.includes("A");
+  });
+  T("D-12 CN2 đang phục hồi: vàng, mốc recovery.since; ghi hộ chờ gộp vào", () => {
+    const st2 = stx({ recovery: { ...stx().recovery, state: "RECOVERING", since: iso(3), pending: 3, applied: 2 } });
+    const l = alertsFrom(inp({ nodes: [nd(1), nd(2, "ONLINE", { recovering: true }), nd(3)], statuses: { 1: stx(), 2: st2, 3: stx() },
+                               digests: { A: dgx({ handoff: { 2: { pending: 3, applied: 2, rejected: 0 } } }), B: dgx(), C: dgx() } }), now);
+    const a = one(l, "recover:2");
+    return l.length === 1 && a && a.s === "warn" && a.since === ms(3);
+  });
+  T("D-12 mở thẳng: phục hồi theo heartbeat, mốc trang thấy", () => {
+    const a = one(alertsFrom(inp({ direct: true, statuses: {}, digests: { A: dgx() }, nodes: [nd(2, "ONLINE", { recovering: true })] }), now), "recover:2");
+    return a && a.since === null;
+  });
+  T("D-13 ghi hộ chờ áp khi chi nhánh đã sống: vàng", () => {
+    const a = one(alertsFrom(inp({ digests: { A: dgx({ handoff: { 2: { pending: 2, applied: 0, rejected: 0 } } }), B: dgx(), C: dgx() } }), now), "handoff:2");
+    return a && a.s === "warn" && a.text.includes("2");
+  });
+  T("D-09 gộp ghi hộ chờ áp: một cảnh báo, hệ quả ghi số lượt", () => {
+    const l = alertsFrom(inp({ nodes: [nd(1), nd(2, "OFFLINE"), nd(3)], statuses: { 1: stx(), 2: null, 3: stx() },
+                               digests: { A: dgx({ handoff: { 2: { pending: 5, applied: 0, rejected: 0 } } }), B: dgx(), C: dgx() } }), now);
+    return l.length === 1 && l[0].id === "branch:2" && l[0].kids.some((k) => k.includes("5"));
+  });
+  const rej = (s) => ({ request_id: "r1", product_id: 11, qty: 10, reason: "insufficient_stock", qty_on_hand: 2, rejected_at: iso(s) });
+  T("D-14 lượt ghi hộ bị từ chối trong 5 phút: đỏ; quá 5 phút thì tắt", () => {
+    const withRej = (s) => inp({ statuses: { 1: stx(), 2: stx({ recovery: { ...stx().recovery, rejected: 1, rejected_items: [rej(s)] } }), 3: stx() } });
+    const a = one(alertsFrom(withRej(60), now), "rejected:2");
+    return a && a.s === "bad" && a.since === ms(60) && a.text.includes("10") && alertsFrom(withRej(400), now).length === 0;
+  });
+  T("D-14 mở thẳng: đếm từ digest, tự tắt 5 phút sau lúc trang thấy (ttl)", () => {
+    const a = one(alertsFrom(inp({ direct: true, statuses: {}, digests: { A: dgx({ handoff: { 2: { pending: 0, applied: 4, rejected: 1 } } }) } }), now), "rejected:2");
+    return a && a.since === null && a.ttl === 300000;
+  });
+  T("D-15 phục hồi chưa đủ: vàng, ghi bản sao chưa gom được", () => {
+    const a = one(alertsFrom(inp({ statuses: { 1: stx(), 2: stx({ recovery: { ...stx().recovery, incomplete: true, unreachable: ["C"], since: iso(70) } }), 3: stx() } }), now), "incomplete:2");
+    return a && a.s === "warn" && a.text.includes("C") && a.since === ms(70);
+  });
+  T("D-16 relay CN2 gửi lỗi: đỏ; outbox tồn đọng gộp vào", () => {
+    const l = alertsFrom(inp({ statuses: { 1: stx(), 2: stx({ relay: { failing_since: iso(20) }, outbox_backlog: 5, oldest_unsent_s: 30 }), 3: stx() } }), now);
+    const a = one(l, "relay:2");
+    return l.length === 1 && a && a.s === "bad" && a.since === ms(20);
+  });
+  T("D-16 relay lỗi dưới 15 giây (bầu leader, đo ở K7c): chưa cảnh báo, kể cả outbox", () =>
+    alertsFrom(inp({ statuses: { 1: stx(), 2: stx({ relay: { failing_since: iso(6) }, outbox_backlog: 5, oldest_unsent_s: 30 }), 3: stx() } }), now).length === 0);
+  T("D-17 outbox CN2 chờ quá 10 giây, relay không báo lỗi: vàng; 3 giây thì chưa", () => {
+    const at = (o) => inp({ statuses: { 1: stx(), 2: stx({ outbox_backlog: 4, oldest_unsent_s: o, sync_stuck: o >= 5 }), 3: stx() } });
+    const a = one(alertsFrom(at(12), now), "outbox:2");
+    return a && a.s === "warn" && a.since === ms(12) && alertsFrom(at(3), now).length === 0;
+  });
+  T("D-17 mở thẳng: outbox theo heartbeat, chờ 10 giây", () => {
+    const a = one(alertsFrom(inp({ direct: true, statuses: {}, digests: { A: dgx() }, nodes: [nd(2, "ONLINE", { outbox_backlog: 4 })] }), now), "outbox:2");
+    return a && a.hold === 10000;
+  });
+  T("D-18 cổng vào localhost chết, đã chuyển sang 8012: vàng", () => {
+    const a = one(alertsFrom(inp({ gates: { list: GL, cur: 1, down: { [GL[0]]: ms(6) }, lost: GL[0] } }), now), `gate:${GL[0]}`);
+    return a && a.s === "warn" && a.text.includes("đã chuyển") && a.text.includes("8012") && a.since === ms(6);
+  });
+  T("D-18 trang đã chuyển cổng nhưng dò cổng cũ vẫn trả lời (chi nhánh treo, đo ở K14): không cảnh báo", () =>
+    !alertsFrom(inp({ gates: { list: GL, cur: 1, down: {}, lost: GL[0] } }), now).some((a) => a.id.startsWith("gate:")));
+  T("D-19 không đọc được qua mọi cổng: đỏ, hiện ở dải conn-error", () => {
+    const a = one(alertsFrom(inp({ connError: ms(4) }), now), "conn");
+    return a && a.s === "bad" && a.where === "conn" && a.since === ms(4);
+  });
+  T("D-20 đọc đơn điệu: bản sao B trễ, hiện ở dải mono", () => {
+    const a = one(alertsFrom(inp({ lagging: { B: { behind: [{ branch: 2, cells: 1, events: 5 }], at: ms(1) } } }), now), "mono:B");
+    return a && a.s === "warn" && a.where === "mono" && a.text.includes("5");
+  });
+  T("xếp: đỏ trước vàng, cùng mức thì cũ trước", () => {
+    const l = sortAlerts([{ id: "w", s: "warn", since: ms(50) }, { id: "b2", s: "bad", since: ms(5) }, { id: "b1", s: "bad", since: ms(9) }]);
+    return l.map((a) => a.id).join() === "b1,b2,w";
+  });
+  // trackAlerts(state, alerts, now): state = { recs: {}, log: [] }; trả danh sách đang hiện (đã xếp), mỗi mục có
+  // since (ms) và approx (true = mốc trang thấy); state.log: { id, s, text, start, end }.
+  const A = (o = {}) => ({ id: "x", s: "warn", text: "x", since: null, kids: [], ...o });
+  T("theo dõi: không có mốc server thì hiện ở lần làm mới thứ 2, mốc là lần đầu thấy (~)", () => {
+    const st = { recs: {}, log: [] };
+    const a1 = trackAlerts(st, [A()], now), a2 = trackAlerts(st, [A()], now + 2000);
+    return a1.length === 0 && a2.length === 1 && a2[0].since === now && a2[0].approx === true;
+  });
+  T("theo dõi: có mốc server thì hiện ngay với mốc đó", () => {
+    const l = trackAlerts({ recs: {}, log: [] }, [A({ since: ms(30) })], now);
+    return l.length === 1 && l[0].since === ms(30) && !l[0].approx;
+  });
+  T("theo dõi: tắt sau 2 lần vắng, nhật ký có bắt đầu và kết thúc", () => {
+    const st = { recs: {}, log: [] };
+    trackAlerts(st, [A({ since: ms(30) })], now);
+    const off1 = trackAlerts(st, [], now + 2000), off2 = trackAlerts(st, [], now + 4000);
+    return off1.length === 1 && off2.length === 0 && st.log.length === 1 && st.log[0].start === ms(30) && st.log[0].end === now + 4000;
+  });
+  T("theo dõi: nghi ngờ rồi mất liên lạc là một sự cố, nhật ký giữ mức cao nhất", () => {
+    const st = { recs: {}, log: [] };
+    trackAlerts(st, [A({ id: "branch:2", s: "warn", since: ms(10) })], now);
+    const l = trackAlerts(st, [A({ id: "branch:2", s: "bad", text: "mất", since: ms(10) })], now + 8000);
+    trackAlerts(st, [A({ id: "branch:2", s: "warn", since: ms(10) })], now + 10000);
+    return l.length === 1 && l[0].s === "bad" && st.log.length === 1 && st.log[0].s === "bad";
+  });
+  T("theo dõi: cảnh báo vừa bị gộp vào cảnh báo gốc thì tắt ngay, không chờ 2 lần vắng (đo ở K3)", () => {
+    const st = { recs: {}, log: [] };
+    trackAlerts(st, [A({ id: "replica:B", since: ms(5) }), A({ id: "branch:2", since: ms(9) })], now);
+    const l = trackAlerts(st, [A({ id: "machine:B", s: "bad", since: ms(9), kidIds: ["replica:B", "branch:2"] })], now + 2000);
+    return l.length === 1 && l[0].id === "machine:B" && st.log.filter((e) => e.end === now + 2000).length === 2;
+  });
+  T("nhật ký: cảnh báo bị gộp ghi 'gộp vào' cảnh báo gốc, không như đã hết lỗi", () => {
+    const st = { recs: {}, log: [] };
+    trackAlerts(st, [A({ id: "relay:2", s: "bad", since: ms(20) })], now);
+    trackAlerts(st, [A({ id: "cluster", s: "bad", text: "Cụm Redpanda mất đa số", since: ms(25), kidIds: ["relay:2"] })], now + 2000);
+    const e = st.log.find((x) => x.id === "relay:2");
+    return e.end === now + 2000 && e.into === "Cụm Redpanda mất đa số";
+  });
+  T("gộp: cảnh báo gốc ghi id các hệ quả để bộ theo dõi tắt chúng ngay", () => {
+    const l = alertsFrom(inp({ digests: { A: dgx({ brokers_up: [1, 3] }), B: null, C: dgx({ brokers_up: [1, 3] }) },
+                               nodes: [nd(1), nd(2, "OFFLINE"), nd(3)] }), now);
+    return ["replica:B", "branch:2", "broker:B"].every((id) => l[0].kidIds.includes(id));
+  });
+  T("theo dõi: cùng sự cố bật lại trong 10 giây sau khi tắt thì nối vào dòng nhật ký cũ (broker chập chờn, đo ở K4)", () => {
+    const st = { recs: {}, log: [] }, b = A({ id: "broker:B" });
+    [0, 2000].forEach((d) => trackAlerts(st, [b], now + d));
+    [4000, 6000].forEach((d) => trackAlerts(st, [], now + d));
+    [9000, 11000].forEach((d) => trackAlerts(st, [b], now + d));
+    [13000, 15000].forEach((d) => trackAlerts(st, [], now + d));
+    [30000, 32000].forEach((d) => trackAlerts(st, [b], now + d));
+    return st.log.length === 2 && st.log[0].end === now + 15000 && st.log[1].start === now + 30000;
+  });
+  T("theo dõi: hold 20 giây chỉ hiện khi điều kiện kéo dài đủ", () => {
+    const st = { recs: {}, log: [] }, d = A({ hold: 20000 });
+    let shown18 = 0;
+    for (let t = 0; t <= 18000; t += 2000) shown18 += trackAlerts(st, [d], now + t).length;
+    return shown18 === 0 && trackAlerts(st, [d], now + 20000).length === 1;
+  });
+  T("theo dõi: ttl 5 phút thì tự tắt dù điều kiện vẫn đúng", () => {
+    const st = { recs: {}, log: [] }, d = A({ ttl: 300000 });
+    trackAlerts(st, [d], now); trackAlerts(st, [d], now + 2000);
+    trackAlerts(st, [d], now + 300002);
+    return trackAlerts(st, [d], now + 302000).length === 0 && st.log.length === 1 && st.log[0].end !== null;
+  });
+  T("theo dõi: nhật ký giữ tối đa 200 dòng", () => {
+    const st = { recs: {}, log: [] };
+    for (let i = 0; i < 205; i++) { trackAlerts(st, [A({ id: `k${i}`, since: now })], now + i * 10000); trackAlerts(st, [], now + i * 10000 + 1); trackAlerts(st, [], now + i * 10000 + 2); }
+    return st.log.length === 200 && st.log[199].id === "k204";
+  });
 
   const failed = results.filter(([, ok]) => !ok);
   const el = document.getElementById("selftest");
@@ -1245,7 +1716,7 @@ function selftest() {
   el.style.background = failed.length ? "var(--alert-bg)" : "var(--ok-bg)";
   el.style.color = failed.length ? "var(--alert)" : "var(--ok)";
   el.textContent = `Selftest: ${results.length - failed.length}/${results.length} đạt` +
-    (failed.length ? `. Trượt: ${failed.map(([n]) => n).join("; ")}` : "");
+    (failed.length ? `. Trượt: ${failed.map(([n, , err]) => err ? `${n} (${err})` : n).join("; ")}` : "");
   console.log(el.textContent);
 }
 if (new URLSearchParams(location.search).get("selftest") === "1") selftest();
@@ -1256,6 +1727,7 @@ if (new URLSearchParams(location.search).get("selftest") === "1") selftest();
   renderGate();
   tick();
   setInterval(tick, 2000);
+  setInterval(probeGates, GATE_PROBE_S * 1000);
 })();
 </script>
 </body>

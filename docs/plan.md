@@ -5,7 +5,7 @@ Mục tiêu trước mắt: xử lý hai câu hỏi của thầy (mục 3), trê
 
 ## 1. Tiến độ
 
-**Vòng tiếp theo: vòng 6b** (vòng 6 đã code, chờ commit). Mỗi lần chỉ làm một vòng, đúng thứ tự: vòng sau dựa trên hạ tầng của vòng trước.
+**Vòng tiếp theo: vòng 7** (vòng 6b đã code, chờ commit). Mỗi lần chỉ làm một vòng, đúng thứ tự: vòng sau dựa trên hạ tầng của vòng trước.
 
 | Vòng | Phạm vi | Nhánh | Việc | Quy tắc | Kịch bản | Trạng thái |
 |---|---|---|---|---|---|---|
@@ -16,8 +16,8 @@ Mục tiêu trước mắt: xử lý hai câu hỏi của thầy (mục 3), trê
 | 4 | `web`, `replica`, `branch` | `web/sync-dashboard` | Topology sống, đọc đơn điệu, truy vết sự kiện, POS | — | chạy tay K1–K9; K11, K12 | xong, đã merge (PR #5); 58 test, selftest dashboard 22/22, POS 5/5; K1–K9, K11, K12 đạt trên 3 node một máy |
 | 4b | `web` | `web/ui-polish` | Chỉnh giao diện trước vòng 5: tràn ngang trên điện thoại, cột giờ tab Sự kiện, dải sự cố hệ thống ở Tổng quan, bớt nhiễu, ghi máy A/B/C trên sơ đồ, trang không bị cache | — | chạy tay trên 3 node | xong, đã merge (PR #7); selftest dashboard 24/24, POS 5/5; 58 test |
 | 5 | `infra`, `replica`, `web` | `ha/entry-failure-detector` | HA cổng vào (nginx ở mọi node, client tự chuyển); bộ phát hiện lỗi có trạng thái, kết luận theo đa số bản sao | PT-13 | K13, K14 | xong, đã merge (PR #8); 83 test, selftest dashboard 33/33, POS 10/10; K1–K14 đạt trên 3 node một máy; sửa hai lỗi hạ tầng (IP gắn cứng sau `heal`, `topic-init` lặp) |
-| 6 | `branch`, `replica`, `web` | `ha/hinted-handoff` | Chi nhánh sập vẫn bán: ghi hộ ở bản sao, chi nhánh phục hồi ở RECOVERING rồi kéo về áp theo thứ tự | PT-14 | K15 | đã code (27/11/2026), chờ commit; 131 test, selftest dashboard 38/38, POS 19/19; K1–K15 (cả biến thể REJECTED, hai nơi cùng ghi) đạt trên 3 node một máy |
-| 6b | `web`, `replica`, `branch` | `web/failure-alerts` | Cảnh báo đủ mọi trường hợp lỗi trên dashboard và POS, nhật ký sự cố, danh mục cảnh báo trong `docs/` | — | K3–K15 hiện đúng cảnh báo | chưa làm |
+| 6 | `branch`, `replica`, `web` | `ha/hinted-handoff` | Chi nhánh sập vẫn bán: ghi hộ ở bản sao, chi nhánh phục hồi ở RECOVERING rồi kéo về áp theo thứ tự | PT-14 | K15 | xong, đã merge (PR #9); 131 test, selftest dashboard 38/38, POS 19/19; K1–K15 (cả biến thể REJECTED, hai nơi cùng ghi) đạt trên 3 node một máy |
+| 6b | `web`, `replica`, `branch` | `web/failure-alerts` | Cảnh báo đủ mọi trường hợp lỗi trên dashboard và POS, nhật ký sự cố, danh mục cảnh báo trong `docs/` | — | K3–K15 hiện đúng cảnh báo | đã code (28/11/2026), chờ commit; danh mục D-01..D-20, P-01..P-10 (`docs/demo.md` mục 5); selftest dashboard 78/78, POS 35/35; 131 test (không đổi server); K1–K15 chạy tay trên 3 node một máy, số đo ở `docs/tests.md` |
 | 7 | `infra`, `docs` | `infra/production-local` | Standby đồng bộ cho CSDL chi nhánh; vệ sinh vận hành; giám sát (tuỳ chọn); kiến trúc mục tiêu production trên giấy | PT-12 | K10a, K10b | chưa làm |
 | 8 | `replica`, `scripts`, `docs` | `chore/hardening` | `dead_letter`, `scripts/chaos-check.sh` có đo thời gian gián đoạn, chốt tài liệu | PT-06 | `chaos-check.sh` | chưa làm |
 
@@ -373,6 +373,13 @@ Xong khi: K10a không mất lượt bán nào đã báo thành công; K10b đo �
   muốn thấy "hai nơi cùng ghi" ở chế độ một máy phải dừng thêm nginx B (máy thật: rút mạng máy B thì trình duyệt máy
   khác cũng mất cổng B). (3) `query_nodes` tính `clock_offset_ms` bằng `::int`: đồng hồ chi nhánh lệch quá ~24 ngày
   thì tràn số (lộ ra khi test gửi heartbeat có `node_time_ms` cố định); chưa sửa, không thuộc vòng 6.
+- Vòng 6b, phát hiện lúc chạy tay (cảnh báo làm lộ ra, không sửa vì thuộc vòng 5, trang chỉ báo đúng): (1) K3 một máy:
+  nginx A chờ phân giải `replica-b` (đã bị gỡ khỏi mạng) quá 4 giây nên dashboard qua cổng A có lần tự chuyển sang cổng
+  8012 và từ đó thấy phía B bị cô lập; cảnh báo "Cổng vào … đã chuyển" chỉ hiện nếu dò cổng A thật sự lỗi. (2) POS qua
+  cổng vào: chi nhánh bị `pause` thì `call()` quá 4 giây và chuyển cổng vòng quanh 3 cổng (cổng vẫn sống); vòng 6b chỉ
+  báo cổng khi dò lỗi. (3) Sau khi một broker dừng, metadata của MỌI sink có thể bỏ sót cả broker còn sống tới 22 giây
+  (đo ở K7a), nên "broker không chạy" chờ 30 giây; chữ "cụm còn k/3" vẫn có thể lệch trong lúc đó. (4) Lúc cụm bầu
+  leader (cắt một máy, dừng một broker), sink và relay báo lỗi 6–10 giây: cảnh báo đỏ chờ 15 giây (`BROKER_ALERT_S`).
 - Vòng 7: chuỗi kết nối nhiều host của libpq (`target_session_attrs=read-write`) đủ để `psycopg_pool` tự nối sang
   primary mới sau promote mà không đổi code; kiểm ở `/plan-task` vòng 7.
 - Vòng 7: promote bằng tay (`make promote`), không dùng Patroni hay repmgr. Tự động failover CSDL ghi vào "kiến trúc

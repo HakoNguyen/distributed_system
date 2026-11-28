@@ -265,6 +265,10 @@ kết luận đa số (PT-13) không đổi.
   RECOVERING vài giây tới khi mọi bản sao thôi kết luận OFFLINE, kể cả khi không có ghi hộ nào (đo ở `docs/demo.md`
   K4, K14). Trạng thái phục hồi nằm trong bộ nhớ `branch_api`: chỉ `branch_db` chết còn `branch_api` sống thì chi
   nhánh phát hiện ghi hộ trong lần kéo kế tiếp (≤ 2 giây), không có kịch bản riêng.
+- **Cảnh báo và nhật ký sự cố tính ở trình duyệt** (vòng 6b, danh mục ở `docs/demo.md` mục 5, "Danh mục cảnh
+  báo"). Mốc "từ" lấy từ server khi có, không thì là lúc trang thấy lần đầu (ghi "~"). Nhật ký lưu `localStorage`: mỗi
+  trình duyệt một nhật ký, sự cố xảy ra khi không có trang nào mở thì không có trong nhật ký. Mở thẳng một bản sao thì
+  chỉ có cảnh báo từ góc nhìn của bản sao đó (không phân biệt được "cụm mất đa số" với "bản sao này bị cô lập").
 - **Nginx chỉ tự thử lại yêu cầu idempotent (GET).** Lệnh bán (POST) qua nginx mà thất bại thì không được thử lại
   tự động. POS tự bảo vệ bằng `request_id`.
 

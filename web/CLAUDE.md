@@ -8,7 +8,7 @@ trong image: sửa xong phải build lại, `make local-up` hoặc `make up`).
   TƯƠNG ĐỐI (`api/inventory`, không có `/` đầu), vì nginx mở trang này dưới tiền tố `/cn2/`. Dạng phiếu: chế độ Bán hàng / Nhập hàng, ô tìm (gõ mã rồi
   Enter như máy quét), phiếu với số lượng 1–1000 (đúng giới hạn `StockChange`). Thanh toán gửi từng dòng một
   `api/sale` (hoặc `api/receipt`); mỗi dòng giữ một `request_id`: lỗi mạng thì giữ mã và khoá dòng để gửi lại không
-  trừ hai lần (PT-08), server từ chối thì bỏ mã (`settle`). Giữ: dải trạng thái gửi, chip RTT, câu "Xử lý tại chỗ trong
+  trừ hai lần (PT-08), server từ chối thì bỏ mã (`settle`). Giữ: dải trạng thái gửi (từ vòng 6b là danh sách cảnh báo), chip RTT, câu "Xử lý tại chỗ trong
   … ms", nút "Bán 20 đơn ngẫu nhiên" (mục Công cụ demo), vì kịch bản K1–K9 dùng. Tự kiểm: `?selftest=1`.
 - `dashboard.html`: dashboard trụ sở, do `replica_api` phục vụ. Thanh bên (menu, bản sao trả lời, đồng bộ tóm tắt,
   selftest) và bốn tab `#tong-quan` (ô số liệu, bảng chi nhánh, cần đặt thêm hàng), `#ton-kho` (tìm, lọc dưới
@@ -32,23 +32,29 @@ trong image: sửa xong phải build lại, `make local-up` hoặc `make up`).
   là tồn tạm tính `stock`, khoá Nhập hàng và Bán 20 đơn), `recovering` (chi nhánh trả 503 `branch_recovering`: khoá
   Thanh toán). Bản sao: thứ tự `/lb/replicas.json`, giữ nguyên tới khi lỗi mạng hoặc 5xx (`nextGate`). Số chi nhánh lấy
   từ `/cnX/` khi `api/info` không trả lời (`branchFromPrefix`). `settle` giữ `request_id` cả khi gặp `branch_recovering`,
-  `branch_not_offline`, 502–504. Dải `#note`: lượt ghi hộ bị từ chối (`recovery.rejected_items`), phục hồi chưa đủ.
+  `branch_not_offline`, 502–504. Lượt ghi hộ bị từ chối, phục hồi chưa đủ: cảnh báo P-08, P-07 (vòng 6b).
   Dashboard: `branchState` ghi "Đang phục hồi (áp ghi hộ)" khi `recovering`; bảng chi nhánh thêm cột "Ghi hộ" (chờ, đã
-  áp, từ chối, `handoffTotals` cộng `digest.handoff` qua các bản sao); `systemIssues` báo chi nhánh đang phục hồi và
-  lượt ghi hộ chờ áp (lượt bị từ chối chỉ ở cột Ghi hộ, vì chúng ở lại mãi). Cảnh báo đủ mọi lỗi: vòng 6b.
-- Trạng thái chi nhánh theo kết luận đa số `verdict` (PT-13) ở bảng chi nhánh, ô "Chi nhánh hoạt động", `#sys-alert`;
+  áp, từ chối, `handoffTotals` cộng `digest.handoff` qua các bản sao); phục hồi, ghi hộ chờ áp, bị từ chối là cảnh báo
+  D-12..D-15 (vòng 6b, dưới).
+- Trạng thái chi nhánh theo kết luận đa số `verdict` (PT-13) ở bảng chi nhánh, ô "Chi nhánh hoạt động", cảnh báo;
   bảng kỹ thuật chi nhánh (tab Hệ thống) có thêm góc nhìn từng bản sao (`views`) và kết luận. SUSPECT ghi "Nghi ngờ,
   chưa đủ đa số". `alive` (góc nhìn riêng của bản sao đang trả lời) vẫn dùng cho nhãn "số cũ" và sơ đồ.
-- Logic thuần (`compareViews`, `relayEdge`, `sinkEdge`, `brokerState`, `gossipEdge`, `branchState`, `systemIssues`,
-  `gateList`, `nextGate`, `handoffTotals`, `handoffText`; POS `settle`, `match`, `posPrefix`, `apiUrl`, `gateList`,
-  `nextGate`, `posMode`, `branchFromPrefix`) nhận `now` hoặc
+- Logic thuần (`compareViews`, `relayEdge`, `sinkEdge`, `brokerState`, `gossipEdge`, `branchState`, `alertsFrom`,
+  `sortAlerts`, `trackAlerts`, `gateList`, `nextGate`, `handoffTotals`, `handoffText`; POS `settle`, `match`, `posPrefix`,
+  `apiUrl`, `gateList`, `nextGate`, `posMode`, `branchFromPrefix`, `posAlerts`, `loadAcked`, `ackRejected`) nhận `now` hoặc
   dữ liệu làm tham số, kiểm bằng `?selftest=1` (chạy tay trong trình duyệt, không nằm trong `make check`). Thêm logic
   thì thêm `check(...)`.
 - Màu và font đặt bằng biến CSS ở `:root`.
 - Màn hình hẹp: cột grid chứa bảng phải là `minmax(0, 1fr)` (không dùng `1fr` trần), bảng rộng cuộn trong
   `.table-wrap`; nếu không, bảng `white-space: nowrap` kéo cả trang tràn ngang. Kiểm ở cỡ 375px.
-- Tổng quan có dải `#sys-alert` (`systemIssues`): chi nhánh đa số kết luận mất liên lạc hoặc đang nghi ngờ, broker
-  nào không chạy, bản sao nào không liên lạc được, đồng bộ dừng; trùng nguồn với chấm đỏ của tab Hệ thống, để trang đầu không báo "ổn" khi hệ đang suy giảm.
+- Cảnh báo (vòng 6b, danh mục D-01..D-20, P-01..P-10 ở `docs/demo.md` mục 5): dashboard `alertsFrom(input, now)` tính
+  cảnh báo gốc từ overview, digest mọi bản sao, `/cn<N>/api/status`, dò cổng; mỗi sự cố một id cố định, hệ quả (`parent`)
+  gộp vào "kéo theo"; `trackAlerts(state, alerts, now)` chống nháy (`ALERT_CONFIRM`), mốc "từ" (server, hoặc "~" trang
+  thấy), `hold`/`ttl`, nhật ký sự cố (`localStorage` `minigo.incidents`, thẻ "Nhật ký sự cố" ở tab Hệ thống). Dải
+  `#sys-alert` ở Tổng quan; D-19 ở `#conn-error`, D-20 ở `#mono`. Dò cổng `probeGates` mỗi `GATE_PROBE_S` giây
+  (`GET <cổng>/lb/gateways.json`). POS: `posAlerts(ctx, now, seen)` vẽ vào `#link` (thay cho `#note` cũ), "Đã biết" cho
+  lượt ghi hộ bị từ chối (`loadAcked`, `ackRejected`, `localStorage` `minigo.rejectedAck`). Thêm cảnh báo: thêm dòng danh
+  mục, thêm `check` trong selftest, không gọi mạng trong hàm thuần.
 - Tab Sự kiện xếp theo lúc bản sao nhận (`received_at`), nên cột giờ cũng là lúc nhận, kèm ngày khi không phải hôm
   nay; giờ chi nhánh ghi nằm ở tooltip và truy vết.
 - `routers/*.py` trả trang với `Cache-Control: no-cache`: build lại image là trình duyệt thấy giao diện mới.

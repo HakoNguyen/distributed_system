@@ -38,7 +38,11 @@
   #link.down { background: var(--alert-bg); color: var(--alert); }
   #link b { font-weight: 700; }
   /* Vòng 6: lượt ghi hộ bị từ chối, phục hồi chưa gom đủ */
-  #note { display: none; padding: .5rem 1.5rem; font-size: .9rem; background: var(--alert-bg); color: var(--alert); border-top: 1px solid var(--rule); }
+  #link .al { padding: .15rem 0 .15rem .7rem; border-left: 3px solid var(--alert); color: var(--alert); overflow-wrap: anywhere; }
+  #link .al + .al { margin-top: .3rem; }
+  #link .al.warn { border-left-color: var(--pending); color: var(--pending); }
+  #link .al small { font-weight: 400; opacity: .85; white-space: nowrap; }
+  #link .ack { margin-left: .3rem; font: inherit; font-size: .8rem; padding: .05rem .5rem; border: 1px solid currentColor; border-radius: 6px; background: var(--card); color: inherit; cursor: pointer; }
 
   /* ---------- Bố cục: danh mục | phiếu ---------- */
   .layout { display: grid; grid-template-columns: minmax(0, 1fr) 380px; gap: 1.2rem; padding: 1.2rem 1.5rem 2rem; align-items: start; }
@@ -104,7 +108,7 @@
     .layout { grid-template-columns: 1fr; padding: 1rem; }
     .ticket { position: static; }
     .products, #lines { max-height: none; }
-    header, #link, #note { padding-left: 1rem; padding-right: 1rem; }
+    header, #link { padding-left: 1rem; padding-right: 1rem; }
   }
 </style>
 </head>
@@ -114,7 +118,6 @@
   <div id="links" aria-label="Độ trễ tới các bản sao trung tâm"></div>
 </header>
 <div id="link" role="status">Đang kiểm tra kết nối tới trung tâm…</div>
-<div id="note" role="alert"></div>
 
 <div class="layout">
   <section class="panel">
@@ -192,6 +195,8 @@ async function call(path, opts = {}, prefix = PREFIX) {
     if (gates.length > 1) {
       if (at === gi) toast(`Cổng vào ${gates[at]} không trả lời, chuyển sang ${gates[nextGate(gates, gi)]}. ` +
                            "Dòng chưa chắc đã gửi giữ nguyên mã, bấm Thanh toán lại.", true);
+      // Cổng có thể vẫn sống mà chi nhánh phía sau treo (đo ở K14): chỉ dò lỗi mới cảnh báo
+      if (at === gi) { gateLost = gates[at]; probeGates(); }
       gi = nextGate(gates, gi, at);
       e.gateSwitched = true;
     }
@@ -269,30 +274,84 @@ async function postHandoff(l) {
   }
 }
 
-function renderMode(m) {
-  const el = document.getElementById("link");
-  if (m === "handoff") {
-    const c = central?.counts;
-    el.className = "busy";
-    el.innerHTML = `Chi nhánh mất liên lạc (đa số bản sao kết luận OFFLINE). <b>Đang ghi hộ qua trung tâm</b> (bản sao ${esc(replicas[ri])})` +
-      (c ? `: <b>${c.pending}</b> lượt chờ chi nhánh áp lại` : "") + ". Tồn hiển thị là tồn tạm tính; chỉ bán, không nhập.";
-  } else if (m === "waiting") {
-    el.className = "down";
-    el.innerHTML = `Không gọi được chi nhánh. Trung tâm: <b>${verdict === "SUSPECT" ? "nghi ngờ, chưa đủ đa số" : verdict === "ONLINE" ? "vẫn thấy chi nhánh sống" : "chưa hỏi được"}</b>. ` +
-      "Chưa ghi hộ: giữ phiếu và chờ (đa số kết luận mất liên lạc sau khoảng 15 giây).";
-  } else if (m === "recovering") {
-    el.className = "busy";
-    el.innerHTML = `<b>Chi nhánh đang phục hồi</b>: đã áp ${recovery.applied} lượt ghi hộ, từ chối ${recovery.rejected}, còn ${recovery.pending} chờ. Chưa nhận bán mới.`;
-  }   // local: renderLink(st) đã vẽ
-  const parts = [];
-  if (recovery?.incomplete) parts.push(`Phục hồi chưa đủ: chưa gom được ghi hộ từ bản sao ${recovery.unreachable.join(", ")}; lượt ở đó sẽ áp muộn khi gọi lại được.`);
-  const rej = (recovery?.rejected_items || []).slice(0, 5);
-  if (rej.length) parts.push("Lượt ghi hộ bị TỪ CHỐI khi chi nhánh áp lại: " + rej.map((r) =>
-    `${byId(r.product_id)?.name || "mã " + r.product_id} ×${r.qty} (${r.reason === "insufficient_stock" ? `tồn thật chỉ còn ${r.qty_on_hand}` : "không có mã hàng"}, lúc ${clock(r.rejected_at)})`).join("; ") + ".");
-  const note = document.getElementById("note");
-  note.style.display = parts.length ? "block" : "none";
-  note.textContent = parts.join(" ");
+// ---------------------------------------------------------------------------
+// Cảnh báo P-01..P-10 (vòng 6b, docs/demo.md mục 5 "Danh mục cảnh báo"). Hàm thuần, kiểm bằng ?selftest=1.
+// ctx: st (/api/status lần làm mới này; null khi chi nhánh không trả lời), recovery (lần biết cuối), mode (posMode),
+// verdict, replica, central, gates { list, cur, down, lost }, acked (Set request_id đã bấm "Đã biết"), localError.
+// seen: lúc trang thấy lần đầu cảnh báo không có mốc server (giữ giữa các lần gọi, quên khi cảnh báo hết).
+// ---------------------------------------------------------------------------
+const SEV = { warn: 1, bad: 2 };
+const hostOf = (g) => g.replace(/^https?:\/\//, "");
+function posAlerts(c, now, seen = {}) {
+  const out = [], st = c.st, rc = c.recovery;
+  const t = (ts) => (ts ? Date.parse(ts) : null);
+  if (st) {
+    const fail = st.relay?.failing_since;
+    if (fail) out.push({ id: "relay", s: "bad", since: t(fail), text: `Gửi lên Redpanda: lỗi từ ${clock(fail)}. ` +
+      `Quầy vẫn bán bình thường; ${st.outbox_backlog} sự kiện đang nằm chờ trong outbox và sẽ tự gửi khi có lại.` });
+    else if (st.sync_stuck) out.push({ id: "outbox", s: "warn", since: now - st.oldest_unsent_s * 1000,
+      text: `${st.outbox_backlog} sự kiện chưa gửi được lên trung tâm. Quầy vẫn bán bình thường; outbox sẽ tự gửi khi có mạng.` });
+    (st.links || []).forEach((l) => { if (!l.ok) out.push({ id: `link:${l.name}`, s: "warn",
+      since: l.seconds_since_ok == null ? null : now - l.seconds_since_ok * 1000, text: `Bản sao máy ${l.name} mất liên lạc (heartbeat không tới).` }); });
+  }
+  // Mở thẳng chi nhánh: không ghi hộ được, P-10 đã báo
+  if (c.mode === "waiting" && !c.direct) out.push({ id: "waiting", s: "bad", since: null, text: `Không gọi được chi nhánh. Trung tâm: ` +
+    `${c.verdict === "SUSPECT" ? "nghi ngờ, chưa đủ đa số" : c.verdict === "ONLINE" ? "vẫn thấy chi nhánh sống" : "chưa hỏi được"}. ` +
+    "Chưa ghi hộ: giữ phiếu và chờ (đa số kết luận mất liên lạc sau khoảng 15 giây)." });
+  if (c.mode === "handoff") out.push({ id: "handoff", s: "warn", since: null,
+    text: `Chi nhánh mất liên lạc (đa số bản sao kết luận OFFLINE). Đang ghi hộ qua trung tâm (bản sao ${c.replica})` +
+      (c.central?.counts ? `: ${c.central.counts.pending} lượt chờ chi nhánh áp lại` : "") + ". Tồn hiển thị là tồn tạm tính; chỉ bán, không nhập." });
+  if (c.mode === "recovering") out.push({ id: "recovering", s: "warn", since: t(rc?.since),
+    text: `Chi nhánh đang phục hồi: đã áp ${rc.applied} lượt ghi hộ, từ chối ${rc.rejected}, còn ${rc.pending} chờ. Chưa nhận bán mới.` });
+  if (rc?.incomplete) out.push({ id: "incomplete", s: "warn", since: t(rc.since),
+    text: `Phục hồi chưa đủ: chưa gom được ghi hộ từ bản sao ${(rc.unreachable || []).join(", ")}; lượt ở đó sẽ áp muộn khi gọi lại được.` });
+  // P-08: không tự tắt theo thời gian, quầy phải xử lý với khách; tắt khi thu ngân bấm "Đã biết"
+  const rej = (rc?.rejected_items || []).filter((r) => !c.acked?.has(r.request_id));
+  if (rej.length) out.push({ id: "rejected", s: "bad", since: Math.min(...rej.map((r) => t(r.rejected_at))), rids: rej.map((r) => r.request_id),
+    text: "Lượt ghi hộ bị TỪ CHỐI khi chi nhánh áp lại: " + rej.slice(0, 5).map((r) => `${byId(r.product_id)?.name || "mã " + r.product_id} ×${r.qty} ` +
+      `(${r.reason === "insufficient_stock" ? `tồn thật chỉ còn ${r.qty_on_hand}` : "không có mã hàng"}, lúc ${clock(r.rejected_at)})`).join("; ") + "." });
+  Object.entries(c.gates?.down || {}).forEach(([g, at]) => out.push({ id: `gate:${g}`, s: "warn", since: at, approx: true,
+    text: `Cổng vào ${hostOf(g)} không trả lời` + (g === c.gates.lost ? `, đang dùng ${hostOf(c.gates.list[c.gates.cur])}` : "") + "." }));
+  if (c.localError) out.push({ id: "local", s: "bad", since: c.localError, approx: true,
+    text: "Không đọc được dữ liệu của chính chi nhánh. Kiểm tra container api và db." });
+  for (const a of out) {
+    a.approx ??= a.since == null;
+    if (a.since == null) a.since = seen[a.id] ??= now;
+  }
+  Object.keys(seen).forEach((k) => { if (!out.some((a) => a.id === k)) delete seen[k]; });
+  return out.sort((a, b) => (SEV[b.s] - SEV[a.s]) || (a.since - b.since));
 }
+
+// "Đã biết" cho lượt ghi hộ bị từ chối, theo request_id; localStorage hỏng hoặc bị chặn thì chỉ nhớ tới khi tải lại
+const ACKED = "minigo.rejectedAck";
+function loadAcked(store) {
+  try { const v = JSON.parse(store.getItem(ACKED)); return new Set(Array.isArray(v) ? v : []); } catch { return new Set(); }
+}
+function ackRejected(store, rids) {
+  const s = loadAcked(store);
+  rids.forEach((r) => s.add(r));
+  try { store.setItem(ACKED, JSON.stringify([...s].slice(-200))); } catch { /* chỉ trong bộ nhớ */ }
+  return s;
+}
+
+function renderAlerts(list, st) {
+  const el = document.getElementById("link");
+  if (!list.length) {
+    const n = st?.outbox_backlog ?? 0;
+    el.className = n ? "busy" : "";
+    el.innerHTML = !st ? "Đang kiểm tra kết nối tới trung tâm…" : n ? `Đang gửi <b>${n}</b> sự kiện lên trung tâm.` : "Mọi lượt bán đã gửi lên trung tâm.";
+    return;
+  }
+  el.className = list.some((a) => a.s === "bad") ? "down" : "busy";
+  el.innerHTML = list.map((a) => `<div class="al ${a.s}">${esc(a.text)} <small>từ ${a.approx ? "~" : ""}${clock(a.since)}</small>` +
+    (a.rids ? ` <button type="button" class="ack" data-ack="${esc(a.rids.join(","))}">Đã biết</button>` : "") + `</div>`).join("");
+}
+document.getElementById("link").addEventListener("click", (ev) => {
+  const b = ev.target.closest("[data-ack]");
+  if (!b) return;
+  try { acked = ackRejected(localStorage, b.dataset.ack.split(",")); } catch { b.dataset.ack.split(",").forEach((r) => acked.add(r)); }
+  showAlerts();
+});
 
 // ---------------------------------------------------------------------------
 // Kết quả gửi một dòng phiếu. Hàm thuần, kiểm bằng ?selftest=1.
@@ -469,25 +528,9 @@ document.getElementById("bulk").addEventListener("click", async (ev) => {
 // ---------------------------------------------------------------------------
 const clock = (ts) => new Date(ts).toLocaleTimeString("vi-VN", { hour12: false });
 
+// Dải #link do renderAlerts vẽ (vòng 6b); ở đây chỉ còn chip độ trễ tới từng bản sao, đo bằng heartbeat
 function renderLink(s) {
-  const el = document.getElementById("link");
-  const n = s.outbox_backlog;
-  const relay = s.relay || {};
-  el.title = relay.failing_since ? relay.last_error || "" : "";
-  if (relay.failing_since) {
-    // Relay tự ghi lỗi gửi (mất mạng, mất đa số broker): báo đúng mốc bắt đầu lỗi
-    el.className = "down";
-    el.innerHTML = `Gửi lên Redpanda: lỗi từ <b>${clock(relay.failing_since)}</b>. ` +
-      `Quầy vẫn bán bình thường; <b>${n}</b> sự kiện đang nằm chờ trong outbox và sẽ tự gửi khi có lại.`;
-  } else if (s.sync_stuck) {
-    el.className = "down";
-    el.innerHTML = `Chưa gửi được lên trung tâm từ ${Math.round(s.oldest_unsent_s)} giây. ` +
-      `Quầy vẫn bán bình thường; <b>${n}</b> sự kiện đang nằm chờ trong outbox và sẽ tự gửi khi có mạng.`;
-  } else {
-    el.className = n ? "busy" : "";
-    el.innerHTML = n ? `Đang gửi <b>${n}</b> sự kiện lên trung tâm.` : "Mọi lượt bán đã gửi lên trung tâm.";
-  }
-  // Độ trễ tới từng bản sao, đo bằng heartbeat
+  document.getElementById("link").title = s.relay?.failing_since ? s.relay.last_error || "" : "";
   document.getElementById("links").innerHTML = s.links.map((l) => l.ok
     ? `<span>Bản sao máy ${esc(l.name)}: <b>${l.rtt_ms} ms</b></span>`
     : `<span class="down">Bản sao máy ${esc(l.name)}: <b>mất liên lạc</b></span>`).join("");
@@ -502,25 +545,47 @@ function showProducts(inv) {
 }
 
 let lastMode = "local";
+let lastSt = null, localError = null;     // lastSt: /api/status lần làm mới gần nhất mà chi nhánh trả lời
+let acked = (() => { try { return loadAcked(localStorage); } catch { return new Set(); } })();
+const seenAlerts = {}, gateDown = {};
+let gateLost = null;
+function showAlerts() {
+  const now = Date.now();
+  renderAlerts(posAlerts({ st: fails ? null : lastSt, recovery, mode: currentMode(), direct: !PREFIX, verdict, replica: replicas[ri], central,
+    gates: { list: gates, cur: gi, down: gateDown, lost: gateLost }, acked, localError }, now, seenAlerts), fails ? null : lastSt);
+}
 async function refresh() {
   try {
     const [invR, stR] = await Promise.all([call("api/inventory"), call("api/status")]);
     // 502–504 (nginx: chi nhánh không trả lời) cũng là lỗi của chi nhánh
     if (!invR.ok || !stR.ok) throw new Error(`chi nhánh trả ${invR.ok ? stR.status : invR.status}`);
     const [inv, st] = [await invR.json(), await stR.json()];
-    fails = 0; recovery = st.recovery; central = null;
+    fails = 0; recovery = st.recovery; central = null; lastSt = st; localError = null;
     showProducts(inv);
     renderLink(st);
   } catch (e) {
     // call() vừa chuyển cổng thì đã tự báo và không tính là chi nhánh lỗi; lần làm mới sau đi cổng mới
     if (!e.gateSwitched) fails++;
     if (fails >= HANDOFF_AFTER_FAILS && PREFIX && BRANCH) await refreshCentral();
-    else if (!PREFIX && !e.gateSwitched) toast("Không đọc được dữ liệu của chính chi nhánh. Kiểm tra container api và db.", true);
+    else if (!PREFIX && !e.gateSwitched) localError ??= Date.now();
   }
   const m = currentMode();
   if (m === "handoff" && mode !== "sale" && !cart.some((l) => l.uncertain)) { mode = "sale"; renderProducts(); }   // ghi hộ chỉ có bán
-  renderMode(m);
+  showAlerts();
   if (m !== lastMode) { lastMode = m; renderCart(); }
+}
+
+// P-09: dò mọi cổng vào (chỉ khi mở qua nginx); lỗi thì ghi lúc lỗi đầu, trả lời lại thì xoá
+async function probeGates() {
+  if (gates.length < 2) return;
+  await Promise.all(gates.map(async (g) => {
+    const ctl = new AbortController(), tm = setTimeout(() => ctl.abort(), 2000);
+    try {
+      const r = await fetch(`${g}/lb/gateways.json`, { cache: "no-store", signal: ctl.signal });
+      if (!r.ok) throw new Error(r.status);
+      delete gateDown[g];
+    } catch { gateDown[g] ??= Date.now(); } finally { clearTimeout(tm); }
+  }));
 }
 
 function selftest() {
@@ -552,12 +617,101 @@ function selftest() {
   check("chi nhánh đang phục hồi: giữ request_id và khoá dòng", rec.rid === "y" && rec.uncertain && rec.msg.includes("phục hồi"));
   check("chưa đủ đa số: giữ request_id", settle(line, { status: 409, data: { detail: { error: "branch_not_offline" } } }).rid === "x");
   check("502 từ nginx: chưa rõ đã tới chưa, giữ request_id", settle(line, { status: 502, data: {} }).rid === "x" && settle(line, { status: 502, data: {} }).uncertain);
+
+  // Vòng 6b: cảnh báo P-01..P-10 (docs/demo.md mục 5, "Danh mục cảnh báo"). posAlerts(ctx, now, seen): danh sách đã
+  // xếp { id, s, text, since (ms), approx }; seen giữ lúc trang thấy lần đầu của cảnh báo không có mốc server.
+  // loadAcked/ackRejected: "Đã biết" cho lượt ghi hộ bị từ chối, lưu theo request_id. Hàm chưa có thì kiểm trượt kèm lỗi.
+  const T = (name, fn) => { try { check(name, !!fn()); } catch (e) { r.push([name, false, e.message]); } };
+  const now = Date.parse("2026-11-27T10:00:30Z"), iso = (s) => new Date(now - s * 1000).toISOString(), at = (s) => now - s * 1000;
+  const rec0 = { state: "ONLINE", since: iso(100), pending: 0, applied: 0, rejected: 0, incomplete: false, unreachable: [], rejected_items: [] };
+  const pst = (o = {}) => ({ outbox_backlog: 0, oldest_unsent_s: 0, sync_stuck: false, relay: { failing_since: null }, recovery: rec0,
+                             links: [{ name: "A", ok: true, rtt_ms: 5, seconds_since_ok: 1 }, { name: "B", ok: true, rtt_ms: 3, seconds_since_ok: 1 }], ...o });
+  const PG = ["http://localhost", "http://localhost:8012"];
+  const pctx = (o = {}) => ({ st: pst(), recovery: rec0, mode: "local", verdict: null, replica: "A", central: null,
+                              gates: { list: PG, cur: 0, down: {}, lost: null }, acked: new Set(), localError: null, ...o });
+  const pone = (l, id) => l.filter((a) => a.id === id).length === 1 ? l.find((a) => a.id === id) : null;
+  const rj = (rid, s) => ({ request_id: rid, product_id: 11, qty: 10, reason: "insufficient_stock", qty_on_hand: 2, rejected_at: iso(s) });
+
+  T("bình thường: không cảnh báo", () => posAlerts(pctx(), now, {}).length === 0);
+  T("P-01 relay lỗi: đỏ, mốc failing_since, gộp số sự kiện chờ", () => {
+    const l = posAlerts(pctx({ st: pst({ relay: { failing_since: iso(10) }, outbox_backlog: 7, oldest_unsent_s: 12, sync_stuck: true }) }), now, {});
+    const a = pone(l, "relay");
+    return l.length === 1 && a && a.s === "bad" && a.since === at(10) && a.text.includes("7");
+  });
+  T("P-02 outbox tồn đọng, relay không báo lỗi: vàng, mốc sự kiện cũ nhất", () => {
+    const a = pone(posAlerts(pctx({ st: pst({ outbox_backlog: 4, oldest_unsent_s: 12, sync_stuck: true }) }), now, {}), "outbox");
+    return a && a.s === "warn" && a.since === at(12);
+  });
+  T("P-03 heartbeat tới bản sao B lỗi: vàng, mốc lần cuối gọi được", () => {
+    const st = pst({ links: [{ name: "A", ok: true, rtt_ms: 5, seconds_since_ok: 1 }, { name: "B", ok: false, rtt_ms: null, seconds_since_ok: 9 }] });
+    const a = pone(posAlerts(pctx({ st }), now, {}), "link:B");
+    return a && a.s === "warn" && a.since === at(9) && a.text.includes("B");
+  });
+  T("P-04 chờ kết luận: đỏ, mốc trang thấy (~)", () => {
+    const a = pone(posAlerts(pctx({ st: null, mode: "waiting", verdict: "SUSPECT" }), now, {}), "waiting");
+    return a && a.s === "bad" && a.text.includes("nghi ngờ") && a.since === now && a.approx;
+  });
+  T("P-04 không hiện khi mở thẳng chi nhánh (P-10 thay, đo ở P-10)", () =>
+    posAlerts(pctx({ st: null, mode: "waiting", direct: true, localError: at(4) }), now, {}).map((x) => x.id).join() === "local");
+  T("P-05 đang ghi hộ: vàng, ghi bản sao", () => {
+    const a = pone(posAlerts(pctx({ st: null, mode: "handoff", verdict: "OFFLINE", central: { counts: { pending: 2 } } }), now, {}), "handoff");
+    return a && a.s === "warn" && a.text.includes("bản sao A");
+  });
+  T("P-06 đang phục hồi: vàng, mốc recovery.since", () => {
+    const rc = { ...rec0, state: "RECOVERING", since: iso(3) };
+    const a = pone(posAlerts(pctx({ st: pst({ recovery: rc }), recovery: rc, mode: "recovering" }), now, {}), "recovering");
+    return a && a.s === "warn" && a.since === at(3);
+  });
+  T("P-07 phục hồi chưa đủ: vàng, ghi bản sao chưa gom được", () => {
+    const rc = { ...rec0, incomplete: true, unreachable: ["C"], since: iso(70) };
+    const a = pone(posAlerts(pctx({ st: pst({ recovery: rc }), recovery: rc }), now, {}), "incomplete");
+    return a && a.s === "warn" && a.text.includes("C");
+  });
+  T("P-08 lượt ghi hộ bị từ chối: đỏ, không tự tắt theo thời gian", () => {
+    const rc = { ...rec0, rejected: 1, rejected_items: [rj("r1", 3600)] };
+    const a = pone(posAlerts(pctx({ recovery: rc, st: pst({ recovery: rc }) }), now, {}), "rejected");
+    return a && a.s === "bad" && a.since === at(3600) && a.text.includes("tồn thật chỉ còn 2");
+  });
+  T("P-08 bấm Đã biết thì tắt; chỉ tắt đúng lượt đã biết", () => {
+    const rc = { ...rec0, rejected: 2, rejected_items: [rj("r1", 60), rj("r2", 30)] };
+    const none = posAlerts(pctx({ recovery: rc, acked: new Set(["r1", "r2"]) }), now, {});
+    const left = pone(posAlerts(pctx({ recovery: rc, acked: new Set(["r1"]) }), now, {}), "rejected");
+    return none.length === 0 && left && left.since === at(30) && left.rids.join() === "r2";
+  });
+  T("P-08 Đã biết lưu theo request_id, đọc lại được; localStorage hỏng thì không lỗi", () => {
+    const mem = {}, store = { getItem: (k) => mem[k] ?? null, setItem: (k, v) => { mem[k] = v; } };
+    ackRejected(store, ["r1"]); ackRejected(store, ["r2"]);
+    const broken = { getItem: () => { throw new Error("chặn"); }, setItem: () => { throw new Error("chặn"); } };
+    return loadAcked(store).has("r1") && loadAcked(store).has("r2") && loadAcked(broken).size === 0 && ackRejected(broken, ["r3"]).has("r3");
+  });
+  T("P-09 cổng vào localhost chết, đang dùng 8012: vàng", () => {
+    const a = pone(posAlerts(pctx({ gates: { list: PG, cur: 1, down: { [PG[0]]: at(5) }, lost: PG[0] } }), now, {}), `gate:${PG[0]}`);
+    return a && a.s === "warn" && a.text.includes("8012") && a.since === at(5);
+  });
+  T("P-10 mở thẳng mà không đọc được chính chi nhánh: đỏ", () => {
+    const a = pone(posAlerts(pctx({ st: null, localError: at(4) }), now, {}), "local");
+    return a && a.s === "bad" && a.since === at(4);
+  });
+  T("xếp: đỏ trước vàng, cùng mức thì cũ trước", () => {
+    const st = pst({ relay: { failing_since: iso(10) }, links: [{ name: "A", ok: false, seconds_since_ok: 30 }, { name: "B", ok: false, seconds_since_ok: 40 }] });
+    return posAlerts(pctx({ st }), now, {}).map((a) => a.id).join() === "relay,link:B,link:A";
+  });
+  T("mốc trang thấy giữ từ lần đầu, hết cảnh báo thì quên", () => {
+    const seen = {}, c = pctx({ st: null, mode: "waiting" });
+    posAlerts(c, now, seen);
+    const again = pone(posAlerts(c, now + 6000, seen), "waiting");
+    posAlerts(pctx(), now + 8000, seen);
+    return again.since === now && !("waiting" in seen);
+  });
+
   const failed = r.filter(([, ok]) => !ok);
   const el = document.getElementById("selftest");
   el.style.display = "block";
   el.style.background = failed.length ? "var(--alert-bg)" : "var(--ok-bg)";
   el.style.color = failed.length ? "var(--alert)" : "var(--ok)";
-  el.textContent = `Selftest: ${r.length - failed.length}/${r.length} đạt` + (failed.length ? `. Trượt: ${failed.map(([n]) => n).join("; ")}` : "");
+  el.textContent = `Selftest: ${r.length - failed.length}/${r.length} đạt` +
+    (failed.length ? `. Trượt: ${failed.map(([n, , err]) => err ? `${n} (${err})` : n).join("; ")}` : "");
+  console.log(el.textContent);
 }
 if (new URLSearchParams(location.search).get("selftest") === "1") selftest();
 
@@ -575,6 +729,7 @@ if (new URLSearchParams(location.search).get("selftest") === "1") selftest();
   renderCart();
   refresh();
   setInterval(refresh, 1500);
+  setInterval(probeGates, 10000);   // GATE_PROBE_S của dashboard
   document.getElementById("search").focus();
 })();
 </script>

@@ -286,6 +286,94 @@ kiểm số qua API (RTT, bản trùng, dấu vân tay); phần nhấp nháy ở
 | K8 | Cụm → sink B xám "sink không chạy" (sau 15 giây); cạnh gossip A–B / B–C nhấp nháy khi vá |
 | K9 | Như K7b, thêm relay CN1, CN3 vẫn xanh nếu không bán gì (relay chỉ ghi trạng thái khi có lô để gửi) |
 
+### Danh mục cảnh báo (vòng 6b)
+
+Mọi tình huống lỗi trong hệ đều có một cảnh báo: mức **đỏ** (dữ liệu ngừng chảy, quầy hoặc người xem bị ảnh hưởng) hoặc
+**vàng** (suy giảm nhưng hệ tự chịu được hay tự xử lý), ghi "từ HH:MM:SS", tự tắt khi hết lỗi. Trình duyệt tự tính từ dữ
+liệu đang lấy về (`api/overview`, `/replica/<X>/api/digest`, `/cn<N>/api/status`, dò cổng vào); server không đổi gì.
+
+Quy ước:
+- **Mốc "từ"** lấy từ server khi có (`broker_lost_at`, `broker_checked_at`, `failing_since` của relay và gossip,
+  `last_seen`, `recovery.since`, `rejected_at`, `oldest_unsent_s`, `seconds_since_ok`); không có thì là lúc trang thấy
+  lần đầu, ghi "từ ~HH:MM:SS" (mở trang giữa chừng sự cố thì mốc này muộn hơn thật).
+- **Chống nháy**: cảnh báo không có mốc server bật khi điều kiện đúng ở 2 lần làm mới liên tiếp (`ALERT_CONFIRM`, khoảng
+  4 giây); mọi cảnh báo tắt khi điều kiện sai ở 2 lần làm mới liên tiếp. Một số dòng có ngưỡng riêng (cột Ngưỡng).
+  Cùng sự cố bật lại trong 10 giây sau khi tắt (chập chờn, ví dụ metadata broker sau `heal`) thì nối vào dòng nhật ký cũ.
+- **Không lặp**: mỗi sự cố một mã cố định (`branch:2` dùng chung cho nghi ngờ và mất liên lạc: lên mức vẫn là một sự cố).
+  Cảnh báo **gốc** gộp các **hệ quả** của nó vào cùng một dòng ("kéo theo: …"); chỉ cảnh báo gốc vào nhật ký. Cảnh báo
+  vừa thành hệ quả (lên mức: "Bản sao B không liên lạc được" → "Máy B mất liên lạc") tắt ngay, không chờ 2 lần vắng;
+  nhật ký ghi "gộp vào: …" ở cột Kết thúc (lỗi chưa hết, chỉ đổi cảnh báo gốc).
+- **Xếp**: đỏ trước vàng, cùng mức thì sự cố bắt đầu sớm hơn đứng trước.
+- **Nhật ký sự cố** (tab Hệ thống, thẻ "Nhật ký sự cố"): mỗi cảnh báo gốc một dòng: mức cao nhất đã có, chữ, bắt đầu,
+  kết thúc, kéo dài; lưu `localStorage` (`minigo.incidents`, tối đa 200 dòng) nên mỗi trình duyệt một nhật ký, tải lại
+  trang vẫn còn, nút "Xoá nhật ký". Sự cố xảy ra khi không có trang nào mở thì không có trong nhật ký.
+- **Mở thẳng một bản sao** (`:8000`, `:8010`): chỉ có cảnh báo từ góc nhìn của bản sao đó (cột "Mở thẳng"), kèm dòng
+  "chỉ góc nhìn của bản sao X". POS mở thẳng chi nhánh (`:8001`): không có P-04, P-05, P-09.
+
+**Dashboard.** Dải `#sys-alert` ở đầu tab Tổng quan (mọi dòng trừ D-19, D-20); D-19 ở dải `#conn-error`, D-20 ở dải
+`#mono` (cả hai hiện ở mọi tab). Chấm cạnh tên tab Tổng quan theo mức cao nhất. Mọi dòng vào nhật ký.
+
+| # | Điều kiện kích hoạt | Ngưỡng | Mức | Chữ hiện (rút gọn) · mốc "từ" | Gộp làm hệ quả | Tự tắt khi | Mở thẳng | Kịch bản |
+|---|---|---|---|---|---|---|---|---|
+| D-01 | Bản sao X không trả lời qua cổng vào **và** đa số kết luận chi nhánh cùng máy OFFLINE | 2 lần làm mới | đỏ | "Máy B mất liên lạc (bản sao B, CN2)" · `last_seen` của CN | D-05, D-06, D-08, D-09, D-13 của máy đó | bản sao trả lời lại hoặc chi nhánh hết OFFLINE | không | K3, K7c (qua cổng `8012`) |
+| D-02 | ≥ 2 bản sao trả lời, **mọi** sink đang chạy có `broker_ok = false`, sink mất sớm nhất đã đủ 15 giây (`broker_lost_at`) | 15 giây (`BROKER_ALERT_S`; dưới đó là bầu leader, đo ở K3: 6–10 giây) | đỏ | "Cụm Redpanda mất đa số, đồng bộ qua Redpanda dừng"; có đối soát thì thêm "đang đối soát thẳng với chi nhánh (lần cuối …)" · `broker_lost_at` sớm nhất | D-03, D-07, D-16, D-17 | sink đọc lại được | không (thành D-03) | K7b, K9 |
+| D-03 | Sink của bản sao X đang chạy, mất broker từ 15 giây, không thuộc D-02 | 15 giây | đỏ | "Bản sao X không đọc được Redpanda" (+ đối soát như D-02) · `broker_lost_at` | — | đọc lại được | có | K3 (mở thẳng `:8010`), K7c (qua cổng A) |
+| D-04 | Sink của bản sao X không kiểm broker quá 15 giây (`broker_checked_at`) | 15 giây | vàng | "Sink bản sao X dừng (kiểm lần cuối …)" · `broker_checked_at` | D-07 của X | sink chạy lại | có | K8, K11 |
+| D-05 | Broker k: không sink nào (đang đọc được cụm) thấy nó trong metadata; cụm còn đa số | liên tục 30 giây (sau khi một broker dừng, metadata mọi sink có thể bỏ sót cả broker còn sống: đo ở K7a 6 và 22 giây) | vàng | "Broker B không chạy (cụm còn 2/3)" · ~trang thấy | — | broker có lại | có, nếu sink bản sao này đọc được cụm | K7a |
+| D-06 | Bản sao X không trả lời qua cổng vào, không thuộc D-01 | 2 lần làm mới | vàng | "Bản sao X không liên lạc được" · `failing_since` gossip sớm nhất của bản sao khác về X | D-08 tới X | trả lời lại | không (thành D-08) | K3 (15 giây đầu), K7c (qua cổng A) |
+| D-07 | Dấu vân tay bản sao X khác bản sao dẫn đầu, sink X đang chạy | liên tục 20 giây | vàng | "Bản sao X lệch dữ liệu so với bản sao Y, gossip chưa vá" · ~trang thấy | — | khớp lại | không | selftest; chạy tay: K8 (gộp dưới D-04) |
+| D-08 | Gossip X → Y có `failing_since` cũ hơn 15 giây (2 lần gossip lỗi), X trả lời | 15 giây | vàng | "Gossip X → Y lỗi" · `failing_since` | — | gossip lại được | có | K3 (mở thẳng `:8010`: B → A, B → C) |
+| D-09 | Kết luận đa số (`verdict`) về CNn là OFFLINE | theo PT-13 | đỏ | "CN2 mất liên lạc (3/3 bản sao)" · `last_seen` | D-12, D-13, D-17 của CNn | hết OFFLINE | có | K14, K15 |
+| D-10 | `verdict` là SUSPECT (cùng sự cố với D-09) | theo PT-13 | vàng | "CN2 nghi ngờ, chưa đủ đa số" · `last_seen` | như D-09 | hết SUSPECT | có | K14; K3 (mở thẳng `:8010`: CN1, CN3) |
+| D-11 | `verdict` là ONLINE nhưng có bản sao thấy SUSPECT/OFFLINE | liên tục 10 giây | vàng | "Bản sao A không nhận heartbeat CN2 (1/3 góc nhìn, kết luận vẫn sống)" · ~trang thấy | — | mọi góc nhìn sống | có | K14 biến thể |
+| D-12 | Chi nhánh RECOVERING (`recovery.state`; mở thẳng: `recovering` trong heartbeat) | ngay | vàng | "CN2 đang phục hồi (áp ghi hộ, chưa nhận bán): đã áp a, còn p" · `recovery.since` | D-13 của CNn | ONLINE | có, mốc ~ | K4, K14, K15 |
+| D-13 | Còn lượt ghi hộ PENDING (cộng qua digest), chi nhánh không OFFLINE, không RECOVERING | 2 lần làm mới | vàng | "CN2: n lượt ghi hộ chờ chi nhánh áp" · ~trang thấy | — | hết PENDING | có | K15 (gộp dưới D-09, D-12) |
+| D-14 | Có lượt ghi hộ REJECTED (`recovery.rejected_items`) trong 5 phút gần nhất | 5 phút | đỏ | "CN2: k lượt ghi hộ bị TỪ CHỐI khi áp lại (mã 11 ×10, tồn thật 2)" · `rejected_at` | — | 5 phút sau lượt mới nhất (vẫn còn ở cột Ghi hộ và nhật ký) | có, đếm từ digest, mốc ~, tắt sau 5 phút kể từ lúc trang thấy | K15 biến thể REJECTED |
+| D-15 | `recovery.incomplete` | ngay | vàng | "CN2 phục hồi chưa đủ: chưa gom được ghi hộ từ bản sao C" · `recovery.since` | — | hết `incomplete` | không | chạy tay riêng: K15 trong lúc dừng `replica_api` C quá 60 giây |
+| D-16 | `relay.failing_since` của CNn cũ hơn 15 giây | 15 giây (relay lỗi vài giây lúc bầu leader, đo ở K7c) | đỏ | "CN2 gửi lên Redpanda lỗi" · `failing_since` | D-17 của CNn | relay gửi được | không | K7b (gộp dưới D-02), K7c (qua cổng A, CN1) |
+| D-17 | Outbox CNn có sự kiện chờ quá 10 giây (`oldest_unsent_s`; mở thẳng: `outbox_backlog > 0` liên tục 10 giây theo heartbeat), relay không báo lỗi (relay lỗi dưới 15 giây thì chưa báo cả hai) | 10 giây | vàng | "CN2: k sự kiện chờ gửi lên Redpanda (relay không chạy?)" · giờ sự kiện cũ nhất | — | outbox về 0 | có, mốc ~ | K15 biến thể REJECTED (`make kill N=b S=relay`) |
+| D-18 | Dò cổng vào X lỗi (mỗi 10 giây `GET <cổng>/lb/gateways.json`, chờ 2 giây; trang vừa chuyển khỏi X thì dò ngay). Trang chuyển cổng mà dò X vẫn trả lời (bản sao, chi nhánh phía sau chậm) thì không báo, thanh bên vẫn ghi đã chuyển | lần dò lỗi đầu | vàng | "Cổng vào localhost không trả lời (đã chuyển sang localhost:8012)" · lần lỗi đầu | — | dò lại được (trang vẫn ở cổng mới) | không | K13 |
+| D-19 | Không đọc được `api/overview` qua mọi cổng | ngay | đỏ | dải `#conn-error` như cũ, thêm "từ …" · ~trang thấy | — | đọc lại được | có | mọi nginx (hoặc bản sao đang mở thẳng) chết |
+| D-20 | Đọc đơn điệu: bản sao X trả lời cũ hơn số đang hiện | ngay | vàng | dải `#mono` như cũ ("Bản sao B trễ 5 sự kiện ở CN2"), thêm "từ ~…" | — | phản hồi của X được nhận lại | không | K11, K4 |
+
+**POS.** Dải trạng thái `#link` dưới tên chi nhánh thành danh sách cảnh báo (thay cho `#link` và `#note` cũ), xếp
+như dashboard; không có cảnh báo thì như cũ ("Mọi lượt bán đã gửi lên trung tâm" / "Đang gửi n sự kiện"). POS không
+có nhật ký.
+
+| # | Điều kiện kích hoạt | Mức | Chữ hiện (rút gọn) · mốc "từ" | Gộp | Tự tắt khi | Mở thẳng | Kịch bản |
+|---|---|---|---|---|---|---|---|
+| P-01 | `relay.failing_since` | đỏ | "Gửi lên Redpanda: lỗi từ HH:MM:SS. Quầy vẫn bán; n sự kiện chờ trong outbox" | P-02 | relay gửi được | có | K7b, K3 |
+| P-02 | `sync_stuck` (sự kiện cũ nhất chờ ≥ 5 giây), relay không báo lỗi | vàng | "n sự kiện chưa gửi lên trung tâm" · giờ sự kiện cũ nhất | — | outbox về 0 | có | K15 biến thể REJECTED |
+| P-03 | Heartbeat tới bản sao X lỗi (`links[].ok = false`) | vàng | "Bản sao máy A mất liên lạc" · now − `seconds_since_ok` | — | heartbeat lại được | có | K3, K7c, K14 biến thể |
+| P-04 | Chế độ `waiting` (chi nhánh lỗi 2 lần, kết luận chưa OFFLINE), chỉ khi mở qua cổng vào | đỏ | như vòng 6 ("Không gọi được chi nhánh … Chưa ghi hộ") · ~lần lỗi đầu | — | chi nhánh trả lời hoặc chuyển ghi hộ | không | K15 |
+| P-05 | Chế độ `handoff` | vàng | như vòng 6 ("Đang ghi hộ qua trung tâm (bản sao A)") · ~trang thấy | — | chi nhánh trả lời lại | không | K15 |
+| P-06 | Chế độ `recovering` | vàng | như vòng 6 ("Chi nhánh đang phục hồi …") · `recovery.since` | — | ONLINE | có | K4, K14, K15 |
+| P-07 | `recovery.incomplete` | vàng | như vòng 6 ("Phục hồi chưa đủ …") · `recovery.since` | — | hết `incomplete` | có | như D-15 |
+| P-08 | `recovery.rejected_items` có lượt chưa được bấm **"Đã biết"** | đỏ | như vòng 6 ("Lượt ghi hộ bị TỪ CHỐI …") · `rejected_at` sớm nhất, nút "Đã biết" | — | **chỉ khi thu ngân bấm "Đã biết"** (lưu `localStorage` `minigo.rejectedAck` theo `request_id`); không tự tắt theo thời gian | có | K15 biến thể REJECTED |
+| P-09 | Dò cổng vào lỗi (như D-18; chuyển cổng vì chi nhánh treo, cổng vẫn trả lời thì không báo, đo ở K14) | vàng | "Cổng vào localhost không trả lời, đang dùng localhost:8012" · lần lỗi đầu | — | dò lại được | không | K13 |
+| P-10 | Mở thẳng chi nhánh mà không đọc được dữ liệu của chính nó | đỏ | "Không đọc được dữ liệu của chính chi nhánh …" · ~trang thấy | — | đọc lại được | chỉ mở thẳng | dừng `branch_db` khi mở `:8011` |
+
+Kịch bản không phải lỗi nên **không** có cảnh báo nào: K1, K2, K5 (trễ, không mất gói), K6, K12. Thời gian hiện, tắt đo
+được ghi ở `docs/tests.md`.
+
+**Cảnh báo phải thấy theo kịch bản** (nhìn ở dải đầu tab Tổng quan, POS dải dưới tên chi nhánh, nhật ký ở tab Hệ thống;
+giây tính từ lúc gây lỗi, đo 27/11/2026, 3 node một máy):
+
+| # | Dashboard qua cổng vào | Dashboard mở thẳng / POS | Hết lỗi |
+|---|---|---|---|
+| K3 | "Bản sao B không liên lạc được" (giây 6), "CN2 nghi ngờ" (11), rồi một dòng đỏ "Máy B mất liên lạc (bản sao B, CN2)" kéo theo broker B, gossip, CN2 (15). Có lần cổng A chờ phân giải `replica-b` quá 4 giây nên trang tự chuyển sang cổng 8012 (phía B bị cô lập): thanh bên ghi đã chuyển, dải thấy "Bản sao A, C không liên lạc được" | `:8010`: đỏ "Bản sao B không đọc được Redpanda; đang đối soát thẳng với chi nhánh", "CN1, CN3 nghi ngờ", "Gossip B → A / B → C lỗi", "CN2: n sự kiện chờ gửi (theo heartbeat)". POS `:8011`: "Bản sao máy A, C mất liên lạc", "n sự kiện chưa gửi", rồi đỏ "Gửi lên Redpanda: lỗi từ …" | K4 |
+| K4 | "Máy B mất liên lạc" tắt 2–3 giây sau `heal`; ≤ 15 giây còn lẻ "Gossip … lỗi", "CN2 mất liên lạc", "Bản sao B không đọc được Redpanda" (mỗi kênh tự thử lại theo chu kỳ riêng), "CN2 đang phục hồi" vài giây; nhật ký đủ dòng bắt đầu, kết thúc | POS: "Chi nhánh đang phục hồi" rồi "Mọi lượt bán đã gửi" sau ~10 giây | — |
+| K7a | "Broker B không chạy (cụm còn 2/3)" ở giây ~43 (chờ 30 giây vì metadata chập chờn) | — | tắt 7 giây sau khi bật broker |
+| K7b, K9 | Một dòng đỏ "Cụm Redpanda mất đa số …; đang đối soát thẳng với chi nhánh" ở giây 17–23, kéo theo relay, outbox | POS: "n sự kiện chưa gửi" (11), đỏ "Gửi lên Redpanda: lỗi từ …" (15) | POS hết sau ~9 giây; dashboard sau ~55–60 giây (sink đọc lại chậm, `docs/plan.md` mục 6), có lúc chuyển thành từng "Bản sao X không đọc được Redpanda" rồi tắt |
+| K7c | Qua cổng 8012: "Bản sao A không liên lạc được" (5), rồi đỏ "Máy A mất liên lạc" (14). Qua cổng A: "Bản sao B, C không liên lạc được", "CN2, CN3 nghi ngờ", đỏ "Bản sao A không đọc được Redpanda", "CN1 gửi lên Redpanda lỗi" | POS `:8001`: "Bản sao máy B, C mất liên lạc", đỏ "Gửi lên Redpanda: lỗi" | ≤ 15 giây sau `heal` |
+| K8, K11 | "Sink bản sao B dừng (kiểm lần cuối …)" kéo theo "lệch dữ liệu" (14); dải vàng "Bản sao B trễ 5 sự kiện ở CN2 (từ ~…)" | `:8010`: "Sink bản sao B dừng" | 5 giây sau khi bật sink; dải đọc đơn điệu hết khi gossip vá |
+| K13 | "Cổng vào localhost không trả lời, đã chuyển sang localhost:8012" (1) | POS qua cổng: cùng cảnh báo | 5 giây sau khi bật nginx A (dò cổng); trang vẫn ở cổng mới |
+| K14 | Pause: "CN2 nghi ngờ" (12), đỏ "CN2 mất liên lạc (2/3 bản sao)" (20); unpause: "CN2 đang phục hồi". Kill: nghi ngờ (8), mất liên lạc (12). Biến thể: "Bản sao A không nhận heartbeat CN2 (1/3 góc nhìn, kết luận vẫn sống)" (18) | POS qua cổng: đỏ "Không gọi được chi nhánh … Chưa ghi hộ" (4), "Đang ghi hộ qua trung tâm" (12); biến thể: "Bản sao máy A mất liên lạc" (3) | 5–10 giây sau `unpause`, `start`, `tre.sh off` |
+| K15 | "CN2 nghi ngờ" (8), đỏ "CN2 mất liên lạc" kéo theo "5 lượt ghi hộ chờ áp" (19) | POS: đỏ "Không gọi được chi nhánh" (3), "Đang ghi hộ qua trung tâm (bản sao A): 5 lượt chờ" (18) | ~9 giây sau `start`; RECOVERING dưới 2 giây nên có lần không kịp hiện "đang phục hồi" |
+| K15 REJECTED | "CN2: 1 sự kiện chờ gửi lên Redpanda (relay không chạy?)" (15 giây sau khi giết relay); sau khi bật lại: đỏ "CN2: 1 lượt ghi hộ bị TỪ CHỐI khi áp lại (mã 11 ×10, tồn thật 2)" | POS: "n sự kiện chưa gửi" (10); đỏ "Lượt ghi hộ bị TỪ CHỐI …" kèm nút **Đã biết** | dashboard: 5 phút sau lượt bị từ chối; POS: khi bấm Đã biết |
+| D-15 | "Bản sao C không liên lạc được"; 60 giây sau khi chi nhánh bật lại: "CN2 phục hồi chưa đủ: chưa gom được ghi hộ từ bản sao C" | POS: "Phục hồi chưa đủ …" | 7 giây sau khi bật `replica_api` C |
+| P-10 | — | POS `:8011` khi dừng `branch_db`: đỏ "Không đọc được dữ liệu của chính chi nhánh" (5) | khi `branch_db` chạy lại |
+
 Chi tiết từng kịch bản:
 
 ### K1. Đồng bộ dữ liệu giữa các máy
